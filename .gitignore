@@ -1,0 +1,28 @@
+# --- AI memory: local-only (secrets, machine-specific notes) ---
+.ai/local/
+
+# --- Secrets / env ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# --- Build outputs / deps (stack TBD) ---
+node_modules/
+dist/
+build/
+bin/
+out/
+coverage/
+*.log
