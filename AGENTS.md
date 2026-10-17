@@ -1,7 +1,7 @@
 # AGENTS.md — Start Here
 
 > This file is the **single entry point for any AI agent** (Antigravity, Claude Code, Codex, Cursor, Copilot, Gemini CLI, …) working on VirtoMir.
-> Read it fully before doing anything. `CLAUDE.md` and `GEMINI.md` only point here.
+> Read it fully before doing anything.
 
 ## 1. What is VirtoMir?
 
@@ -25,7 +25,7 @@ The maintainers keep the project memory (vision, decision log, roadmap, session 
 ## 4. Repository layout
 
 ```
-AGENTS.md            ← you are here (CLAUDE.md / GEMINI.md point here)
+AGENTS.md            ← you are here
 README.md            ← public-facing project README
 .ai/                 ← gitignored, local only: project memory and secrets (not published)
 scripts/             ← build/release/install scripts, dev-run.ps1
