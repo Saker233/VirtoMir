@@ -49,7 +49,7 @@ VirtoMir is forwarded to **https://localhost:8420/**, user `virtomir`. `vagrant 
 
 ## 4. Any other VM
 
-A fresh Debian 13 or Ubuntu 24.04 VM with nested virtualization (see below), then inside it:
+A fresh Debian 13 or Ubuntu 24.04 VM (help us test on these distributions — see [issue #1](https://github.com/onurbaydas/VirtoMir/issues/1)) with nested virtualization (see below), then inside it:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/onurbaydas/VirtoMir/main/dev/try/provision.sh
@@ -96,7 +96,8 @@ A good first hour, roughly in this order:
 ## Tell us how it went
 
 Whatever happened — it worked, something was confusing, something broke — please open a
-**[test report](https://github.com/onurbaydas/VirtoMir/issues/new?template=test_report.yml)**.
+**[test report](https://github.com/onurbaydas/VirtoMir/issues/new?template=test_report.yml)** or report your findings in
+**[issue #1 (Testers wanted)](https://github.com/onurbaydas/VirtoMir/issues/1)**.
 It takes two minutes and asks for exactly what helps: your distribution, libvirt version and what
 you tried. Questions and ideas are welcome in
 [Discussions](https://github.com/onurbaydas/VirtoMir/discussions).
