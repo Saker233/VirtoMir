@@ -7,7 +7,8 @@ equally welcome. You do not need to know Go or Svelte to make a difference.
 
 1. **Test it and tell us.** [Try VirtoMir](docs/try-in-a-vm.md) (the online demo, or a throwaway
    VM in one command) and open a
-   [test report](https://github.com/onurbaydas/VirtoMir/issues/new?template=test_report.yml).
+   [test report](https://github.com/onurbaydas/VirtoMir/issues/new?template=test_report.yml) (or join
+   [pinned issue #1](https://github.com/onurbaydas/VirtoMir/issues/1)).
    Reports from setups we cannot reach — other distributions, real BMCs for HA fencing, Ceph,
    iSCSI, GPUs — are gold.
 2. **Pick a [good first issue](https://github.com/onurbaydas/VirtoMir/labels/good%20first%20issue).**
@@ -62,7 +63,7 @@ libvirt, `internal/api` is the HTTP API, `web/` is the Svelte UI.
   `docs:`, `refactor:`, `test:`, `chore:`.
 - **Code, comments and docs are in English.** Issues and discussions may be in English or Turkish.
 - **Tests:** new behaviour in `internal/` comes with a Go test; UI helpers with a Vitest test.
-- **The UI never hard-codes colours:** use the tokens in `web/src/app.css`.
+- **The UI never hard-codes colors:** use the tokens in `web/src/app.css`.
 - **Borrowing code** from other projects needs a compatible license (VirtoMir is AGPL-3.0-or-later);
   name the source and license in the file header.
 - **AI tools are fine** to use. You are responsible for every line you submit: read it, test it,
