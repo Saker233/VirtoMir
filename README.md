@@ -1,6 +1,15 @@
-# VirtoMir
+<p align="center"><img src="docs/brand/logo.svg" alt="VirtoMir logo" width="112" height="112"></p>
 
-**A Detailed Control Deck for Virtual Environments.**
+<h1 align="center">VirtoMir</h1>
+
+<p align="center"><strong>A Detailed Control Deck for Virtual Environments.</strong></p>
+
+<p align="center">
+  <a href="https://onurbaydas.github.io/VirtoMir/demo/">Live demo</a> ·
+  <a href="docs/try-in-a-vm.md">Try it in a VM</a> ·
+  <a href="#install">Install</a> ·
+  <a href="https://github.com/onurbaydas/VirtoMir/discussions">Discussions</a>
+</p>
 
 VirtoMir is a modern web control panel for **KVM / QEMU / libvirt** that tries to be two things at once:
 
