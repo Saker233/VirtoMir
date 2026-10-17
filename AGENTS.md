@@ -1,6 +1,6 @@
 # AGENTS.md — Start Here
 
-> This file is the **single entry point for any AI agent** (Antigravity, Claude Code, Codex, Cursor, Copilot, Gemini CLI, …) working on VirtoMir.
+> This file is the **single entry point for any AI agent** working on VirtoMir.
 > Read it fully before doing anything.
 
 ## 1. What is VirtoMir?
