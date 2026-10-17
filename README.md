@@ -16,9 +16,9 @@ VirtoMir is a modern web control panel for **KVM / QEMU / libvirt** that tries t
 - **Effortless** — create and run a VM without knowing much about virtualization.
 - **Terrifyingly detailed** — every libvirt setting is reachable, editable and, yes, breakable.
 
-It installs on the Linux host you already have (Debian, Ubuntu, Fedora, …) as a single binary. No dedicated distribution, no database, no agents.
+It installs on an existing Linux host with KVM/libvirt as a single binary (tested on Ubuntu 26.04; testers for Ubuntu 24.04, Debian and Fedora are welcome). No dedicated distribution, no database, no agents.
 
-> 🚧 **Status: early release (0.6).** Used and tested on single hosts and small clusters; high availability has not been tried on real BMC hardware yet. Test it before you trust it with production.
+> 🚧 **Status: early release (0.6).** Tested on Ubuntu 26.04 on single hosts and small clusters; high availability has not been tried on real BMC hardware yet. Testers wanted for other setups and distributions (see [issue #1](https://github.com/onurbaydas/VirtoMir/issues/1)). Test it before you trust it with production.
 
 ![Overview](docs/screenshots/overview.png)
 
@@ -26,13 +26,13 @@ It installs on the Linux host you already have (Debian, Ubuntu, Fedora, …) as 
 
 ## Why?
 
-| Tool | Gap |
+| Tool | Focus |
 |---|---|
-| Cockpit (machines) | Easy, but shallow — advanced settings send you back to `virsh` / XML |
-| virt-manager | Detailed, but a desktop app with weak monitoring and no web access |
+| Cockpit (machines) | Easy, but focuses on basic settings — advanced tuning requires `virsh` / XML |
+| virt-manager | Detailed, but a desktop application without web access |
 | Proxmox VE | Powerful, but it *is* the operating system |
 
-VirtoMir sits in the middle: as easy as Cockpit, as deep as raw libvirt XML, as polished as a modern SaaS dashboard.
+VirtoMir sits in the middle: as straightforward as Cockpit, as thorough as raw libvirt XML, with a modern web interface.
 
 ## Features
 
@@ -119,7 +119,7 @@ VirtoMir sits in the middle: as easy as Cockpit, as deep as raw libvirt XML, as 
 
 - **English and Turkish** (Türkçe) user interface — the browser's language by default, switchable in the sidebar and on the Account page
 
-<sub>Screenshots from VirtoMir 0.4 on a test host (Ubuntu 26.04, libvirt 12) with real, small machines; the host name is shown as hv-01. Dark, light and "match system" themes; works on phones too.</sub>
+<sub>Screenshots from VirtoMir 0.6 on a test host (Ubuntu 26.04, libvirt 12) with real, small machines; the host name is shown as hv-01. Dark, light and "match system" themes; works on phones too.</sub>
 
 ## What it does on your host
 
@@ -228,7 +228,7 @@ Tags `v*` build and publish a release through GitHub Actions (`.github/workflows
 
 ## Roadmap
 
-Ideas and questions: [Discussions](https://github.com/onurbaydas/VirtoMir/discussions). Found a bug or tried it on your hardware? [Open an issue](https://github.com/onurbaydas/VirtoMir/issues/new/choose) — test reports from setups we cannot reach (real BMCs, Ceph, GPUs, other distributions) help the most.
+Ideas and questions: [Discussions](https://github.com/onurbaydas/VirtoMir/discussions). Found a bug or tried it on your hardware? [Open an issue](https://github.com/onurbaydas/VirtoMir/issues/new/choose) or report your setup in [#1 (Testers wanted)](https://github.com/onurbaydas/VirtoMir/issues/1) — test reports from setups we cannot reach (real BMCs, Ceph, GPUs, other distributions) help the most.
 
 ## License
 
