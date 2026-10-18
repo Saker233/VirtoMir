@@ -227,20 +227,30 @@ func (c *Client) BackupDomain(ctx context.Context, dir BackupDir, uuid string, a
 	return b, nil
 }
 
-// liveBackup runs a libvirt push-mode backup job into dest and waits for it.
-func (c *Client) liveBackup(ctx context.Context, l *libvirt.Libvirt, d libvirt.Domain, dest string, disks []BackupDisk, report func(string)) error {
+// backupXML is the push-mode <domainbackup> that writes each disk to a qcow2 file in dest.
+func backupXML(dest string, disks []BackupDisk) string {
 	var xb strings.Builder
 	xb.WriteString("<domainbackup mode='push'><disks>")
 	for _, bd := range disks {
 		fmt.Fprintf(&xb, "<disk name='%s' backup='yes' type='file'><target file='%s'/><driver type='qcow2'/></disk>",
 			xmlEscape(bd.Target), xmlEscape(filepath.Join(dest, bd.File)))
 	}
+	xb.WriteString("</disks></domainbackup>")
+	return xb.String()
+}
+
+// liveBackup runs a libvirt push-mode backup job into dest and waits for it.
+func (c *Client) liveBackup(ctx context.Context, l *libvirt.Libvirt, d libvirt.Domain, dest string, disks []BackupDisk, report func(string)) error {
 	report("Starting live backup…")
-	// Application consistency: if guest agent is active, freeze filesystems briefly
-	if _, err := l.DomainFsfreeze(d, nil, 0); err == nil {
-		defer func() { _, _ = l.DomainFsthaw(d, nil, 0) }()
+	// Application consistency: with a guest agent, freeze the guest's filesystems only for
+	// the moment the job starts. The backup copies that point in time, so the guest thaws
+	// right away instead of staying frozen for the whole copy.
+	_, freezeErr := l.DomainFsfreeze(d, nil, 0)
+	err := l.DomainBackupBegin(d, backupXML(dest, disks), nil, 0)
+	if freezeErr == nil {
+		_, _ = l.DomainFsthaw(d, nil, 0)
 	}
-	if err := l.DomainBackupBegin(d, xb.String(), nil, 0); err != nil {
+	if err != nil {
 		return classify(err)
 	}
 	t := time.NewTicker(time.Second)

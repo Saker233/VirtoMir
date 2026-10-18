@@ -2,6 +2,7 @@ package virt
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"io"
 	"log/slog"
@@ -93,6 +94,25 @@ func TestBackupDisks(t *testing.T) {
 	}
 	if xmlEscape(`a'b&<c>`) != "a&apos;b&amp;&lt;c&gt;" {
 		t.Error("xml escape")
+	}
+}
+
+func TestBackupXMLIsWellFormed(t *testing.T) {
+	raw := backupXML("/b/web", []BackupDisk{{Target: "vda", File: "vda.qcow2"}, {Target: "vdb", File: "vdb.qcow2"}})
+	var x struct {
+		Mode  string `xml:"mode,attr"`
+		Disks []struct {
+			Name   string `xml:"name,attr"`
+			Target struct {
+				File string `xml:"file,attr"`
+			} `xml:"target"`
+		} `xml:"disks>disk"`
+	}
+	if err := xml.Unmarshal([]byte(raw), &x); err != nil {
+		t.Fatalf("%v\n%s", err, raw)
+	}
+	if x.Mode != "push" || len(x.Disks) != 2 || x.Disks[1].Name != "vdb" || x.Disks[1].Target.File != filepath.Join("/b/web", "vdb.qcow2") {
+		t.Errorf("parsed = %+v", x)
 	}
 }
 
