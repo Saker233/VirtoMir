@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -38,37 +39,79 @@ type Release struct {
 	shaURL  string
 }
 
+// AutoConfig defines automatic background update behavior (ADR-0036).
+type AutoConfig struct {
+	Enabled       bool      `json:"enabled"`       // periodic background check enabled
+	AutoInstall   bool      `json:"autoInstall"`   // automatically install newer release
+	IntervalHours int       `json:"intervalHours"` // interval between checks in hours (default 6)
+	LastCheckedAt time.Time `json:"lastCheckedAt,omitempty"`
+	LastUpdatedAt time.Time `json:"lastUpdatedAt,omitempty"`
+	LastResult    string    `json:"lastResult,omitempty"`
+	LastError     string    `json:"lastError,omitempty"`
+}
+
 // Status is what the Updates card shows.
 type Status struct {
-	Current   string   `json:"current"`
-	Repo      string   `json:"repo"`
-	Latest    *Release `json:"latest,omitempty"`
-	Available bool     `json:"available"` // Latest is newer than Current
+	Current   string     `json:"current"`
+	Repo      string     `json:"repo"`
+	Latest    *Release   `json:"latest,omitempty"`
+	Available bool       `json:"available"` // Latest is newer than Current
 	// Installable: this host runs the .deb package, so it can update itself.
-	Installable bool      `json:"installable"`
-	Reason      string    `json:"reason,omitempty"` // why not installable
-	CheckedAt   time.Time `json:"checkedAt"`
-	Error       string    `json:"error,omitempty"`
+	Installable bool       `json:"installable"`
+	Reason      string     `json:"reason,omitempty"` // why not installable
+	CheckedAt   time.Time  `json:"checkedAt"`
+	Error       string     `json:"error,omitempty"`
+	Auto        AutoConfig `json:"auto"`
 }
 
 // Checker talks to the GitHub API.
 type Checker struct {
-	Repo    string // owner/name; "" disables updates
-	Current string // running version
-	Token   string // optional, for private repositories
-	API     string // https://api.github.com (tests replace it)
-	HTTP    *http.Client
+	Repo         string // owner/name; "" disables updates
+	Current      string // running version
+	Token        string // optional, for private repositories
+	API          string // https://api.github.com (tests replace it)
+	HTTP         *http.Client
 	// Installed reports whether the virtomir package is installed (dpkg); tests replace it.
-	Installed func() (bool, string)
+	Installed    func() (bool, string)
+	RunInstaller func(ctx context.Context, debPath string) (string, error)
 
-	mu     sync.Mutex
-	cached Status
+	mu       sync.Mutex
+	cached   Status
+	cfgMu    sync.RWMutex
+	autoCfg  AutoConfig
+	stateDir string
+	wakeCh   chan struct{}
+}
+
+func defaultRunInstaller(ctx context.Context, debPath string) (string, error) {
+	unit := fmt.Sprintf("virtomir-update-%d", time.Now().Unix())
+	cmd := exec.CommandContext(ctx, "systemd-run", "--unit="+unit, "--collect", "--quiet",
+		"--setenv=DEBIAN_FRONTEND=noninteractive",
+		"/usr/bin/apt-get", "install", "-y", "-o", "Dpkg::Options::=--force-confold", debPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("start the upgrade: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return unit, nil
 }
 
 // New returns a checker for repo, running version current.
 func New(repo, current, token string) *Checker {
-	return &Checker{Repo: repo, Current: current, Token: token, API: "https://api.github.com",
-		HTTP: &http.Client{Timeout: 30 * time.Second}, Installed: debInstalled}
+	return &Checker{
+		Repo:         repo,
+		Current:      current,
+		Token:        token,
+		API:          "https://api.github.com",
+		HTTP:         &http.Client{Timeout: 30 * time.Second},
+		Installed:    debInstalled,
+		RunInstaller: defaultRunInstaller,
+		autoCfg: AutoConfig{
+			Enabled:       true,
+			AutoInstall:   false,
+			IntervalHours: 6,
+			LastResult:    "Auto-updater active (checking every 6h)",
+		},
+		wakeCh: make(chan struct{}, 1),
+	}
 }
 
 const cacheFor = time.Hour
@@ -79,6 +122,7 @@ func (c *Checker) Check(ctx context.Context, force bool) Status {
 	if !force && !c.cached.CheckedAt.IsZero() && time.Since(c.cached.CheckedAt) < cacheFor {
 		s := c.cached
 		c.mu.Unlock()
+		s.Auto = c.GetAutoConfig()
 		return s
 	}
 	c.mu.Unlock()
@@ -87,6 +131,7 @@ func (c *Checker) Check(ctx context.Context, force bool) Status {
 	st.Installable, st.Reason = c.Installed()
 	if c.Repo == "" {
 		st.Error = "updates are turned off (-update-repo \"\")"
+		st.Auto = c.GetAutoConfig()
 		return st
 	}
 	rel, err := c.latest(ctx)
@@ -102,6 +147,7 @@ func (c *Checker) Check(ctx context.Context, force bool) Status {
 	c.mu.Lock()
 	c.cached = st
 	c.mu.Unlock()
+	st.Auto = c.GetAutoConfig()
 	return st
 }
 
@@ -303,12 +349,156 @@ func (c *Checker) Install(ctx context.Context, dir string, report func(string)) 
 		return "", fmt.Errorf("checksum mismatch (got %s, release says %s); nothing was installed", got, want)
 	}
 	report("Checksum verified; installing")
-	unit := fmt.Sprintf("virtomir-update-%d", time.Now().Unix())
-	cmd := exec.Command("systemd-run", "--unit="+unit, "--collect", "--quiet",
-		"--setenv=DEBIAN_FRONTEND=noninteractive",
-		"/usr/bin/apt-get", "install", "-y", "-o", "Dpkg::Options::=--force-confold", path)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("start the upgrade: %v: %s", err, strings.TrimSpace(string(out)))
+	installer := c.RunInstaller
+	if installer == nil {
+		installer = defaultRunInstaller
+	}
+	unit, err := installer(ctx, path)
+	if err != nil {
+		return "", err
 	}
 	return fmt.Sprintf("Installing %s (unit %s); VirtoMir restarts in a few seconds — reload the page then", rel.Version, unit), nil
+}
+
+// InitConfig loads the persisted AutoConfig from stateDir or initializes defaults.
+func (c *Checker) InitConfig(stateDir string) {
+	c.cfgMu.Lock()
+	defer c.cfgMu.Unlock()
+	c.stateDir = stateDir
+	cfgFile := filepath.Join(stateDir, "updates", "config.json")
+	data, err := os.ReadFile(cfgFile)
+	if err == nil {
+		var loaded AutoConfig
+		if err := json.Unmarshal(data, &loaded); err == nil {
+			if loaded.IntervalHours < 1 {
+				loaded.IntervalHours = 6
+			}
+			c.autoCfg = loaded
+			return
+		}
+	}
+	c.autoCfg = AutoConfig{
+		Enabled:       true,
+		AutoInstall:   false,
+		IntervalHours: 6,
+		LastResult:    "Auto-updater active (checking every 6h)",
+	}
+}
+
+// GetAutoConfig returns the current auto-update configuration.
+func (c *Checker) GetAutoConfig() AutoConfig {
+	c.cfgMu.RLock()
+	defer c.cfgMu.RUnlock()
+	return c.autoCfg
+}
+
+// SetAutoConfig updates the auto-update settings and persists them to stateDir.
+func (c *Checker) SetAutoConfig(cfg AutoConfig) error {
+	c.cfgMu.Lock()
+	if cfg.IntervalHours < 1 {
+		cfg.IntervalHours = 1
+	}
+	c.autoCfg.Enabled = cfg.Enabled
+	c.autoCfg.AutoInstall = cfg.AutoInstall
+	c.autoCfg.IntervalHours = cfg.IntervalHours
+	cur := c.autoCfg
+	dir := c.stateDir
+	c.cfgMu.Unlock()
+
+	if dir != "" {
+		upDir := filepath.Join(dir, "updates")
+		_ = os.MkdirAll(upDir, 0o700)
+		data, err := json.MarshalIndent(cur, "", "  ")
+		if err == nil {
+			_ = os.WriteFile(filepath.Join(upDir, "config.json"), data, 0o600)
+		}
+	}
+
+	select {
+	case c.wakeCh <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// StartAutoUpdater runs the periodic GitHub update poller in the background.
+// If AutoInstall is enabled and a new version is detected, it automatically downloads
+// and triggers the upgrade.
+func (c *Checker) StartAutoUpdater(ctx context.Context, stateDir string, onActivity func(action, details string), log *slog.Logger) {
+	if c.Repo == "" {
+		return
+	}
+	c.InitConfig(stateDir)
+
+	// Delay initial check by 15s to allow daemon startup to settle
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(15 * time.Second):
+	}
+
+	for {
+		cfg := c.GetAutoConfig()
+		if cfg.Enabled {
+			st := c.Check(ctx, true)
+
+			c.cfgMu.Lock()
+			c.autoCfg.LastCheckedAt = time.Now().UTC()
+			if st.Error != "" {
+				c.autoCfg.LastError = st.Error
+				c.autoCfg.LastResult = "Check failed: " + st.Error
+			} else {
+				c.autoCfg.LastError = ""
+				if st.Available {
+					c.autoCfg.LastResult = fmt.Sprintf("New release %s available", st.Latest.Version)
+					if c.autoCfg.AutoInstall && st.Installable {
+						if log != nil {
+							log.Info("auto-update: new release found; triggering automated installation", "version", st.Latest.Version, "current", c.Current)
+						}
+						dir := filepath.Join(stateDir, "updates")
+						msg, err := c.Install(ctx, dir, func(step string) {
+							if log != nil {
+								log.Info("auto-update", "status", step)
+							}
+						})
+						if err != nil {
+							c.autoCfg.LastError = err.Error()
+							c.autoCfg.LastResult = fmt.Sprintf("Auto-install failed: %v", err)
+							if onActivity != nil {
+								onActivity("update.auto_failed", fmt.Sprintf("Failed to auto-install %s: %v", st.Latest.Version, err))
+							}
+						} else {
+							c.autoCfg.LastUpdatedAt = time.Now().UTC()
+							c.autoCfg.LastResult = fmt.Sprintf("Auto-installed %s: %s", st.Latest.Version, msg)
+							if onActivity != nil {
+								onActivity("update.auto_success", fmt.Sprintf("Installed %s automatically", st.Latest.Version))
+							}
+						}
+					}
+				} else {
+					c.autoCfg.LastResult = fmt.Sprintf("Up to date (%s)", c.Current)
+				}
+			}
+			cur := c.autoCfg
+			c.cfgMu.Unlock()
+
+			upDir := filepath.Join(stateDir, "updates")
+			_ = os.MkdirAll(upDir, 0o700)
+			if data, err := json.MarshalIndent(cur, "", "  "); err == nil {
+				_ = os.WriteFile(filepath.Join(upDir, "config.json"), data, 0o600)
+			}
+		}
+
+		interval := time.Duration(cfg.IntervalHours) * time.Hour
+		if interval < time.Hour {
+			interval = time.Hour
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.wakeCh:
+		case <-time.After(interval):
+		}
+	}
 }

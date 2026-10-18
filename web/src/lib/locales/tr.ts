@@ -1673,6 +1673,20 @@ export const tr: Record<string, string> = {
   "Virtual Machine (KVM)": "Sanal Makine (KVM)",
   "System Container (LXC)": "Sistem Konteyneri (LXC)",
   "High-grade lightweight system container sharing the Linux kernel via libvirt-lxc, with instant boot and bare-metal density.": "libvirt-lxc aracılığıyla Linux çekirdeğini paylaşan, anında açılan ve yalın donanım yoğunluğu sağlayan üst düzey hafif sistem konteyneri.",
+  "Auto-update settings saved": "Otomatik güncelleme ayarları kaydedildi",
+  "Automatic updates active": "Otomatik güncellemeler devrede",
+  "Automatic updates off": "Otomatik güncellemeler kapalı",
+  "Automatic GitHub Updates": "Otomatik GitHub Güncellemeleri",
+  "Toggle automatic updates": "Otomatik güncellemeleri aç/kapat",
+  "Automatically install new releases and restart daemon": "Yeni sürümleri otomatik kur ve servisi yeniden başlat",
+  "Check interval:": "Kontrol sıklığı:",
+  "Every 1 hour": "Her 1 saatte bir",
+  "Every 6 hours": "Her 6 saatte bir",
+  "Every 12 hours": "Her 12 saatte bir",
+  "Every 24 hours": "Her 24 saatte bir",
+  "Status: {res}": "Durum: {res}",
+  "Last auto-upgrade: {time}": "Son otomatik yükseltme: {time}",
+  "Last error: {err}": "Son hata: {err}",
 }
 
 

@@ -204,6 +204,19 @@ func run(c config, log *slog.Logger) error {
 	apiServer := api.NewServer(opts)
 	go syncCluster(ctx, apiServer)
 	go apiServer.RunReportSchedules(ctx)
+	if opts.Updater != nil {
+		go opts.Updater.StartAutoUpdater(ctx, c.stateDir, func(action, details string) {
+			if acts != nil {
+				_ = acts.Add(activity.Entry{
+					User:   "system",
+					Method: "AUTO",
+					Path:   "/api/v1/update",
+					Status: 200,
+					Error:  details,
+				})
+			}
+		}, log)
+	}
 	if haStore != nil {
 		mgr := ha.NewManager(haStore, apiServer.HATransport(), client, filepath.Join(c.stateDir, "ha"), log)
 		if alertEngine != nil {

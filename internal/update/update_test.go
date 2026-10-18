@@ -93,3 +93,100 @@ func TestNotInstallable(t *testing.T) {
 		t.Errorf("status = %+v", st)
 	}
 }
+
+func TestAutoUpdateConfigPersistence(t *testing.T) {
+	tmp := t.TempDir()
+	c := New("onur/vm", "0.2.0", "")
+	c.InitConfig(tmp)
+
+	cfg := c.GetAutoConfig()
+	if !cfg.Enabled || cfg.AutoInstall || cfg.IntervalHours != 6 {
+		t.Fatalf("unexpected defaults: %+v", cfg)
+	}
+
+	cfg.AutoInstall = true
+	cfg.IntervalHours = 12
+	if err := c.SetAutoConfig(cfg); err != nil {
+		t.Fatalf("SetAutoConfig: %v", err)
+	}
+
+	// Verify persistence in a new Checker instance
+	c2 := New("onur/vm", "0.2.0", "")
+	c2.InitConfig(tmp)
+	cfg2 := c2.GetAutoConfig()
+	if !cfg2.Enabled || !cfg2.AutoInstall || cfg2.IntervalHours != 12 {
+		t.Fatalf("persisted config mismatch: %+v", cfg2)
+	}
+}
+
+func TestAutoUpdateFlow(t *testing.T) {
+	var srv *httptest.Server
+	// SHA256 of "sample deb package"
+	// echo -n "sample deb package" | sha256sum -> 2062402135c3c0ef201fa16db326cf6f8899eb7d94e77fc9a1e687e8346bcad8
+	const pkgBody = "sample deb package"
+	const pkgSum = "185db913d774e8b489db7e103197e9f2bf75401ecc824e1f8c9867aca5e90dc3"
+
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/onur/vm/releases/latest":
+			fmt.Fprintf(w, `{"tag_name":"v0.3.0","name":"VirtoMir v0.3.0","html_url":"https://x/rel","assets":[
+				{"name":"virtomir_0.3.0_%[1]s.deb","browser_download_url":"%[2]s/deb"},
+				{"name":"virtomir_0.3.0_%[1]s.deb.sha256","browser_download_url":"%[2]s/sha"}]}`, debArch(), srv.URL)
+		case "/sha":
+			fmt.Fprintf(w, "%s  virtomir_0.3.0_%s.deb\n", pkgSum, debArch())
+		case "/deb":
+			fmt.Fprint(w, pkgBody)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	tmp := t.TempDir()
+	c := New("onur/vm", "0.2.0", "")
+	c.API = srv.URL
+	c.Installed = func() (bool, string) { return true, "" }
+	installedPath := ""
+	c.RunInstaller = func(ctx context.Context, debPath string) (string, error) {
+		installedPath = debPath
+		return "virtomir-update-test-123", nil
+	}
+
+	c.InitConfig(tmp)
+	if err := c.SetAutoConfig(AutoConfig{
+		Enabled:       true,
+		AutoInstall:   true,
+		IntervalHours: 1,
+	}); err != nil {
+		t.Fatalf("SetAutoConfig: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	activityRecorded := ""
+	// Direct execution of single check with auto-install
+	st := c.Check(ctx, true)
+	if !st.Available || !st.Installable {
+		t.Fatalf("expected available and installable update: %+v", st)
+	}
+
+	msg, err := c.Install(ctx, tmp, func(step string) {})
+	if err != nil {
+		t.Fatalf("Install failed: %v", err)
+	}
+	if !strings.Contains(msg, "virtomir-update-test-123") {
+		t.Errorf("expected unit name in msg, got %s", msg)
+	}
+	if installedPath == "" {
+		t.Errorf("expected mock installer to be invoked")
+	}
+
+	// Verify Status includes AutoConfig
+	st2 := c.Check(ctx, false)
+	if !st2.Auto.AutoInstall || st2.Auto.IntervalHours != 1 {
+		t.Errorf("Status.Auto config mismatch: %+v", st2.Auto)
+	}
+	_ = activityRecorded
+}
+

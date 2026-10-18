@@ -2,15 +2,36 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"path/filepath"
+
+	"github.com/onurbaydas/virtomir/internal/update"
 )
 
 // Updates (ADR-0036): which release is newest on GitHub, and installing it on this host.
 // In a cluster each host updates itself (the UI talks to one host at a time).
 func (s *Server) updateRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/v1/update", s.updateStatus)
+	mux.HandleFunc("POST /api/v1/update/auto", s.updateAutoConfig)
 	mux.HandleFunc("POST /api/v1/update/install", s.updateInstall)
+}
+
+func (s *Server) updateAutoConfig(w http.ResponseWriter, r *http.Request) {
+	if s.updater == nil {
+		s.writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "updates are not available on this host"})
+		return
+	}
+	var req update.AutoConfig
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json: " + err.Error()})
+		return
+	}
+	if err := s.updater.SetAutoConfig(req); err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, s.updater.GetAutoConfig())
 }
 
 func (s *Server) updateStatus(w http.ResponseWriter, r *http.Request) {
