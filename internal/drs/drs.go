@@ -327,10 +327,12 @@ func (e *Engine) Evaluate(ctx context.Context, hosts []HostMetrics, domains []Do
 			}
 		}
 
-		// Count collisions
+		// Count collisions preserving deterministic rule.Domains order
 		collisionsOnHost := make(map[string][]string)
-		for vmID, hID := range hostOfDomain {
-			collisionsOnHost[hID] = append(collisionsOnHost[hID], vmID)
+		for _, vmID := range rule.Domains {
+			if hID, ok := hostOfDomain[vmID]; ok {
+				collisionsOnHost[hID] = append(collisionsOnHost[hID], vmID)
+			}
 		}
 
 		for hID, vmIDs := range collisionsOnHost {
