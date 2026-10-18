@@ -116,6 +116,13 @@ func run(c config, log *slog.Logger) error {
 	if err != nil {
 		log.Warn("activity log", "err", err)
 	}
+	if acts != nil {
+		if cfg, ok, err := activity.LoadSIEMConfig(filepath.Join(c.stateDir, api.SIEMConfigFile)); err != nil {
+			log.Warn("SIEM forwarding", "err", err)
+		} else if ok {
+			acts.AttachSIEM(activity.NewForwarder(cfg))
+		}
+	}
 
 	hist, err := history.Open(filepath.Join(c.stateDir, "history.gob"))
 	if err != nil {
@@ -205,6 +212,7 @@ func run(c config, log *slog.Logger) error {
 	go syncCluster(ctx, apiServer)
 	go apiServer.RunReportSchedules(ctx)
 	if opts.Updater != nil {
+		opts.Updater.InitConfig(c.stateDir)
 		go opts.Updater.StartAutoUpdater(ctx, c.stateDir, func(action, details string) {
 			if acts != nil {
 				_ = acts.Add(activity.Entry{
@@ -235,6 +243,14 @@ func run(c config, log *slog.Logger) error {
 		TLSConfig:         tlsConf,
 	}
 
+	// Bind before reporting ready: a busy port must end the process (and let systemd restart
+	// it) instead of leaving the background workers running behind no listener. stop() first,
+	// because the HA defer above waits for ctx.
+	ln, err := net.Listen("tcp", c.listen)
+	if err != nil {
+		stop()
+		return fmt.Errorf("listen on %s: %w", c.listen, err)
+	}
 	errc := make(chan error, 1)
 	go func() {
 		scheme := "http"
@@ -245,14 +261,15 @@ func run(c config, log *slog.Logger) error {
 		_ = systemd.Notify(systemd.Ready)
 		systemd.StartWatchdog(ctx, func(msg string, args ...any) { log.Info(fmt.Sprintf(msg, args...)) })
 		if tlsConf != nil {
-			errc <- srv.ListenAndServeTLS("", "")
+			errc <- srv.ServeTLS(ln, "", "")
 		} else {
-			errc <- srv.ListenAndServe()
+			errc <- srv.Serve(ln)
 		}
 	}()
 
 	select {
 	case err := <-errc:
+		stop()
 		return err
 	case <-ctx.Done():
 		log.Info("shutting down")

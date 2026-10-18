@@ -54,6 +54,9 @@ Wants=network-online.target
 # Runs as root: it talks to the system libvirt socket, checks passwords via PAM and, for HA,
 # may use the hardware watchdog and the BMC tools.
 EnvironmentFile=-/etc/default/virtomird
+# virtomird reports ready once it listens and pings the watchdog; a hung daemon is restarted.
+Type=notify
+WatchdogSec=60
 ExecStart=/usr/bin/virtomird $VIRTOMIRD_ARGS
 StateDirectory=virtomir
 Restart=on-failure

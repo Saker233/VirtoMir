@@ -6,6 +6,9 @@ Wants=network-online.target
 
 [Service]
 # Runs as root: it talks to the system libvirt socket and checks passwords via PAM.
+# virtomird reports ready once it listens and pings the watchdog; a hung daemon is restarted.
+Type=notify
+WatchdogSec=60
 ExecStart=/usr/local/bin/virtomird -listen 0.0.0.0:8420
 StateDirectory=virtomir
 Restart=on-failure
