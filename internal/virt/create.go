@@ -124,6 +124,11 @@ func (s *CreateSpec) normalize() error {
 	return nil
 }
 
+// BuildDomain constructs the libvirt Domain configuration for a CreateSpec.
+func BuildDomain(s CreateSpec, diskPath, diskFormat, seedPath string, diskVolume ...*libvirtxml.DomainDiskSourceVolume) *libvirtxml.Domain {
+	return buildDomain(s, diskPath, diskFormat, seedPath, diskVolume...)
+}
+
 // buildDomain returns the domain XML for a normalized spec. diskPath/diskFormat describe the
 // prepared system disk ("" for none). Optional diskVolume handles block storage pools (LVM, ZFS).
 func buildDomain(s CreateSpec, diskPath, diskFormat, seedPath string, diskVolume ...*libvirtxml.DomainDiskSourceVolume) *libvirtxml.Domain {
@@ -437,3 +442,22 @@ func uploadBytes(l *libvirt.Libvirt, pool, name string, data []byte) (libvirt.St
 	}
 	return vol, path, nil
 }
+
+// CopyVolumeInto copies the pool volume at src into pool as name (converting to format) and resizes it if needed.
+func (c *Client) CopyVolumeInto(src, pool, name, format string, minBytes uint64) (libvirt.StorageVol, string, error) {
+	l, err := c.conn()
+	if err != nil {
+		return libvirt.StorageVol{}, "", err
+	}
+	return copyVolumeInto(l, src, pool, name, format, minBytes)
+}
+
+// UploadBytes stores raw byte data as a new volume in pool (e.g. a cloud-init seed ISO).
+func (c *Client) UploadBytes(pool, name string, data []byte) (libvirt.StorageVol, string, error) {
+	l, err := c.conn()
+	if err != nil {
+		return libvirt.StorageVol{}, "", err
+	}
+	return uploadBytes(l, pool, name, data)
+}
+

@@ -622,3 +622,22 @@ func (c *Client) DeletePool(name string) error {
 	}
 	return classify(l.StoragePoolUndefine(p))
 }
+
+// DeleteStorageVol removes a storage volume from libvirt.
+func (c *Client) DeleteStorageVol(vol libvirt.StorageVol) error {
+	l, err := c.conn()
+	if err != nil {
+		return err
+	}
+	return l.StorageVolDelete(vol, libvirt.StorageVolDeleteNormal)
+}
+
+// CreateVolumeFile creates a new volume in pool and returns the volume descriptor and path.
+func (c *Client) CreateVolumeFile(pool, name string, bytes uint64, format string, provisioning ...string) (libvirt.StorageVol, string, error) {
+	l, err := c.conn()
+	if err != nil {
+		return libvirt.StorageVol{}, "", err
+	}
+	return createVolume(l, pool, name, bytes, format, provisioning...)
+}
+

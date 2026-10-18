@@ -50,6 +50,12 @@ func formatUUID(u libvirt.UUID) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])
 }
 
+// FormatUUID formats a libvirt UUID byte array into a canonical UUID string.
+func FormatUUID(u libvirt.UUID) string {
+	return formatUUID(u)
+}
+
+
 // int8sToString converts a NUL-terminated C char array.
 func int8sToString(b []int8) string {
 	out := make([]byte, 0, len(b))
