@@ -1786,6 +1786,7 @@ export const tr: Record<string, string> = {
   "{name} is ready": "{name} hazır",
   "· automatic failover on": "· otomatik yük devretme açık",
   "· automatic failover off": "· otomatik yük devretme kapalı",
+  "This host offers no memory encryption (AMD SEV or Intel TDX).": "Bu host bellek şifrelemesi sunmuyor (AMD SEV veya Intel TDX).",
 }
 
 

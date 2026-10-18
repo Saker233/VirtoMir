@@ -153,6 +153,12 @@
   })
   let suggested = $derived(placement && cluster.current && placement.hostId !== cluster.current.id ? placement : null)
 
+  // Memory encryption the host offers (libvirt's domain capabilities); usually none.
+  let ccKinds = $state<string[]>([])
+  $effect(() => {
+    void api.confidentialKinds().then((k) => (ccKinds = k)).catch(() => (ccKinds = []))
+  })
+
   // System containers (ADR-0054): an image from the Linux Containers project and root's password.
   let ctImages = $state<ContainerImage[]>([])
   let ctAvailable = $state(true)
@@ -534,12 +540,13 @@
               </label>
               <label class="ui-field">
                 <span class="label">{t('Confidential Computing')}</span>
-                <select class="ui-input" bind:value={confidential}>
+                <select class="ui-input" bind:value={confidential} disabled={!ccKinds.length}>
                   <option value="">{t('None (standard VM)')}</option>
-                  <option value="sev">{t('AMD SEV (Secure Encrypted Virtualization)')}</option>
-                  <option value="sev-snp">{t('AMD SEV-SNP (Secure Nested Paging)')}</option>
-                  <option value="tdx">{t('Intel TDX (Trust Domain Extensions)')}</option>
+                  {#if ccKinds.includes('sev')}<option value="sev">{t('AMD SEV (Secure Encrypted Virtualization)')}</option>{/if}
+                  {#if ccKinds.includes('sev-snp')}<option value="sev-snp">{t('AMD SEV-SNP (Secure Nested Paging)')}</option>{/if}
+                  {#if ccKinds.includes('tdx')}<option value="tdx">{t('Intel TDX (Trust Domain Extensions)')}</option>{/if}
                 </select>
+                {#if !ccKinds.length}<span class="hint">{t('This host offers no memory encryption (AMD SEV or Intel TDX).')}</span>{/if}
               </label>
             </div>
             <label class="ui-switch"><input type="checkbox" bind:checked={secureBoot} disabled={firmware === 'bios'} /> {t('Secure Boot')}</label>

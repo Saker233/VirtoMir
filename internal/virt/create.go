@@ -90,6 +90,14 @@ func (s *CreateSpec) normalize() error {
 	if s.Firmware == "bios" && s.SecureBoot {
 		return invalidf("Secure Boot needs UEFI firmware.")
 	}
+	switch s.Confidential {
+	case "", "sev", "sev-snp", "tdx":
+	default:
+		return invalidf("Memory encryption is sev, sev-snp or tdx.")
+	}
+	if s.Confidential != "" && s.Firmware != "uefi" {
+		return invalidf("Encrypted machines (%s) need UEFI firmware.", s.Confidential)
+	}
 	if s.VCPUs < 1 || s.VCPUs > 512 {
 		return invalidf("Choose between 1 and 512 virtual CPUs.")
 	}
@@ -280,6 +288,11 @@ func (c *Client) CreateDomain(spec CreateSpec) (CreateResult, error) {
 	if c.nameTaken(l, spec.Name) {
 		return CreateResult{}, refusedf("A machine named %s already exists.", spec.Name)
 	}
+	if spec.Confidential != "" { // before any disk is made
+		if err := c.applyConfidential(l, spec, &libvirtxml.Domain{}); err != nil {
+			return CreateResult{}, err
+		}
+	}
 	// Cloud-init seed requires a file (ISO); block pools (LVM, ZFS, Ceph, iSCSI) cannot store ISOs.
 	// Cloud base images are also image files. Empty disks can be native raw block volumes.
 	keepsFiles := spec.Pool == "" || poolKeepsFiles(l, spec.Pool)
@@ -342,7 +355,12 @@ func (c *Client) CreateDomain(spec CreateSpec) (CreateResult, error) {
 		created, seedPath = append(created, vol), p
 	}
 
-	doc, err := buildDomain(spec, diskPath, diskFormat, seedPath, diskVol).Marshal()
+	x := buildDomain(spec, diskPath, diskFormat, seedPath, diskVol)
+	if err := c.applyConfidential(l, spec, x); err != nil {
+		rollback()
+		return CreateResult{}, err
+	}
+	doc, err := x.Marshal()
 	if err != nil {
 		rollback()
 		return CreateResult{}, err

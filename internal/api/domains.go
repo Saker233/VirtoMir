@@ -13,6 +13,7 @@ import (
 func (s *Server) domainRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/v1/domains", s.listDomains)
 	mux.HandleFunc("GET /api/v1/containers/images", s.containerImages)
+	mux.HandleFunc("GET /api/v1/host/confidential", s.confidentialKinds)
 	mux.HandleFunc("POST /api/v1/domains", s.createDomain)
 	mux.HandleFunc("GET /api/v1/domains/{uuid}", s.getDomain)
 	mux.HandleFunc("DELETE /api/v1/domains/{uuid}", s.deleteDomain)
@@ -129,6 +130,20 @@ func (s *Server) containerImages(w http.ResponseWriter, _ *http.Request) {
 		out["available"], out["reason"] = false, err.Error()
 	}
 	s.writeJSON(w, http.StatusOK, out)
+}
+
+// confidentialKinds is the memory encryption (sev, sev-snp, tdx) new machines can have here.
+func (s *Server) confidentialKinds(w http.ResponseWriter, _ *http.Request) {
+	kinds := []string{}
+	if b, ok := s.backend.(interface{ ConfidentialKinds() ([]string, error) }); ok {
+		k, err := b.ConfidentialKinds()
+		if err != nil {
+			s.writeError(w, err)
+			return
+		}
+		kinds = append(kinds, k...)
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"kinds": kinds})
 }
 
 func (s *Server) getDomain(w http.ResponseWriter, r *http.Request) {

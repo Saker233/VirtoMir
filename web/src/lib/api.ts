@@ -996,6 +996,8 @@ export const api = {
   /** A system container is made in the background (the image may be downloaded first). */
   createContainer: (spec: CreateSpec, respool?: string) =>
     request<Job>('POST', `/api/v1/domains${respool ? `?respool=${enc(respool)}` : ''}`, spec),
+  /** Memory encryption this host can give new machines (sev, sev-snp, tdx). */
+  confidentialKinds: async () => (await request<{ kinds: string[] }>('GET', '/api/v1/host/confidential')).kinds,
   containerImages: () => request<{ images: ContainerImage[]; available: boolean; reason?: string }>('GET', '/api/v1/containers/images'),
   setTemplate: (uuid: string, template: boolean) => request<void>('PUT', `${domainPath(uuid)}/template`, { template }),
   deploy: (uuid: string, spec: DeploySpec) => request<Job>('POST', `${domainPath(uuid)}/deploy`, spec),
