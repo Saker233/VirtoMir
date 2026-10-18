@@ -374,3 +374,138 @@ func TestPrepareDefinition(t *testing.T) {
 		t.Errorf("garbage definition = %v, want ErrInvalid", err)
 	}
 }
+
+// Realistic failure output: a libvirt info line first, then 'virt-v2v: error: ...'.
+func TestCleanV2VErrorRealistic(t *testing.T) {
+	stderr := "2026-10-19 01:23:45.123+0000: 12345: info : libvirt version: 11.3.0, package: 1ubuntu1\n" +
+		"2026-10-19 01:23:45.124+0000: 12345: info : hostname: dev-host\n" +
+		"virt-v2v: error: inspection failed: no operating system found on this disk"
+	got := cleanV2VError(stderr, "exit status 1")
+	want := "virt-v2v: error: inspection failed: no operating system found on this disk"
+	if got != want {
+		t.Errorf("cleanV2VError = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "libvirt version") || strings.Contains(got, "info :") {
+		t.Errorf("cleanV2VError leaked libvirt info noise: %q", got)
+	}
+}
+
+// Stripping various timestamps and prefixes from error lines.
+func TestCleanV2VErrorTimestamps(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "libvirt timestamp with pid",
+			input: "2026-10-19 01:23:45.123+0000: 12345: info : libvirt version: 11.3.0\n2026-10-19 01:23:46.456+0000: 12345: virt-v2v: error: disk conversion failed",
+			want:  "virt-v2v: error: disk conversion failed",
+		},
+		{
+			name:  "bracketed timestamp",
+			input: "[   0.0] info : libvirt version: 11.3.0\n[   1.2] virt-v2v: error: disk conversion failed",
+			want:  "virt-v2v: error: disk conversion failed",
+		},
+		{
+			name:  "simple iso timestamp",
+			input: "2026-10-19 01:23:45 virt-v2v: error: disk conversion failed",
+			want:  "virt-v2v: error: disk conversion failed",
+		},
+		{
+			name:  "timestamp on non-virt-v2v prefixed error",
+			input: "2026-10-19 01:23:45.123+0000: 12345: error : virNetSocketReadWire: connection reset",
+			want:  "virt-v2v: error : virNetSocketReadWire: connection reset",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cleanV2VError(tc.input, "exit status 1")
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Multiple error lines are all preserved when present.
+func TestCleanV2VErrorMultipleErrors(t *testing.T) {
+	stderr := "2026-10-19 01:23:45.123+0000: 12345: info : libvirt version: 11.3.0\n" +
+		"virt-v2v: error: could not connect to vcenter.example.com\n" +
+		"virt-v2v: error: connection refused"
+	got := cleanV2VError(stderr, "exit status 1")
+	want := "virt-v2v: error: could not connect to vcenter.example.com\nvirt-v2v: error: connection refused"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// When no line contains 'error', the last 5 non-empty non-noise lines are returned.
+func TestCleanV2VErrorNoExplicitErrorFallback(t *testing.T) {
+	stderr := "2026-10-19 01:23:45.123+0000: 12345: info : libvirt version: 11.3.0\n" +
+		"step 1: connect\n" +
+		"step 2: query\n" +
+		"step 3: open disk\n" +
+		"step 4: convert\n" +
+		"step 5: copy blocks\n" +
+		"step 6: finalize\n" +
+		"step 7: crash"
+	got := cleanV2VError(stderr, "exit status 1")
+	want := "virt-v2v: step 3: open disk\nstep 4: convert\nstep 5: copy blocks\nstep 6: finalize\nstep 7: crash"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// Error output is capped at 1000 characters.
+func TestCleanV2VErrorCap1000(t *testing.T) {
+	longErrMsg := "virt-v2v: error: " + strings.Repeat("x", 2000)
+	got := cleanV2VError(longErrMsg, "fallback")
+	if len([]rune(got)) > 1000 {
+		t.Errorf("cleanV2VError length = %d runes, want <= 1000", len([]rune(got)))
+	}
+	if len([]rune(got)) != 1000 {
+		t.Errorf("cleanV2VError length = %d runes, want 1000", len([]rune(got)))
+	}
+	if !strings.HasPrefix(got, "virt-v2v: error: xxx") {
+		t.Errorf("unexpected prefix: %q", got[:30])
+	}
+}
+
+// Empty stderr falls back to the provided fallback string.
+func TestCleanV2VErrorEmptyFallback(t *testing.T) {
+	got := cleanV2VError("", "exit status 1")
+	if got != "virt-v2v: exit status 1" {
+		t.Errorf("got %q, want %q", got, "virt-v2v: exit status 1")
+	}
+
+	// Stderr with only info lines also falls back.
+	infoOnly := "2026-10-19 01:23:45.123+0000: 12345: info : libvirt version: 11.3.0\n" +
+		"2026-10-19 01:23:45.124+0000: 12345: info : hostname: host1"
+	got = cleanV2VError(infoOnly, "exit status 1")
+	if got != "virt-v2v: exit status 1" {
+		t.Errorf("got %q, want %q", got, "virt-v2v: exit status 1")
+	}
+}
+
+// End-to-end Convert with realistic failure output passes the classified meaningful error.
+func TestConvertWithRealisticV2VFailure(t *testing.T) {
+	realisticStderr := "2026-10-19 01:23:45.123+0000: 12345: info : libvirt version: 11.3.0, package: 1ubuntu1\n" +
+		"2026-10-19 01:23:45.124+0000: 12345: info : hostname: dev-host\n" +
+		"virt-v2v: error: authentication failed: invalid credentials"
+	errStr := cleanV2VError(realisticStderr, "exit status 1")
+	f := &fake{err: errors.New(errStr)}
+	conv := &Converter{exec: f.exec, look: foundLook}
+	_, err := conv.Convert(context.Background(), vCenterConn, testVM, ConvertOpts{PoolPath: t.TempDir()}, nil)
+	if !errors.Is(err, ErrRefused) {
+		t.Fatalf("Convert = %v, want ErrRefused", err)
+	}
+	if strings.Contains(err.Error(), "libvirt version") {
+		t.Errorf("error contains libvirt info noise: %v", err)
+	}
+	if !strings.Contains(err.Error(), "virt-v2v: error: authentication failed: invalid credentials") {
+		t.Errorf("error missing meaningful failure: %v", err)
+	}
+	if !strings.Contains(err.Error(), "check the VMware user and password") {
+		t.Errorf("error missing classification hint: %v", err)
+	}
+}

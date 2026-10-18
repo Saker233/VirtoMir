@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -21,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -248,7 +250,11 @@ func execV2V(ctx context.Context, env []string, args []string, onLine func(strin
 		}
 	}
 	if err := cmd.Wait(); err != nil {
-		return buf.Bytes(), fmt.Errorf("virt-v2v: %s", firstLine(strings.TrimSpace(stderr.String()), err.Error()))
+		rawErr := stderr.String()
+		if strings.TrimSpace(rawErr) == "" && buf.Len() > 0 {
+			rawErr = buf.String()
+		}
+		return buf.Bytes(), errors.New(cleanV2VError(rawErr, err.Error()))
 	}
 	return buf.Bytes(), nil
 }
@@ -271,8 +277,100 @@ func firstLine(s, fallback string) string {
 	return s
 }
 
+var (
+	// reLibvirtTS matches leading libvirt timestamps with optional pid, e.g.:
+	// "2026-10-19 01:23:45.123+0000: 12345: " or "2026-10-19 01:23:45.123+0000: "
+	reLibvirtTS = regexp.MustCompile(`^\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?(?::\s*\d+)?:\s*`)
+	// reBracketTS matches bracketed elapsed time or log prefixes, e.g.:
+	// "[   0.0] " or "[12.345] "
+	reBracketTS = regexp.MustCompile(`^\[\s*\d+(?:\.\d+)?\s*\]\s*`)
+	// reSimpleTS matches standard ISO or date-time prefixes without a colon, e.g.:
+	// "2026-10-19 01:23:45 "
+	reSimpleTS = regexp.MustCompile(`^\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s*`)
+)
+
+// stripTimestamp removes leading timestamps and log prefixes from a line.
+func stripTimestamp(line string) string {
+	line = strings.TrimSpace(line)
+	for {
+		if m := reLibvirtTS.FindString(line); m != "" {
+			line = strings.TrimSpace(line[len(m):])
+			continue
+		}
+		if m := reBracketTS.FindString(line); m != "" {
+			line = strings.TrimSpace(line[len(m):])
+			continue
+		}
+		if m := reSimpleTS.FindString(line); m != "" {
+			line = strings.TrimSpace(line[len(m):])
+			continue
+		}
+		break
+	}
+	return line
+}
+
+// cleanV2VError extracts the meaningful failure from virt-v2v output:
+// preferring lines containing 'error' (case-insensitive), otherwise the last
+// 5 non-empty lines, stripping libvirt 'info :' noise lines and timestamps,
+// and capping at 1000 characters.
+func cleanV2VError(output, fallback string) string {
+	lines := strings.Split(output, "\n")
+	var cleaned []string
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(line), "info :") {
+			continue
+		}
+		line = stripTimestamp(line)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(line), "info :") {
+			continue
+		}
+		cleaned = append(cleaned, line)
+	}
+
+	var selected []string
+	for _, l := range cleaned {
+		if strings.Contains(strings.ToLower(l), "error") {
+			selected = append(selected, l)
+		}
+	}
+	if len(selected) == 0 {
+		if len(cleaned) > 5 {
+			selected = cleaned[len(cleaned)-5:]
+		} else if len(cleaned) > 0 {
+			selected = cleaned
+		}
+	}
+
+	msg := strings.Join(selected, "\n")
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		msg = strings.TrimSpace(fallback)
+	}
+	if msg == "" {
+		msg = "unknown error"
+	}
+
+	if !strings.HasPrefix(msg, "virt-v2v:") && !strings.HasPrefix(msg, "virt-v2v ") {
+		msg = "virt-v2v: " + msg
+	}
+
+	runes := []rune(msg)
+	if len(runes) > 1000 {
+		msg = string(runes[:1000])
+	}
+	return msg
+}
+
 // v2vClassify turns a virt-v2v failure into one of VirtoMir's error classes, keeping
-// the tool's own message (the first line of its stderr) and a hint at what to fix.
+// the tool's meaningful failure message and a hint at what to fix.
 func v2vClassify(err error) error {
 	msg := strings.TrimSpace(err.Error())
 	low := strings.ToLower(msg)
