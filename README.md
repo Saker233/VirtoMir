@@ -57,8 +57,8 @@ VirtoMir sits in the middle: as straightforward as Cockpit, as thorough as raw l
 - **Configuration history**: every version of a machine's definition — also changes made with `virsh` — with a diff and one-click restore
 - **Hardware**: add/remove disks and network adapters (hot-plug), insert/eject ISOs, **grow disks**
 - **Storage QoS & SLAs**: guarantee and cap I/O bandwidth (`read_bytes_sec`, `write_bytes_sec`) and IOPS (`read_iops_sec`, `write_iops_sec`, burst ceilings) per virtual disk using QEMU `<iotune>`, applied live without guest downtime
-- **Confidential Computing**: hardware-encrypted guest memory isolation using **AMD SEV / SEV-SNP** or **Intel TDX** via `<launchSecurity>` — even the hypervisor root user cannot inspect guest RAM
-- **System Containers**: convergence of native Linux system containers (`<domain type='lxc'>`) alongside KVM virtual machines in a single control deck, sharing virtual networks, storage pools, live monitoring, and serial/pty consoles
+- **Confidential Computing**: machines with encrypted memory (**AMD SEV / SEV-SNP**, **Intel TDX**) on hosts whose CPU and firmware offer it; VirtoMir reads what the host supports from libvirt and only offers that
+- **System Containers**: Linux system containers on libvirt LXC next to the virtual machines — Debian, Ubuntu or Alpine from images.linuxcontainers.org (checked against SHA-256), unprivileged (container root is an unprivileged user on the host), on the same virtual networks, with live CPU and memory, the text console, start, shut down, reboot and delete (needs `libvirt-daemon-driver-lxc`)
 - **PCI/USB passthrough** with an IOMMU group view and safety checks (devices the host needs are refused, with the reason)
 - More devices from the Hardware tab: **shared folders** (virtiofs), **vGPU slices** (mediated devices, created on the Hardware page), **clipboard sharing**, video model and **up to 4 monitors**, watchdog, TPM 2.0, random number generator — hot-plugged where possible, otherwise from the next start (and it says which)
 - Expert **QEMU command line** (extra arguments and environment), clearly marked as such
@@ -86,8 +86,8 @@ VirtoMir sits in the middle: as straightforward as Cockpit, as thorough as raw l
 
 - Storage pools and volumes, **ISO / cloud image upload** with progress, grow volumes
 - Virtual networks (NAT, isolated, routed, bridged) with **IPv4 and IPv6** (SLAAC, DHCPv6, NAT66), DHCP leases with machine names, **reserved addresses**
-- **Cross-Host VXLAN Overlay (SDN)**: layer-2 virtual networks tunneled over layer-3 physical networks using Linux kernel VXLAN (`vxbr<vni>` bridges with open forwarding), without requiring physical switch reconfiguration
-- **Asynchronous ZFS Storage Replication**: differential block-level storage replication (`zfs send -i | zfs recv`) between hypervisor nodes every 1–60 minutes, enabling sub-minute RPO failover for shared-nothing clusters without SAN/NAS
+- **Cross-Host VXLAN Overlay (SDN)**: one layer-2 network spanning several hosts, tunnelled over their existing network (UDP 4789) without switch changes; created cluster-wide, every member gets the others as peers and one host is the gateway (NAT, DHCP); VirtoMir keeps the tunnel devices in place, also after a reboot
+- **Asynchronous ZFS Storage Replication**: datasets and zvols replicated to another host on a schedule with incremental `zfs send -i | ssh … zfs receive`, old replication snapshots pruned on both sides; a copy of the data elsewhere without a SAN
 - **Host wiring** at a glance: physical ports, bonds, VLANs, bridges and which machines are plugged in
 - **Create bridges, bonds and VLAN interfaces on the host** — through netplan, NetworkManager or systemd-networkd, whichever the host uses; a bridge can take over the host's own address. Every change must be confirmed within two minutes, or the host undoes it by itself (so a change that cuts you off heals itself)
 - **Packet capture** on any host interface (tcpdump): watch it live or download a `.pcap` for Wireshark
@@ -100,7 +100,7 @@ VirtoMir sits in the middle: as straightforward as Cockpit, as thorough as raw l
 
 - Install VirtoMir on each host and join them with a **one-time join code** — no shared database, no extra services; if one host is down, the others carry on
 - Manage every host from any of them: **cluster overview** with live host cards and all machines in one list, host switcher, consoles and live charts of any host
-- **Single-Pane Fleet Deck & DRS**: unified cluster-wide VM inventory across all nodes without manual host switching, paired with a Distributed Resource Scheduler evaluating workload skew and recommending 1-click live migrations based on affinity/anti-affinity rules
+- **Single-Pane Fleet Deck & DRS**: every machine of the cluster in one list, and a Distributed Resource Scheduler that measures the load skew, honours affinity/anti-affinity rules, recommends live migrations you apply with one click — or, fully automated, carries them out itself — and suggests the best host for a new machine
 - **Move machines between hosts**: stopped ones are copied, running ones are **live-migrated** — without copying disks on shared NFS storage, or copying them live
 - Alerts, activity and backups of all hosts in one place, history charts of every host side by side; roles apply on every host
 - Alert rules, notifications and the backup location saved **the same on every host** in one step
