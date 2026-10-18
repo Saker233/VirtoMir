@@ -17,6 +17,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/activity"
 	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/cluster"
+	"github.com/onurbaydas/virtomir/internal/drs"
 	"github.com/onurbaydas/virtomir/internal/virt"
 )
 
@@ -326,5 +327,68 @@ func TestClusterVXLANHasOneGateway(t *testing.T) {
 	}
 	if len(ga.Peers) != 1 || ga.Peers[0] != "127.0.0.1" || len(gb.Peers) != 1 || gb.VNI != 42 {
 		t.Errorf("peers: alpha %v, beta %v", ga.Peers, gb.Peers)
+	}
+}
+
+// DRS and the fleet inventory read the other members on behalf of the user; without that
+// the members refused and every peer looked unreachable.
+func TestDRSAndInventoryReadPeers(t *testing.T) {
+	a := newTestNode(t, "alpha", []virt.Domain{{UUID: "a1", Name: "on-alpha"}})
+	b := newTestNode(t, "beta", []virt.Domain{{UUID: "b1", Name: "on-beta"}})
+	joinNodes(t, a, b)
+	eng, err := drs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.api.drs = eng
+	b.lv.backlog = [][]byte{[]byte(`{"host":{"cpuPercent":64,"memTotalKiB":1000,"memUsedKiB":500},"domains":[{"uuid":"b1","name":"on-beta","state":"running","memoryKiB":100}]}`)}
+
+	admin := a.signIn(t, "onur")
+	_, body := admin.req("GET", "/api/v1/cluster/drs", "")
+	var st drs.Status
+	if err := json.Unmarshal([]byte(body), &st); err != nil || len(st.Hosts) != 2 {
+		t.Fatalf("drs: %s", body)
+	}
+	beta := st.Hosts[1]
+	if !beta.Reachable || beta.CPUPct != 64 || beta.MemPct != 50 || beta.VMCount != 1 {
+		t.Errorf("beta as DRS sees it: %+v", beta)
+	}
+	if _, body := admin.req("GET", "/api/v1/cluster/inventory/machines", ""); !strings.Contains(body, "on-beta") || !strings.Contains(body, "on-alpha") {
+		t.Errorf("inventory: %s", body)
+	}
+}
+
+// DRS settings and rules made on one member reach the others (one DRS per cluster).
+func TestDRSChangesReachEveryMember(t *testing.T) {
+	a := newTestNode(t, "alpha", nil)
+	b := newTestNode(t, "beta", nil)
+	joinNodes(t, a, b)
+	for _, n := range []*testNode{a, b} {
+		eng, err := drs.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.api.drs = eng
+	}
+	admin := a.signIn(t, "onur")
+	if resp, body := admin.req("PUT", "/api/v1/cluster/drs/config", `{"enabled":true,"mode":"fully_automated","thresholdStdDev":9}`, "Origin", a.url); resp.StatusCode != http.StatusOK {
+		t.Fatalf("config: %d %s", resp.StatusCode, body)
+	}
+	if c := b.api.drs.GetConfig(); !c.Enabled || c.Mode != drs.ModeFullyAutomated || c.ThresholdStdDev != 9 {
+		t.Errorf("beta's config: %+v", c)
+	}
+	resp, body := admin.req("POST", "/api/v1/cluster/drs/rules", `{"name":"apart","kind":"vm_anti_affinity","domains":["x","y"]}`, "Origin", a.url)
+	var rule drs.AffinityRule
+	if resp.StatusCode != http.StatusCreated || json.Unmarshal([]byte(body), &rule) != nil {
+		t.Fatalf("rule: %d %s", resp.StatusCode, body)
+	}
+	if rs := b.api.drs.GetConfig().Rules; len(rs) != 1 || rs[0].ID != rule.ID {
+		t.Errorf("beta's rules: %+v, want ID %s", rs, rule.ID)
+	}
+	if resp, _ := admin.req("DELETE", "/api/v1/cluster/drs/rules/"+rule.ID, "", "Origin", a.url); resp.StatusCode != http.StatusNoContent || len(b.api.drs.GetConfig().Rules) != 0 {
+		t.Errorf("delete: %d, beta keeps %+v", resp.StatusCode, b.api.drs.GetConfig().Rules)
+	}
+	if resp, _ := admin.req("PUT", "/api/v1/cluster/drs/config", `{"enabled":true,"mode":"sometimes"}`, "Origin", a.url); resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("bad mode answered %d, want 422", resp.StatusCode)
 	}
 }

@@ -404,9 +404,9 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 	var opErr *virt.OperationError
 	var invErr *virt.InvalidError
 	switch {
-	case errors.Is(err, virt.ErrNotFound), errors.Is(err, zfsrep.ErrNotFound):
+	case errors.Is(err, virt.ErrNotFound), errors.Is(err, zfsrep.ErrNotFound), errors.Is(err, drs.ErrNotFound):
 		status = http.StatusNotFound
-	case errors.As(err, &invErr), errors.Is(err, zfsrep.ErrInvalid):
+	case errors.As(err, &invErr), errors.Is(err, zfsrep.ErrInvalid), errors.Is(err, drs.ErrInvalid):
 		status = http.StatusUnprocessableEntity
 	case errors.As(err, &opErr), errors.Is(err, zfsrep.ErrBusy):
 		status = http.StatusConflict

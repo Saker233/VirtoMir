@@ -17,6 +17,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -188,34 +189,62 @@ func (e *Engine) SetConfig(cfg Config) error {
 	if cfg.Mode == "" {
 		cfg.Mode = ModeManual
 	}
+	if cfg.Mode != ModeManual && cfg.Mode != ModePartiallyAutomated && cfg.Mode != ModeFullyAutomated {
+		return invalidf("mode is manual, partially_automated or fully_automated")
+	}
 	e.cfg.Enabled = cfg.Enabled
 	e.cfg.Mode = cfg.Mode
 	e.cfg.ThresholdStdDev = cfg.ThresholdStdDev
 	return e.saveLocked()
 }
 
-// AddRule adds an affinity or anti-affinity rule.
+// ErrInvalid and ErrNotFound classify errors for the API (422 / 404).
+var (
+	ErrInvalid  = errors.New("invalid")
+	ErrNotFound = errors.New("not found")
+)
+
+type classed struct {
+	class error
+	msg   string
+}
+
+func (e classed) Error() string        { return e.msg }
+func (e classed) Is(target error) bool { return target == e.class }
+
+func invalidf(format string, a ...any) error { return classed{ErrInvalid, fmt.Sprintf(format, a...)} }
+
+var ruleIDRE = regexp.MustCompile(`^[0-9a-f]{16}$`)
+
+// AddRule adds an affinity or anti-affinity rule. A rule with an ID (as copied from another
+// member, so all members share one set of rules) replaces the rule with that ID.
 func (e *Engine) AddRule(rule AffinityRule) (AffinityRule, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if strings.TrimSpace(rule.Name) == "" {
-		return rule, errors.New("rule name is required")
+		return rule, invalidf("rule name is required")
 	}
 	if rule.Kind != AntiAffinityVMVM && rule.Kind != AffinityVMVM && rule.Kind != AffinityVMHost {
-		return rule, fmt.Errorf("unsupported rule kind %q", rule.Kind)
+		return rule, invalidf("unsupported rule kind %q", rule.Kind)
 	}
 	if len(rule.Domains) < 1 {
-		return rule, errors.New("at least one VM must be assigned to the rule")
+		return rule, invalidf("at least one VM must be assigned to the rule")
 	}
 	if rule.Kind == AntiAffinityVMVM && len(rule.Domains) < 2 {
-		return rule, errors.New("anti-affinity rule requires at least two VMs")
+		return rule, invalidf("anti-affinity rule requires at least two VMs")
 	}
 	if rule.Kind == AffinityVMHost && strings.TrimSpace(rule.TargetHost) == "" {
-		return rule, errors.New("vm-host affinity rule requires a target host")
+		return rule, invalidf("vm-host affinity rule requires a target host")
+	}
+	if rule.ID != "" && !ruleIDRE.MatchString(rule.ID) {
+		return rule, invalidf("a rule ID is 16 hex digits")
 	}
 
-	rule.ID = randomHex(8)
+	if rule.ID == "" {
+		rule.ID = randomHex(8)
+	}
+	e.cfg.Rules = slices.DeleteFunc(e.cfg.Rules, func(r AffinityRule) bool { return r.ID == rule.ID })
 	rule.Enabled = true
 	e.cfg.Rules = append(e.cfg.Rules, rule)
 	if err := e.saveLocked(); err != nil {
@@ -230,7 +259,7 @@ func (e *Engine) DeleteRule(id string) error {
 	defer e.mu.Unlock()
 	idx := slices.IndexFunc(e.cfg.Rules, func(r AffinityRule) bool { return r.ID == id })
 	if idx < 0 {
-		return fmt.Errorf("rule %q not found", id)
+		return classed{ErrNotFound, fmt.Sprintf("rule %q not found", id)}
 	}
 	e.cfg.Rules = slices.Delete(e.cfg.Rules, idx, idx+1)
 	return e.saveLocked()

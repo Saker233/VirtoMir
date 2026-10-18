@@ -46,7 +46,7 @@ func (s *Server) getDRS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hosts, domains := s.collectClusterPlacements(r.Context())
+	hosts, domains := s.collectClusterPlacements(r.Context(), identity(r))
 	status := s.drs.Evaluate(r.Context(), hosts, domains)
 	s.writeJSON(w, http.StatusOK, status)
 }
@@ -64,6 +64,7 @@ func (s *Server) setDRSConfig(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
+	s.drsToMembers(r, http.MethodPut, "/api/v1/cluster/drs/config", req)
 	s.writeJSON(w, http.StatusOK, s.drs.GetConfig())
 }
 
@@ -81,6 +82,7 @@ func (s *Server) createDRSRule(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
+	s.drsToMembers(r, http.MethodPost, "/api/v1/cluster/drs/rules", created)
 	s.writeJSON(w, http.StatusCreated, created)
 }
 
@@ -94,11 +96,39 @@ func (s *Server) deleteDRSRule(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
+	s.drsToMembers(r, http.MethodDelete, "/api/v1/cluster/drs/rules/"+id, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // applyDRSRecommendation carries a recommendation out: the machine's host live-migrates it
 // to the target through the same path as the Move button (checks, job, activity).
+// drsToMembers repeats a DRS settings or rules change on the other members, so the cluster
+// has one DRS configuration whichever member the UI talks to (and every member acts in fully
+// automated mode). ?local=1 marks the copies, which are not passed on again.
+func (s *Server) drsToMembers(r *http.Request, method, path string, body any) {
+	if r.URL.Query().Get("local") != "" || s.cluster == nil || !s.cluster.Clustered() {
+		return
+	}
+	id := identity(r)
+	members, _ := s.cluster.Members()
+	var wg sync.WaitGroup
+	for _, n := range members {
+		if n.ID == s.cluster.SelfID() {
+			continue
+		}
+		wg.Add(1)
+		go func(n cluster.Node) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			if err := s.peer(n).As(id.Name, id.Role.String(), id.Token).Call(ctx, method, path+"?local=1", body, nil); err != nil {
+				s.log.Warn("DRS change not copied to a member", "member", n.Name, "err", err)
+			}
+		}(n)
+	}
+	wg.Wait()
+}
+
 func (s *Server) applyDRSRecommendation(w http.ResponseWriter, r *http.Request) {
 	if s.drs == nil {
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "DRS is not available"})
@@ -108,7 +138,7 @@ func (s *Server) applyDRSRecommendation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	hosts, domains := s.collectClusterPlacements(r.Context())
+	hosts, domains := s.collectClusterPlacements(r.Context(), identity(r))
 	status := s.drs.Evaluate(r.Context(), hosts, domains)
 
 	recID := r.PathValue("id")
@@ -201,7 +231,7 @@ func (s *Server) autoBalance(ctx context.Context, moved map[string]time.Time, no
 			return // one at a time; the next pass sees the new balance
 		}
 	}
-	hosts, domains := s.collectClusterPlacements(ctx)
+	hosts, domains := s.collectClusterPlacements(ctx, drsIdentity)
 	recs := s.drs.Evaluate(ctx, hosts, domains).Recommendations
 	slices.SortStableFunc(recs, func(a, b drs.Recommendation) int { return b.Priority - a.Priority })
 	for _, rec := range recs {
@@ -210,7 +240,7 @@ func (s *Server) autoBalance(ctx context.Context, moved map[string]time.Time, no
 		}
 		moved[rec.DomainUUID] = now
 		rw := &statusRecorder{ResponseWriter: discard{}, status: http.StatusOK}
-		s.applyRecommendation(ctx, rw, rec, auth.Identity{Name: "drs", Role: auth.Admin})
+		s.applyRecommendation(ctx, rw, rec, drsIdentity)
 		s.record(activity.Entry{
 			User: "drs", Method: http.MethodPost, Path: "/api/v1/domains/" + rec.DomainUUID + "/move",
 			Status: rw.status, Error: rw.errorMessage(),
@@ -218,6 +248,9 @@ func (s *Server) autoBalance(ctx context.Context, moved map[string]time.Time, no
 		return
 	}
 }
+
+// drsIdentity is who automatic DRS acts as.
+var drsIdentity = auth.Identity{Name: "drs", Role: auth.Admin}
 
 // discard is a ResponseWriter for answers nobody reads (automatic actions).
 type discard struct{}
@@ -238,7 +271,7 @@ func (s *Server) drsPlacement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mib, _ := strconv.ParseUint(r.URL.Query().Get("memoryMiB"), 10, 64)
-	hosts, _ := s.collectClusterPlacements(r.Context())
+	hosts, _ := s.collectClusterPlacements(r.Context(), identity(r))
 	best, ok := drs.Placement(hosts, mib<<20)
 	if !ok {
 		w.WriteHeader(http.StatusNoContent)
@@ -251,6 +284,7 @@ func (s *Server) drsPlacement(w http.ResponseWriter, r *http.Request) {
 
 // getClusterInventoryMachines returns all machines across all nodes in the cluster.
 func (s *Server) getClusterInventoryMachines(w http.ResponseWriter, r *http.Request) {
+	id := identity(r)
 	selfID := ""
 	if s.cluster != nil {
 		selfID = s.cluster.SelfID()
@@ -283,7 +317,7 @@ func (s *Server) getClusterInventoryMachines(w http.ResponseWriter, r *http.Requ
 				var remote struct {
 					Domains []virt.Domain `json:"domains"`
 				}
-				if err := s.peer(n).Call(ctx, http.MethodGet, "/api/v1/domains", nil, &remote); err != nil {
+				if err := s.peer(n).As(id.Name, id.Role.String(), id.Token).Call(ctx, http.MethodGet, "/api/v1/domains", nil, &remote); err != nil {
 					return
 				}
 				mu.Lock()
@@ -326,7 +360,9 @@ func placements(id, name string, snap live.Snapshot) (drs.HostMetrics, []drs.Dom
 	return h, doms
 }
 
-func (s *Server) collectClusterPlacements(ctx context.Context) ([]drs.HostMetrics, []drs.DomainPlacement) {
+// collectClusterPlacements reads every member's live snapshot, asking the others on behalf
+// of id (members answer only the cluster protocol on their own behalf).
+func (s *Server) collectClusterPlacements(ctx context.Context, id auth.Identity) ([]drs.HostMetrics, []drs.DomainPlacement) {
 	selfID := ""
 	if s.cluster != nil {
 		selfID = s.cluster.SelfID()
@@ -355,7 +391,7 @@ func (s *Server) collectClusterPlacements(ctx context.Context) ([]drs.HostMetric
 				c, cancel := context.WithTimeout(ctx, 3*time.Second)
 				defer cancel()
 				var snap live.Snapshot
-				err := s.peer(n).Call(c, http.MethodGet, "/api/v1/summary", nil, &snap)
+				err := s.peer(n).As(id.Name, id.Role.String(), id.Token).Call(c, http.MethodGet, "/api/v1/summary", nil, &snap)
 				mu.Lock()
 				defer mu.Unlock()
 				if err != nil {
