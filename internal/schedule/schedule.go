@@ -62,7 +62,9 @@ type Runner interface {
 	ListAutoSnapshots(uuid string) ([]string, error) // names starting with AutoPrefix, oldest first
 	DeleteSnapshot(uuid, name string) error
 	Backup(ctx context.Context, dir, uuid string, report func(string)) error
-	PruneBackups(dir, uuid string, keep int) (int, error)
+	// PruneBackups removes the automatic backups of uuid in dir that keep rejects; keep gets
+	// their creation times and answers which to keep.
+	PruneBackups(dir, uuid string, keep func([]time.Time) []bool) (int, error)
 }
 
 // AutoPrefix marks snapshots made by schedules; retention only ever touches these.
@@ -163,6 +165,11 @@ func (sc Schedule) validate() error {
 	}
 	if sc.Keep < 1 || sc.Keep > 365 {
 		return errors.New("keep between 1 and 365")
+	}
+	for _, n := range []int{sc.KeepDaily, sc.KeepWeekly, sc.KeepMonthly, sc.KeepYearly} {
+		if n < 0 || n > 1000 {
+			return errors.New("daily, weekly, monthly and yearly counts between 0 and 1000")
+		}
 	}
 	return nil
 }
@@ -352,21 +359,40 @@ func (s *Scheduler) execute(ctx context.Context, sc Schedule, dir string, report
 			return name, nil
 		}
 		removed := 0
-		for len(names) > sc.Keep {
-			if err := s.runner.DeleteSnapshot(sc.Domain, names[0]); err != nil {
+		for _, old := range s.expired(sc.Policy(), names) {
+			if err := s.runner.DeleteSnapshot(sc.Domain, old); err != nil {
 				break
 			}
-			names, removed = names[1:], removed+1
+			removed++
 		}
 		return fmt.Sprintf("took %s, removed %d old", name, removed), nil
 	case Backups:
 		if err := s.runner.Backup(ctx, dir, sc.Domain, report); err != nil {
 			return "", err
 		}
-		n, _ := s.runner.PruneBackups(dir, sc.Domain, sc.Keep)
+		n, _ := s.runner.PruneBackups(dir, sc.Domain, sc.Policy().Keep)
 		return fmt.Sprintf("backed up, removed %d old", n), nil
 	}
 	return "", fmt.Errorf("unknown kind %s", sc.Kind)
+}
+
+// expired is the automatic snapshots (oldest first) the policy no longer keeps. A name that
+// does not carry its time is never removed.
+func (s *Scheduler) expired(p Policy, names []string) []string {
+	var times []time.Time
+	var dated []string
+	for _, n := range names {
+		if t, err := time.ParseInLocation("20060102-150405", strings.TrimPrefix(n, AutoPrefix), time.Local); err == nil {
+			times, dated = append(times, t), append(dated, n)
+		}
+	}
+	var out []string
+	for i, k := range p.Keep(times) {
+		if !k {
+			out = append(out, dated[i])
+		}
+	}
+	return out
 }
 
 func (s *Scheduler) finish(id, result string, err error) {

@@ -53,7 +53,10 @@ func (f *fakeRunner) Backup(context.Context, string, string, func(string)) error
 	f.backups++
 	return f.fail
 }
-func (f *fakeRunner) PruneBackups(string, string, int) (int, error) { f.pruned++; return 1, nil }
+func (f *fakeRunner) PruneBackups(string, string, func([]time.Time) []bool) (int, error) {
+	f.pruned++
+	return 1, nil
+}
 
 // syncStart runs jobs inline so tests are deterministic.
 func syncStart(_, _ string, fn func(context.Context, func(string)) (string, error)) {

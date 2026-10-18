@@ -475,20 +475,24 @@ func driverCache(d *libvirtxml.DomainDiskDriver) string {
 	return d.Cache
 }
 
-// PruneBackups deletes the oldest automatic backups of a machine beyond keep.
-func (c *Client) PruneBackups(dir BackupDir, uuid string, keep int) (int, error) {
+// PruneBackups deletes the automatic backups of a machine that keep (given their creation
+// times, newest first) does not keep. Manual backups are never touched.
+func (c *Client) PruneBackups(dir BackupDir, uuid string, keep func([]time.Time) []bool) (int, error) {
 	all, err := c.ListBackups(dir, uuid)
 	if err != nil {
 		return 0, err
 	}
-	n, kept := 0, 0
-	for _, b := range all { // newest first
-		if !b.Automatic {
-			continue
+	var auto []Backup
+	var times []time.Time
+	for _, b := range all {
+		if b.Automatic {
+			auto, times = append(auto, b), append(times, b.Created)
 		}
-		kept++
-		if kept > keep {
-			if err := c.DeleteBackup(dir, b.ID); err == nil {
+	}
+	n := 0
+	for i, k := range keep(times) {
+		if !k {
+			if err := c.DeleteBackup(dir, auto[i].ID); err == nil {
 				n++
 			}
 		}

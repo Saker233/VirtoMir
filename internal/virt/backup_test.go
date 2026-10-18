@@ -44,7 +44,14 @@ func TestListPruneDeleteBackups(t *testing.T) {
 	}
 
 	// Keep 2 automatic: the oldest automatic one goes; the manual one always stays.
-	n, err := c.PruneBackups(BackupDir(dir), "u1", 2)
+	keepTwo := func(ts []time.Time) []bool { // newest first
+		k := make([]bool, len(ts))
+		for i := range k {
+			k[i] = i < 2
+		}
+		return k
+	}
+	n, err := c.PruneBackups(BackupDir(dir), "u1", keepTwo)
 	if err != nil || n != 1 {
 		t.Fatalf("pruned %d %v", n, err)
 	}

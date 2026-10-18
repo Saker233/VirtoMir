@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/onurbaydas/virtomir/internal/jobs"
 	"github.com/onurbaydas/virtomir/internal/offsite"
@@ -54,7 +55,7 @@ func (r scheduleRunner) Backup(ctx context.Context, dir, uuid string, report fun
 	return nil
 }
 
-func (r scheduleRunner) PruneBackups(dir, uuid string, keep int) (int, error) {
+func (r scheduleRunner) PruneBackups(dir, uuid string, keep func([]time.Time) []bool) (int, error) {
 	return r.c.PruneBackups(virt.BackupDir(dir), uuid, keep)
 }
 
