@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { t } from './i18n.svelte'
 import { tr } from './locales/tr'
+import { untranslated } from './locales/untranslated'
 
 const placeholders = (s: string) => new Set([...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]))
 
@@ -15,6 +16,23 @@ describe('i18n', () => {
   it('Turkish strings use only the placeholders of their key', () => {
     const bad = Object.entries(tr).filter(([k, v]) => [...placeholders(v)].some((p) => !placeholders(k).has(p)))
     expect(bad).toEqual([])
+  })
+
+  it('every UI string is translated or listed as staying as it is', () => {
+    const sources = import.meta.glob(['./**/*.{svelte,ts}', '!./**/*.test.ts', '!./locales/**', '!./demo/**'], {
+      query: '?raw',
+      import: 'default',
+      eager: true,
+    }) as Record<string, string>
+    expect(Object.keys(sources).length).toBeGreaterThan(100)
+    const missing = new Set<string>()
+    for (const [file, code] of Object.entries(sources)) {
+      for (const m of code.matchAll(/\bt\(\s*(['"])((?:(?!\1)[^\\]|\\.)*)\1/g)) {
+        const key = m[2].replace(/\\(['"\\])/g, '$1')
+        if (!(key in tr) && !untranslated.has(key)) missing.add(`${file}: ${key}`)
+      }
+    }
+    expect([...missing]).toEqual([])
   })
 
   it('Turkish strings are not empty and differ from a blank key', () => {

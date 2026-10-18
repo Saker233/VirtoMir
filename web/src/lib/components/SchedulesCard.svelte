@@ -50,7 +50,10 @@
     busy = k
     try {
       await api.saveSchedule(strip($state.snapshot(drafts[k])))
-      toasts.push({ kind: 'info', title: drafts[k].enabled ? t('Automatic {k}s are on', { k: k }) : t('Automatic {k}s are off', { k: k }) })
+      const title = k === 'snapshot'
+        ? drafts[k].enabled ? t('Automatic snapshots are on') : t('Automatic snapshots are off')
+        : drafts[k].enabled ? t('Automatic backups are on') : t('Automatic backups are off')
+      toasts.push({ kind: 'info', title })
       await load()
     } catch (e) {
       toasts.push({ kind: 'error', title: t('Schedule not saved'), detail: errorText(e) })

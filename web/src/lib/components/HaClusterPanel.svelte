@@ -164,7 +164,7 @@
         <span>
           {t('{required} needed · coordinator {coordinator}', { required: q.required, coordinator: nameOf(q.coordinator) })}
           {#if q.witness}· witness {q.witness} {q.witnessReachable ? 'reachable' : t('NOT reachable')}{/if}
-          {t('· automatic failover {v}', { v: status.config.autoFailover ? 'on' : 'off' })}
+          {status.config.autoFailover ? t('· automatic failover on') : t('· automatic failover off')}
         </span>
       {:else}
         <strong>{t('No quorum: this host sees {votes} of {totalVotes} votes ({required} needed)', { votes: q.votes, totalVotes: q.totalVotes, required: q.required })}</strong>
@@ -297,7 +297,7 @@
     <div class="ui-error-box">{simError}</div>
   {:else if sim}
     <ul class="facts">
-      <li class:bad={!sim.quorate}>{t('The others {v} quorum.', { v: sim.quorate ? 'keep' : 'would NOT have' })}</li>
+      <li class:bad={!sim.quorate}>{sim.quorate ? t('The others keep quorum.') : t('The others would NOT have quorum.')}</li>
       <li>{t('It would be fenced: {fencing}.', { fencing: sim.fencing })}</li>
       <li class:bad={!sim.canRecover}>{sim.canRecover ? 'Its protected machines would be restarted as below.' : t('Its machines would NOT all be restarted automatically.')}</li>
     </ul>
