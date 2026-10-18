@@ -14,6 +14,7 @@
   import Zap from '@lucide/svelte/icons/zap'
   import { router } from '../router.svelte'
   import { projects } from '../projects.svelte'
+  import { ent, violationsByDomain, type PlacementViolation } from '../enterprise'
 
   type Filter = 'all' | 'running' | 'stopped'
   let filter = $state<Filter>('all')
@@ -31,6 +32,24 @@
   }
 
   let peerSnaps = $state<Record<string, Snapshot | null>>({})
+  let violations = $state<Record<string, PlacementViolation>>({})
+
+  async function pollViolations() {
+    if (!cluster.clustered) return
+    try {
+      const list = await ent.placementViolations()
+      violations = violationsByDomain(list)
+    } catch {
+      // placement not available
+    }
+  }
+
+  $effect(() => {
+    if (!cluster.clustered) return
+    void pollViolations()
+    const iv = setInterval(() => void pollViolations(), 5000)
+    return () => clearInterval(iv)
+  })
 
   async function pollPeers() {
     if (!cluster.clustered) return
@@ -241,7 +260,7 @@
       </div>
     {:else}
       {#each shown as d (d.uuid)}
-        <MachineRow {d} projectName={d.project ? projects.name(d.project) : undefined} hostName={cluster.clustered ? d.hostName : undefined} selected={selected.has(d.uuid)} onselect={session.can('operator') ? (on) => select(d.uuid, on) : undefined} />
+        <MachineRow {d} projectName={d.project ? projects.name(d.project) : undefined} hostName={cluster.clustered ? d.hostName : undefined} violation={violations[d.uuid]} selected={selected.has(d.uuid)} onselect={session.can('operator') ? (on) => select(d.uuid, on) : undefined} />
       {/each}
     {/if}
   </div>

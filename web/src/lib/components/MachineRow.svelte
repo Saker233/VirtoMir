@@ -10,8 +10,9 @@
   import StatePill from './StatePill.svelte'
   import Sparkline from './Sparkline.svelte'
   import MachineActions from './MachineActions.svelte'
+  import type { PlacementViolation } from '../enterprise'
 
-  let { d, selected = false, onselect, hostName, projectName }: { d: Domain; selected?: boolean; onselect?: (on: boolean) => void; hostName?: string; projectName?: string } = $props()
+  let { d, selected = false, onselect, hostName, projectName, violation }: { d: Domain; selected?: boolean; onselect?: (on: boolean) => void; hostName?: string; projectName?: string; violation?: PlacementViolation } = $props()
 
   let pending = $derived(live.pending[d.uuid])
   let active = $derived(isActive(d.state))
@@ -49,7 +50,20 @@
           </span>
         {/if}
       </div>
-      <span class="uuid mono" title={d.uuid}>{d.uuid.slice(0, 8)}{#if !d.persistent} {t('· transient')}{/if}{#if d.autostart} {t('· autostart')}{/if}{#if d.template} {t('· template')}{:else if d.linkedFrom} {t('· linked clone')}{/if}</span>
+      <span class="uuid mono" title={d.uuid}>
+        {d.uuid.slice(0, 8)}
+        {#if violation}
+          <span
+            class="viol-badge"
+            class:hard={violation.hard}
+            class:soft={!violation.hard}
+            title="{violation.ruleName}: {violation.message}"
+          >
+            {violation.hard ? t('violation') : t('warning')}
+          </span>
+        {/if}
+        {#if !d.persistent} {t('· transient')}{/if}{#if d.autostart} {t('· autostart')}{/if}{#if d.template} {t('· template')}{:else if d.linkedFrom} {t('· linked clone')}{/if}
+      </span>
     </div>
   </div>
 
@@ -196,6 +210,30 @@
   .uuid {
     font-size: 11.5px;
     color: var(--text-3);
+  }
+  .viol-badge {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-radius: var(--radius-sm);
+    margin-left: 4px;
+    cursor: help;
+  }
+  .viol-badge.hard {
+    background: var(--danger-soft);
+    color: var(--danger);
+    border: 1px solid var(--danger);
+  }
+  .viol-badge.soft {
+    background: color-mix(in srgb, var(--warn) 18%, transparent);
+    color: var(--warn);
+    border: 1px solid var(--warn);
   }
   .metric {
     color: var(--text-2);
