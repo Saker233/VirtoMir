@@ -369,7 +369,7 @@ func (m *Manager) Tick(ctx context.Context) {
 		// Votes only go missing after the failover timeout, so the other side may already
 		// be restarting our machines: stop them now.
 		m.lostSince = now
-		m.event("warn", "", "", "Quorum lost: this host sees %d of %d votes; its protected machines are stopped",
+		m.event("warn", "", "", "Quorum lost: this host sees %d of %d votes; it stops its protected machines so the others can restart them",
 			m.quorum.Votes, m.quorum.TotalVotes)
 	}
 	m.mu.Unlock()
@@ -440,7 +440,13 @@ func (m *Manager) countVotes(cfg Config, members []Node, self string, witnessOK 
 	q := Quorum{Witness: cfg.Witness, WitnessReachable: witnessOK}
 	var online []string
 	for _, n := range members {
-		if n.ID == self || now.Sub(m.seen[n.ID]) <= timeout {
+		last, ok := m.seen[n.ID]
+		if !ok {
+			// Not heard from since this daemon started: like recoverDead, count from the
+			// start, so a restart while the others are slow to answer stops nothing.
+			last = m.started
+		}
+		if n.ID == self || now.Sub(last) <= timeout {
 			online = append(online, n.ID)
 		}
 	}

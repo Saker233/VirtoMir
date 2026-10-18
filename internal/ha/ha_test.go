@@ -580,3 +580,26 @@ func TestMachineDeletedOutsideIsNotRecovered(t *testing.T) {
 		t.Error("local copy still says running")
 	}
 }
+
+// A daemon that starts while the others do not answer yet (they restart too, e.g. an
+// upgrade) must not stop its protected machines at once: votes go missing only after the
+// failover timeout, counted from the start, as the others count it.
+func TestNoSelfFenceRightAfterStart(t *testing.T) {
+	hv := &fakeHV{doms: []virt.Domain{{UUID: "v1", Name: "db", State: virt.StateRunning, Persistent: true}}}
+	m, fc, clk, st := newTestManager(t, "c", hv)
+	st.UpdateSettings(Settings{FailoverTimeoutSec: 10})
+	st.SetPolicy(VMPolicy{UUID: "v1", Name: "db", Enabled: true})
+	fc.down["a"], fc.down["b"] = true, true
+	m.Tick(context.Background())
+	if q := m.Status().Quorum; !q.Quorate {
+		t.Errorf("quorum lost on the first heartbeat: %+v", q)
+	}
+	if hv.doms[0].State != virt.StateRunning {
+		t.Fatalf("protected machine stopped right after start; actions %v", hv.actions)
+	}
+	clk.add(15 * time.Second)
+	m.Tick(context.Background())
+	if hv.doms[0].State != virt.StateShutoff {
+		t.Fatalf("still running after the timeout without quorum; actions %v", hv.actions)
+	}
+}
