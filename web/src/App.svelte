@@ -7,6 +7,7 @@
   import { cluster } from './lib/cluster.svelte'
   import ClusterPage from './lib/pages/ClusterPage.svelte'
   import ImportPage from './lib/pages/ImportPage.svelte'
+  import VMwareImportPage from './lib/pages/VMwareImportPage.svelte'
   import HardwarePage from './lib/pages/HardwarePage.svelte'
   import AlertsPage from './lib/pages/AlertsPage.svelte'
   import BackupsPage from './lib/pages/BackupsPage.svelte'
@@ -129,6 +130,8 @@
           <NewMachine />
         {:else if route.name === 'import'}
           <ImportPage />
+        {:else if route.name === 'vmware-import'}
+          <VMwareImportPage />
         {:else if route.name === 'storage'}
           <StoragePage pool={route.pool} />
         {:else if route.name === 'networks'}

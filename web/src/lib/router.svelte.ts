@@ -10,6 +10,7 @@ export type Route =
   | { name: 'machine'; uuid: string; tab: string }
   | { name: 'new' }
   | { name: 'import' }
+  | { name: 'vmware-import' }
   | { name: 'storage'; pool: string }
   | { name: 'networks' }
   | { name: 'activity' }
@@ -29,6 +30,7 @@ function parse(path: string, hash: string): Route {
   if (path === '/machines') return { name: 'machines' }
   if (path === '/machines/new') return { name: 'new' }
   if (path === '/machines/import') return { name: 'import' }
+  if (path === '/machines/import/vmware' || path === '/machines/vmware-import') return { name: 'vmware-import' }
   if (path === '/storage') return { name: 'storage', pool: decodeURIComponent(hash.replace(/^#/, '')) }
   if (path === '/networks') return { name: 'networks' }
   if (path === '/activity') return { name: 'activity' }

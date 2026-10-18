@@ -140,7 +140,8 @@
 }
 [data-page='machines'],
 [data-page='new'],
-[data-page='import'] {
+[data-page='import'],
+[data-page='vmware-import'] {
   --field: var(--ochre);
 }
 [data-page='storage'],

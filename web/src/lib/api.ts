@@ -697,6 +697,110 @@ export interface PoolSpec {
   devices?: string[]
 }
 
+// VMware migration (ADR-0061)
+export interface VMwareConnection {
+  url?: string
+  username?: string
+  password?: string
+  thumbprint?: string
+  insecure?: boolean
+  esxi?: boolean
+}
+
+export interface VMwareTestResult {
+  ok: boolean
+  message: string
+}
+
+export interface VMwareDatacenter {
+  name: string
+}
+
+export interface VMwareHost {
+  name: string
+  datacenter: string
+}
+
+export interface VMwareDisk {
+  datastore: string
+  capacityBytes: number
+}
+
+export interface VMwareNIC {
+  network: string
+  mac: string
+}
+
+export interface VMwareVM {
+  id: string
+  name: string
+  datacenter: string
+  host: string
+  powerState: 'on' | 'off' | 'suspended' | string
+  vcpus: number
+  memoryMiB: number
+  guestOs: string
+  disks: VMwareDisk[]
+  nics: VMwareNIC[]
+}
+
+export interface VMwareInventory {
+  datacenters: VMwareDatacenter[]
+  hosts: VMwareHost[]
+  vms: VMwareVM[]
+}
+
+export interface VMwarePreflightItem {
+  vmId: string
+  issues: string[]
+}
+
+export interface VMwarePreflightResult {
+  pool: string
+  poolPath: string
+  poolFreeBytes: number
+  issues: Record<string, string[]>
+  items: VMwarePreflightItem[]
+}
+
+export interface VMwareImportSpec {
+  vmId: string
+  pool: string
+  name?: string
+  networkMap?: Record<string, string>
+  virtioIso?: string
+}
+
+export interface VMwareWaveSpec {
+  vmIds: string[]
+  pool: string
+  parallel?: number
+  networkMap?: Record<string, string>
+  virtioIso?: string
+}
+
+export type VMwareWaveItemState = 'pending' | 'running' | 'done' | 'failed'
+
+export interface VMwareWaveItem {
+  vmId: string
+  name: string
+  state: VMwareWaveItemState
+  message?: string
+}
+
+export interface VMwareWave {
+  id: string
+  items: VMwareWaveItem[]
+  parallel: number
+  created: string
+}
+
+export interface VMwareRetrySpec {
+  pool?: string
+  networkMap?: Record<string, string>
+  virtioIso?: string
+}
+
 export interface HostPCI {
   name: string
   address: string
@@ -1100,6 +1204,21 @@ export const api = {
   addDHCPHost: (name: string, h: DHCPHost) => request<void>('POST', `${netPath(name)}/dhcp-hosts`, h),
   deleteDHCPHost: (name: string, mac: string) => request<void>('DELETE', `${netPath(name)}/dhcp-hosts/${enc(mac)}`),
   leases: async (name: string) => (await request<{ leases: Lease[] }>('GET', `${netPath(name)}/leases`)).leases,
+
+  // VMware migration (ADR-0061)
+  vmwareConnection: (host?: string) => request<VMwareConnection>('GET', at(host, '/api/v1/vmware/connection')),
+  vmwareSaveConnection: (c: VMwareConnection, host?: string) => request<VMwareConnection>('PUT', at(host, '/api/v1/vmware/connection'), c),
+  vmwareDeleteConnection: (host?: string) => request<void>('DELETE', at(host, '/api/v1/vmware/connection')),
+  vmwareTest: (c?: VMwareConnection, host?: string) => request<VMwareTestResult>('POST', at(host, '/api/v1/vmware/connection/test'), c ?? {}),
+  vmwareInventory: (host?: string) => request<VMwareInventory>('GET', at(host, '/api/v1/vmware/inventory')),
+  vmwarePreflight: (spec: { vmIds: string[]; pool: string }, host?: string) =>
+    request<VMwarePreflightResult>('POST', at(host, '/api/v1/vmware/preflight'), spec),
+  vmwareImport: (spec: VMwareImportSpec, host?: string) => request<Job>('POST', at(host, '/api/v1/vmware/import'), spec),
+  vmwareWave: (id: string, host?: string) => request<VMwareWave>('GET', at(host, `/api/v1/vmware/waves/${enc(id)}`)),
+  vmwareWaves: async (host?: string) => (await request<{ waves: VMwareWave[] }>('GET', at(host, '/api/v1/vmware/waves'))).waves,
+  vmwareCreateWave: (spec: VMwareWaveSpec, host?: string) => request<Job>('POST', at(host, '/api/v1/vmware/waves'), spec),
+  vmwareRetry: (id: string, spec?: VMwareRetrySpec, host?: string) =>
+    request<Job>('POST', at(host, `/api/v1/vmware/waves/${enc(id)}/retry`), spec ?? {}),
 }
 
 /** Human message for any error thrown by api calls. */

@@ -2,7 +2,7 @@
 // from world.ts; the common changes (power actions, snapshots, new machines, clones, rename,
 // delete, schedules, alerts) are applied to it, everything else answers "done" without effect.
 
-import type { CreateSpec, DeploySpec, DomainState, Job, ScheduleInfo, SnapshotInfo } from '../api'
+import type { CreateSpec, DeploySpec, DomainState, Job, ScheduleInfo, SnapshotInfo, VMwareConnection, VMwareInventory, VMwareWave } from '../api'
 import * as w from './world'
 
 export interface Reply {
@@ -34,6 +34,88 @@ function job(kind: string, title: string, ms: number, done?: () => string | void
   }, ms)
   return j
 }
+
+// ---- VMware demo state ----------------------------------------------------------------------
+
+let demoConnection: VMwareConnection = {
+  url: 'https://vcenter.demo.internal',
+  username: 'administrator@vsphere.local',
+  password: '••••••••',
+  thumbprint: 'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD',
+  insecure: true,
+}
+
+const demoInventory: VMwareInventory = {
+  datacenters: [{ name: 'Datacenter-Frankfurt' }, { name: 'Datacenter-Dublin' }],
+  hosts: [
+    { name: 'esx-fra-01.corp', datacenter: 'Datacenter-Frankfurt' },
+    { name: 'esx-dub-01.corp', datacenter: 'Datacenter-Dublin' },
+  ],
+  vms: [
+    {
+      id: 'vm-101',
+      name: 'web-frontend',
+      datacenter: 'Datacenter-Frankfurt',
+      host: 'esx-fra-01.corp',
+      powerState: 'off',
+      vcpus: 2,
+      memoryMiB: 4096,
+      guestOs: 'Ubuntu Linux (64-bit)',
+      disks: [{ datastore: 'datastore1', capacityBytes: 25 * 1024 ** 3 }],
+      nics: [{ network: 'VM Network', mac: '00:50:56:01:01:01' }],
+    },
+    {
+      id: 'vm-102',
+      name: 'api-backend',
+      datacenter: 'Datacenter-Frankfurt',
+      host: 'esx-fra-01.corp',
+      powerState: 'off',
+      vcpus: 4,
+      memoryMiB: 8192,
+      guestOs: 'Debian GNU/Linux 12 (64-bit)',
+      disks: [{ datastore: 'datastore1', capacityBytes: 40 * 1024 ** 3 }],
+      nics: [{ network: 'prod-web', mac: '00:50:56:01:01:02' }],
+    },
+    {
+      id: 'vm-103',
+      name: 'db-primary',
+      datacenter: 'Datacenter-Frankfurt',
+      host: 'esx-fra-01.corp',
+      powerState: 'on',
+      vcpus: 8,
+      memoryMiB: 16384,
+      guestOs: 'Red Hat Enterprise Linux 9 (64-bit)',
+      disks: [{ datastore: 'datastore2', capacityBytes: 100 * 1024 ** 3 }],
+      nics: [{ network: 'prod-web', mac: '00:50:56:01:01:03' }],
+    },
+    {
+      id: 'vm-104',
+      name: 'win-dc-01',
+      datacenter: 'Datacenter-Dublin',
+      host: 'esx-dub-01.corp',
+      powerState: 'off',
+      vcpus: 4,
+      memoryMiB: 8192,
+      guestOs: 'Microsoft Windows Server 2022 (64-bit)',
+      disks: [{ datastore: 'datastore3', capacityBytes: 50 * 1024 ** 3 }],
+      nics: [{ network: 'VM Network', mac: '00:50:56:02:01:01' }],
+    },
+    {
+      id: 'vm-105',
+      name: 'monitoring-node',
+      datacenter: 'Datacenter-Dublin',
+      host: 'esx-dub-01.corp',
+      powerState: 'suspended',
+      vcpus: 2,
+      memoryMiB: 4096,
+      guestOs: 'CentOS 7 (64-bit)',
+      disks: [{ datastore: 'datastore3', capacityBytes: 20 * 1024 ** 3 }],
+      nics: [{ network: 'VM Network', mac: '00:50:56:02:01:02' }],
+    },
+  ],
+}
+
+let demoWaves: VMwareWave[] = []
 
 // ---- Machines -------------------------------------------------------------------------------
 
@@ -578,6 +660,106 @@ export function handle(method: string, url: URL, body: any): Reply {
     }
     case 'GET /api/v1/report-schedules':
       return json({ schedules: w.reportSchedules })
+
+    // VMware (ADR-0061)
+    case 'GET /api/v1/vmware/connection':
+      return json(demoConnection)
+    case 'PUT /api/v1/vmware/connection': {
+      const c = body as VMwareConnection
+      if (c.password && c.password !== '••••••••') demoConnection.password = c.password
+      demoConnection = { ...demoConnection, ...c, password: demoConnection.password || '••••••••' }
+      return json(demoConnection)
+    }
+    case 'DELETE /api/v1/vmware/connection':
+      demoConnection = {}
+      return none()
+    case 'POST /api/v1/vmware/connection/test':
+      return json({ ok: true, message: 'Connected successfully to vCenter 8.0.2 (demo).' })
+    case 'GET /api/v1/vmware/inventory':
+      return json(demoInventory)
+    case 'POST /api/v1/vmware/preflight': {
+      const vmIds = (body?.vmIds as string[]) || []
+      const poolName = (body?.pool as string)?.trim()
+      if (!poolName) return json({ error: 'choose the storage pool' }, 422)
+      const pool = w.pools.find((x) => x.name === poolName)
+      if (!pool) return json({ error: `storage pool not found: ${poolName}` }, 422)
+      if (!pool.active) return json({ error: `storage pool '${poolName}' is not active` }, 409)
+
+      const issues: Record<string, string[]> = {}
+      const items = vmIds.map((id) => {
+        const iss: string[] = []
+        const vm = demoInventory.vms.find((v) => v.id === id)
+        if (!vm) {
+          iss.push(`VM "${id}" not found in VMware inventory`)
+        } else {
+          if (vm.powerState === 'on') {
+            iss.push('Machine is powered on; shut down before migrating.')
+          }
+          if (id === 'vm-104') {
+            iss.push('Warning: Windows guest detected without custom VirtIO ISO; virt-v2v will attempt automatic driver injection.')
+          }
+          const totalDiskBytes = vm.disks.reduce((acc, d) => acc + d.capacityBytes, 0)
+          if (pool.availableBytes > 0 && totalDiskBytes > pool.availableBytes) {
+            iss.push(`Not enough free space in pool "${pool.name}" (${Math.round(totalDiskBytes / 1024 ** 3)} GiB needed, ${Math.round(pool.availableBytes / 1024 ** 3)} GiB available)`)
+          }
+        }
+        issues[id] = iss
+        return { vmId: id, issues: iss }
+      })
+      return json({
+        pool: pool.name,
+        poolPath: pool.path || '/var/lib/libvirt/images',
+        poolFreeBytes: pool.availableBytes,
+        issues,
+        items,
+      })
+    }
+    case 'POST /api/v1/vmware/import': {
+      const vmId = body?.vmId || 'vm-101'
+      const name = body?.name || vmId
+      const pool = (body?.pool as string)?.trim()
+      if (pool) {
+        const found = w.pools.find((x) => x.name === pool)
+        if (!found) return json({ error: `storage pool not found: ${pool}` }, 422)
+      }
+      const j = job('vmware-import', `Import ${name}`, 3000, () => addMachine(host.id, { name }).uuid)
+      return json(j, 202)
+    }
+    case 'POST /api/v1/vmware/waves': {
+      const vmIds = (body?.vmIds as string[]) || ['vm-101']
+      const pool = (body?.pool as string)?.trim()
+      if (pool) {
+        const found = w.pools.find((x) => x.name === pool)
+        if (!found) return json({ error: `storage pool not found: ${pool}` }, 422)
+      }
+      const waveId = `wave-${Date.now().toString(36)}`
+      const wave: VMwareWave = {
+        id: waveId,
+        parallel: body?.parallel || 2,
+        created: new Date().toISOString(),
+        items: vmIds.map((id) => {
+          const found = demoInventory.vms.find((v) => v.id === id)
+          return { vmId: id, name: found?.name || id, state: 'running' as const, message: 'Converting disk images…' }
+        }),
+      }
+      demoWaves.unshift(wave)
+      const j = job('vmware-wave', `Migration wave: ${wave.items.length} VMs`, 3500, () => {
+        for (const it of wave.items) {
+          if ((it.vmId === 'vm-104' && !body?.virtioIso) || it.vmId.includes('fail')) {
+            it.state = 'failed'
+            it.message = 'virt-v2v: disk conversion failed (missing VirtIO drivers for Windows guest)'
+          } else {
+            it.state = 'done'
+            it.message = ''
+            addMachine(host.id, { name: it.name })
+          }
+        }
+        return wave.id
+      })
+      return json(j, 202)
+    }
+    case 'GET /api/v1/vmware/waves':
+      return json({ waves: demoWaves })
   }
 
   // Parametrised paths.
@@ -631,6 +813,32 @@ export function handle(method: string, url: URL, body: any): Reply {
   }
   if (parts[0] === 'ha' && parts[1] === 'nodes' && parts[3] === 'fence')
     return json({ nodeId: parts[2], driver: 'redfish', action: body?.action ?? 'status', power: 'on', message: 'Demo: the BMC was not contacted.', time: new Date().toISOString() })
+
+  if (parts[0] === 'vmware' && parts[1] === 'waves' && parts.length === 3 && method === 'GET') {
+    const wave = demoWaves.find((w) => w.id === parts[2])
+    return wave ? json(wave) : notFound('no such wave')
+  }
+  if (parts[0] === 'vmware' && parts[1] === 'waves' && parts.length === 4 && parts[3] === 'retry' && method === 'POST') {
+    const wave = demoWaves.find((w) => w.id === parts[2])
+    if (!wave) return notFound('no such wave')
+    for (const it of wave.items) {
+      if (it.state === 'failed') {
+        it.state = 'running'
+        it.message = 'Retrying conversion…'
+      }
+    }
+    const j = job('vmware-wave-retry', `Retry wave ${wave.id}`, 3000, () => {
+      for (const it of wave.items) {
+        if (it.state === 'running' || it.state === 'failed') {
+          it.state = 'done'
+          it.message = ''
+          addMachine(host.id, { name: it.name })
+        }
+      }
+      return wave.id
+    })
+    return json(j, 202)
+  }
 
   if (method === 'GET') return notFound()
   // Any other change: accepted, without effect (the demo has no real host behind it).

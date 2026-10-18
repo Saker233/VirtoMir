@@ -5,6 +5,7 @@
   import PackageOpen from '@lucide/svelte/icons/package-open'
   import FileCode from '@lucide/svelte/icons/file-code'
   import HardDrive from '@lucide/svelte/icons/hard-drive'
+  import Server from '@lucide/svelte/icons/server'
   import { api, errorText, type Pool } from '../api'
   import { activePools } from '../media'
   import { machineHref, router } from '../router.svelte'
@@ -136,6 +137,14 @@
     </div>
     <div class="actions">
       <a class="ui-btn" href={router.scoped('/machines/new')} onclick={router.link}>{t('Open the new-machine wizard')}</a>
+    </div>
+  </section>
+
+  <section class="ui-panel card">
+    <h2><Server size={16} /> {t('VMware vCenter / ESXi')}</h2>
+    <p class="hint">{t('Connect to a vCenter or standalone ESXi host. Inspect inventory, map storage and networks, and migrate virtual machines directly.')}</p>
+    <div class="actions">
+      <a class="ui-btn" href={router.scoped('/machines/import/vmware')} onclick={router.link}>{t('Start VMware migration')}</a>
     </div>
   </section>
 </div>
