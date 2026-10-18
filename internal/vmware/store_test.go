@@ -167,3 +167,18 @@ func TestStringRedactsPassword(t *testing.T) {
 		t.Errorf("String() does not show the mask: %s", out)
 	}
 }
+
+func TestOpenCorruptedJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "corrupt.json")
+	if err := os.WriteFile(path, []byte("{not-valid-json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(path)
+	if err == nil {
+		t.Fatal("expected error opening corrupted JSON, got nil")
+	}
+	if store != nil {
+		t.Fatalf("expected nil Store on error, got %+v", store)
+	}
+}
+

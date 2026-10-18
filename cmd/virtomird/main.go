@@ -38,6 +38,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/systemd"
 	"github.com/onurbaydas/virtomir/internal/update"
 	"github.com/onurbaydas/virtomir/internal/virt"
+	"github.com/onurbaydas/virtomir/internal/vmware"
 	"github.com/onurbaydas/virtomir/internal/zfsrep"
 	"github.com/onurbaydas/virtomir/web"
 )
@@ -193,6 +194,18 @@ func run(c config, log *slog.Logger) error {
 		opts.HostNet = hostnet.New(c.stateDir, log, opts.HostInfo)
 	}
 	opts.Offsite = offsiteStore
+	if vmwareStore, err := vmware.Open(filepath.Join(c.stateDir, "vmware.json")); err != nil {
+		log.Warn("vmware store", "err", err)
+	} else {
+		opts.VMwareStore = vmwareStore
+	}
+	opts.VMwareWaves = vmware.NewRegistry()
+	opts.VMwareLister = vmware.GovmomiLister{}
+	conv := vmware.NewConverter(client)
+	opts.VMwarePreflight = conv
+	if c, ok := any(conv).(api.VMConverter); ok {
+		opts.VMwareConverter = c
+	}
 	opts.Updater = update.New(c.updateRepo, version, os.Getenv("VIRTOMIR_GITHUB_TOKEN"))
 	opts.StateDir = c.stateDir
 	if repStore, err := reports.Open(filepath.Join(c.stateDir, "reports")); err != nil {

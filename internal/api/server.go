@@ -30,6 +30,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/schedule"
 	"github.com/onurbaydas/virtomir/internal/update"
 	"github.com/onurbaydas/virtomir/internal/virt"
+	"github.com/onurbaydas/virtomir/internal/vmware"
 	"github.com/onurbaydas/virtomir/internal/zfsrep"
 )
 
@@ -134,6 +135,16 @@ type Options struct {
 	HostNet *hostnet.Manager
 	// Offsite nil: no off-site copies of backups (ADR-0043).
 	Offsite *offsite.Store
+	// VMwareStore nil: VMware migration connection store is not available (ADR-0061).
+	VMwareStore ConnectionStorer
+	// VMwareWaves nil: VMware migration wave registry is not available.
+	VMwareWaves WaveRunner
+	// VMwareLister nil: GovmomiLister is used.
+	VMwareLister InventoryLister
+	// VMwarePreflight nil: Converter with backend client is used.
+	VMwarePreflight Preflighter
+	// VMwareConverter nil: Converter with backend client is used.
+	VMwareConverter VMConverter
 	// DRS nil: no distributed resource scheduler.
 	DRS *drs.Engine
 	// RateLimiter nil: standard token-bucket limiter (60/min) is used.
@@ -168,18 +179,23 @@ type Server struct {
 	transportsMu sync.Mutex
 	transports   map[string]http.RoundTripper // pinned, per member certificate
 
-	ha          *ha.Store
-	haMgr       *ha.Manager
-	reports     *reports.Store
-	respools    *respool.Store
-	hostinfo    *hostinfo.Reader
-	updater     *update.Checker
-	stateDir    string
-	hostnet     *hostnet.Manager
-	offsite     *offsite.Store
-	drs         *drs.Engine
-	rateLimiter *auth.RateLimiter
-	zfsRep      *zfsrep.Manager
+	ha              *ha.Store
+	haMgr           *ha.Manager
+	reports         *reports.Store
+	respools        *respool.Store
+	hostinfo        *hostinfo.Reader
+	updater         *update.Checker
+	stateDir        string
+	hostnet         *hostnet.Manager
+	offsite         *offsite.Store
+	vmwareStore     ConnectionStorer
+	vmwareWaves     WaveRunner
+	vmwareLister    InventoryLister
+	vmwarePreflight Preflighter
+	vmwareConverter VMConverter
+	drs             *drs.Engine
+	rateLimiter     *auth.RateLimiter
+	zfsRep          *zfsrep.Manager
 }
 
 func NewServer(o Options) *Server {
@@ -196,11 +212,28 @@ func NewServer(o Options) *Server {
 	if rl == nil {
 		rl = auth.NewRateLimiter(60, 1*time.Minute)
 	}
+	vl := o.VMwareLister
+	if vl == nil {
+		vl = vmware.GovmomiLister{}
+	}
+	vp := o.VMwarePreflight
+	vc := o.VMwareConverter
+	if vp == nil && vc != nil {
+		if p, ok := vc.(Preflighter); ok {
+			vp = p
+		}
+	}
+	if vc == nil && vp != nil {
+		if c, ok := vp.(VMConverter); ok {
+			vc = c
+		}
+	}
 	return &Server{backend: o.Backend, live: o.Live, jobs: o.Jobs, auth: o.Auth, ui: o.UI, version: o.Version, log: o.Log,
 		history: o.History, tokens: o.Tokens, activity: o.Activity, alerts: o.Alerts, schedules: o.Schedules,
 		cluster: o.Cluster, fingerprint: o.Fingerprint, hostName: o.HostName, listenPort: o.ListenPort,
 		confighist: o.ConfigHistory, quotas: o.Quotas, groupsOf: o.GroupsOf,
 		ha: o.HA, reports: o.Reports, respools: o.Respools, hostinfo: o.HostInfo, updater: o.Updater, stateDir: o.StateDir, hostnet: o.HostNet, offsite: o.Offsite,
+		vmwareStore: o.VMwareStore, vmwareWaves: o.VMwareWaves, vmwareLister: vl, vmwarePreflight: vp, vmwareConverter: vc,
 		drs: o.DRS, rateLimiter: rl, zfsRep: o.ZFSRep}
 }
 
@@ -229,6 +262,7 @@ func (s *Server) Handler() http.Handler {
 	s.migrateRoutes(mux)
 	s.configHistoryRoutes(mux)
 	s.importRoutes(mux)
+	s.vmwareRoutes(mux)
 	s.hostdevRoutes(mux)
 	s.extraDeviceRoutes(mux)
 	s.quotaRoutes(mux)

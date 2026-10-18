@@ -113,9 +113,12 @@ func Open(path string) (*Store, error) {
 		return s, nil
 	}
 	if err != nil {
-		return s, err
+		return nil, err
 	}
-	return s, json.Unmarshal(b, &s.cfg)
+	if err := json.Unmarshal(b, &s.cfg); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func (s *Store) current() Connection {
@@ -131,6 +134,12 @@ func (s *Store) Config() Connection {
 		c.Password = Secret
 	}
 	return c
+}
+
+// Connection returns the active connection settings, including the password.
+// The password stays on the host and Connection.String redacts it.
+func (s *Store) Connection() Connection {
+	return s.current()
 }
 
 // Configured reports whether a connection is stored.

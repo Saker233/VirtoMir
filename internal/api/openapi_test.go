@@ -44,6 +44,12 @@ func TestOpenAPI(t *testing.T) {
 	if _, ok := doc.Paths["/api/v1/metrics"]; !ok {
 		t.Error("metrics missing")
 	}
+	if d := doc.Paths["/api/v1/vmware/connection"]["get"].Description; d != "Needs role: admin." {
+		t.Errorf("GET vmware connection role: %q", d)
+	}
+	if d := doc.Paths["/api/v1/vmware/import"]["post"].Description; d != "Needs role: admin." {
+		t.Errorf("POST vmware import role: %q", d)
+	}
 }
 
 func TestSentence(t *testing.T) {
