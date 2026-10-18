@@ -68,11 +68,11 @@ func (c *Client) ChangeMedia(uuid, target, source string) error {
 // DiskSpec describes a disk to add. Either Path (an existing image, e.g. an ISO for a CD-ROM),
 // Pool+Volume (an existing volume) or Pool+SizeGiB (a new volume) is set.
 type DiskSpec struct {
-	Device  string `json:"device"` // disk (default) or cdrom
-	Bus     string `json:"bus"`    // virtio (default for disks), sata, scsi, usb
-	Path    string `json:"path,omitempty"`
-	Pool    string `json:"pool,omitempty"`
-	Volume  string `json:"volume,omitempty"`
+	Device  string      `json:"device"` // disk (default) or cdrom
+	Bus     string      `json:"bus"`    // virtio (default for disks), sata, scsi, usb
+	Path    string      `json:"path,omitempty"`
+	Pool    string      `json:"pool,omitempty"`
+	Volume  string      `json:"volume,omitempty"`
 	SizeGiB uint64      `json:"sizeGiB,omitempty"`
 	Format  string      `json:"format,omitempty"` // qcow2 (default) or raw, for new volumes
 	IoTune  *DiskIoTune `json:"iotune,omitempty"`
@@ -472,4 +472,3 @@ func (c *Client) SetDiskQoS(uuid, target string, qos DiskIoTune) error {
 	c.log.Info("disk qos updated", "domain", d.Name, "target", target, "totalIops", qos.TotalIopsSec, "totalBytes", qos.TotalBytesSec, "live", on)
 	return nil
 }
-

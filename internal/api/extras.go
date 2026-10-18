@@ -155,7 +155,6 @@ func (s *Server) setDiskQoS(w http.ResponseWriter, r *http.Request) {
 	s.done(w, http.StatusNoContent, nil)
 }
 
-
 func (s *Server) resizeVolume(w http.ResponseWriter, r *http.Request) {
 	var b sizeBody
 	if !s.decode(w, r, &b) {

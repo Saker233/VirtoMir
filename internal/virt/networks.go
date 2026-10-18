@@ -35,7 +35,6 @@ type VNetwork struct {
 	VNI       uint       `json:"vni,omitempty"`
 }
 
-
 func (c *Client) ListNetworks() ([]VNetwork, error) {
 	l, err := c.conn()
 	if err != nil {
@@ -245,7 +244,6 @@ type NetworkSpec struct {
 	VNI     uint     `json:"vni,omitempty"`   // VXLAN Network Identifier (1..16777215)
 	Peers   []string `json:"peers,omitempty"` // VXLAN remote peer endpoints or multicast group
 }
-
 
 // buildNetwork turns a spec into network XML: gateway .1, DHCP .2 to the last usable address.
 func buildNetwork(spec NetworkSpec) (*libvirtxml.Network, error) {

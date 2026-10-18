@@ -155,7 +155,7 @@ func volumeInfo(l *libvirt.Libvirt, v libvirt.StorageVol) (Volume, error) {
 type VolumeSpec struct {
 	Name         string `json:"name"`
 	SizeGiB      uint64 `json:"sizeGiB"`
-	Format       string `json:"format"` // qcow2 (default) or raw
+	Format       string `json:"format"`                 // qcow2 (default) or raw
 	Provisioning string `json:"provisioning,omitempty"` // thin (default/sparse) or thick (preallocated)
 }
 

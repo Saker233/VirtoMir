@@ -42,9 +42,9 @@ type HostPCI struct {
 	// MDevTypes: the slices this card can be split into (NVIDIA vGPU, Intel GVT-g, …).
 	MDevTypes []HostMDevType `json:"mdevTypes,omitempty"`
 	// SRIOV is true if the device is an SR-IOV Physical Function.
-	SRIOV           bool   `json:"sriov,omitempty"`
-	SRIOVTotalVFs   int    `json:"sriovTotalVfs,omitempty"`
-	SRIOVCurrentVFs int    `json:"sriovCurrentVfs,omitempty"`
+	SRIOV           bool `json:"sriov,omitempty"`
+	SRIOVTotalVFs   int  `json:"sriovTotalVfs,omitempty"`
+	SRIOVCurrentVFs int  `json:"sriovCurrentVfs,omitempty"`
 	// IsVF is true if the device is an SR-IOV Virtual Function.
 	IsVF      bool   `json:"isVf,omitempty"`
 	PFAddress string `json:"pfAddress,omitempty"`
@@ -361,4 +361,3 @@ func readSRIOV(addr string) (isPF bool, totalVFs int, numVFs int, isVF bool, pfA
 	}
 	return
 }
-

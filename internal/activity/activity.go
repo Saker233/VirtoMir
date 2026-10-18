@@ -43,7 +43,6 @@ type Log struct {
 	siem *Forwarder
 }
 
-
 // Open loads the newest entries of path. A missing file is fine.
 func Open(path string) (*Log, error) {
 	l := &Log{path: path}
@@ -149,4 +148,3 @@ func (l *Log) SIEM() *Forwarder {
 	defer l.mu.Unlock()
 	return l.siem
 }
-

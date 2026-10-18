@@ -13,11 +13,11 @@ import (
 type CreateSpec struct {
 	Name      string `json:"name"`
 	Kind      string `json:"kind,omitempty"` // vm (default) or container
-	OS        string `json:"os"`   // linux (default), windows, other
+	OS        string `json:"os"`             // linux (default), windows, other
 	VCPUs     int    `json:"vcpus"`
 	MemoryMiB uint64 `json:"memoryMiB"`
 	// Firmware: uefi (default) or bios. Secure Boot and TPM default on for Windows.
-	Firmware   string `json:"firmware"`
+	Firmware     string `json:"firmware"`
 	SecureBoot   bool   `json:"secureBoot"`
 	TPM          bool   `json:"tpm"`
 	Confidential string `json:"confidential,omitempty"` // sev, sev-snp, tdx
@@ -27,7 +27,7 @@ type CreateSpec struct {
 	DiskGiB      uint64 `json:"diskGiB"`
 	Provisioning string `json:"provisioning,omitempty"` // thin (default) or thick
 	DiskPath     string `json:"diskPath,omitempty"`
-	BaseImage string `json:"baseImage,omitempty"`
+	BaseImage    string `json:"baseImage,omitempty"`
 	// CloudInit configures a cloud image on first boot (seed ISO attached as a CD-ROM).
 	CloudInit *CloudInit `json:"cloudInit,omitempty"`
 	// Installation media to boot from (optional).

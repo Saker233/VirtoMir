@@ -34,15 +34,15 @@ type Schedule struct {
 	Domain  string `json:"domain"` // UUID
 	Enabled bool   `json:"enabled"`
 	// Every: "hours" (every Hours hours), "daily" (at At) or "weekly" (Weekday at At).
-	Every   string `json:"every"`
-	Hours   int    `json:"hours,omitempty"`
-	At      string `json:"at,omitempty"`      // "HH:MM", local time
-	Weekday int    `json:"weekday,omitempty"` // 0 = Sunday
-	Keep        int `json:"keep"`                  // how many automatic ones to keep
-	KeepDaily   int `json:"keepDaily,omitempty"`   // GFS: days to keep
-	KeepWeekly  int `json:"keepWeekly,omitempty"`  // GFS: weeks to keep
-	KeepMonthly int `json:"keepMonthly,omitempty"` // GFS: months to keep
-	KeepYearly  int `json:"keepYearly,omitempty"`  // GFS: years to keep
+	Every       string `json:"every"`
+	Hours       int    `json:"hours,omitempty"`
+	At          string `json:"at,omitempty"`          // "HH:MM", local time
+	Weekday     int    `json:"weekday,omitempty"`     // 0 = Sunday
+	Keep        int    `json:"keep"`                  // how many automatic ones to keep
+	KeepDaily   int    `json:"keepDaily,omitempty"`   // GFS: days to keep
+	KeepWeekly  int    `json:"keepWeekly,omitempty"`  // GFS: weeks to keep
+	KeepMonthly int    `json:"keepMonthly,omitempty"` // GFS: months to keep
+	KeepYearly  int    `json:"keepYearly,omitempty"`  // GFS: years to keep
 
 	LastRun    *time.Time `json:"lastRun,omitempty"`
 	LastError  string     `json:"lastError,omitempty"`

@@ -33,9 +33,9 @@ type SystemInfo struct {
 	Kernel  string `json:"kernel,omitempty"`
 	Cmdline string `json:"cmdline,omitempty"`
 	// Boot devices in order, e.g. "Disk vda", "Network 52:54:00:…".
-	BootOrder  []string `json:"bootOrder"`
-	BootMenu   bool     `json:"bootMenu"`
-	Emulator   string   `json:"emulator,omitempty"`
+	BootOrder      []string `json:"bootOrder"`
+	BootMenu       bool     `json:"bootMenu"`
+	Emulator       string   `json:"emulator,omitempty"`
 	Clock          string   `json:"clock,omitempty"`
 	Features       []string `json:"features"`
 	LaunchSecurity string   `json:"launchSecurity,omitempty"` // sev, sev-snp, tdx, s390-pv
@@ -43,7 +43,6 @@ type SystemInfo struct {
 	OnReboot       string   `json:"onReboot,omitempty"`
 	OnCrash        string   `json:"onCrash,omitempty"`
 }
-
 
 type CPUInfo struct {
 	Mode      string `json:"mode"` // host-passthrough, host-model, custom, maximum
@@ -305,7 +304,6 @@ func systemInfo(x *libvirtxml.Domain) SystemInfo {
 	}
 	return s
 }
-
 
 func cpuInfo(x *libvirtxml.Domain) CPUInfo {
 	c := CPUInfo{Mode: "custom"}

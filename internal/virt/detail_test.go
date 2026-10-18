@@ -272,5 +272,3 @@ func TestContainerDomain(t *testing.T) {
 		t.Errorf("expected Kind container, got %q", d.Domain.Kind)
 	}
 }
-
-

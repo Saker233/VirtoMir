@@ -31,7 +31,9 @@ type vmMeta struct {
 	Kind  string `xml:"kind,attr,omitempty"`
 }
 
-func (m vmMeta) empty() bool { return !m.Template && m.LinkedFrom == "" && m.Owner == "" && m.Kind == "" }
+func (m vmMeta) empty() bool {
+	return !m.Template && m.LinkedFrom == "" && m.Owner == "" && m.Kind == ""
+}
 
 // metaCache spares the 1-second domain list a metadata RPC per machine. Entries VirtoMir
 // writes itself are updated immediately; changes made elsewhere (virsh) show up within metaTTL.

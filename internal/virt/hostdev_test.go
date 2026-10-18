@@ -86,4 +86,3 @@ func TestReadSRIOV(t *testing.T) {
 		t.Errorf("VF marked as PF")
 	}
 }
-

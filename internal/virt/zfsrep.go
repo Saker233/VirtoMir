@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-
 // ZFSReplicationSpec defines an asynchronous ZFS differential dataset replication task.
 type ZFSReplicationSpec struct {
 	ID              string `json:"id"`
