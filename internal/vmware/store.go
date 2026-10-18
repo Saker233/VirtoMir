@@ -1,7 +1,7 @@
 // Package vmware reads the inventory of a VMware environment — a vCenter or a
 // standalone ESXi host — so its machines can be migrated to VirtoMir (ADR-0061).
-// Inventory is taken with govmomi, conversion is done by executing the real virt-v2v
-// binary; both live elsewhere. This package only keeps the connection settings.
+// Inventory is taken with govmomi; conversion (convert.go) executes the real
+// virt-v2v binary — experimental, not tested on hardware.
 //
 // The vCenter/ESXi password stays on the host (<state-dir>/vmware.json, 0600) and never
 // reaches a log: Connection's String method redacts it (slog and fmt print a Connection
@@ -56,6 +56,9 @@ type Connection struct {
 	// Insecure skips CA verification, but only together with a thumbprint — the
 	// connection is then pinned to exactly that certificate instead.
 	Insecure bool `json:"insecure,omitempty"`
+	// ESXi marks a standalone ESXi host rather than a vCenter; conversion then talks to
+	// the host itself (esx://) instead of through vCenter (vpx://).
+	ESXi bool `json:"esxi,omitempty"`
 }
 
 // String redacts the password, so a Connection printed with slog (or fmt) can never
@@ -65,8 +68,8 @@ func (c Connection) String() string {
 	if p != "" {
 		p = Secret
 	}
-	return fmt.Sprintf("vmware.Connection{URL:%q Username:%q Password:%q Thumbprint:%q Insecure:%t}",
-		c.URL, c.Username, p, c.Thumbprint, c.Insecure)
+	return fmt.Sprintf("vmware.Connection{URL:%q Username:%q Password:%q Thumbprint:%q Insecure:%t ESXi:%t}",
+		c.URL, c.Username, p, c.Thumbprint, c.Insecure, c.ESXi)
 }
 
 // Configured reports whether a connection is fully set.
