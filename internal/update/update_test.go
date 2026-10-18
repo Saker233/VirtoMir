@@ -2,11 +2,14 @@ package update
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewer(t *testing.T) {
@@ -190,3 +193,41 @@ func TestAutoUpdateFlow(t *testing.T) {
 	_ = activityRecorded
 }
 
+func TestAutoInstallDoesNotDeadlock(t *testing.T) {
+	pkg := "the package"
+	sum := sha256.Sum256([]byte(pkg))
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/v/releases/latest":
+			fmt.Fprintf(w, `{"tag_name":"v9.0.0","assets":[{"name":"virtomir_9.0.0_%[1]s.deb","browser_download_url":"%[2]s/deb"},
+				{"name":"virtomir_9.0.0_%[1]s.deb.sha256","browser_download_url":"%[2]s/sha"}]}`, debArch(), srv.URL)
+		case "/sha":
+			fmt.Fprint(w, hex.EncodeToString(sum[:])+"  virtomir.deb\n")
+		case "/deb":
+			fmt.Fprint(w, pkg)
+		}
+	}))
+	defer srv.Close()
+	c := New("o/v", "0.2.0", "")
+	c.API = srv.URL
+	c.Installed = func() (bool, string) { return true, "" }
+	ran := false
+	c.RunInstaller = func(context.Context, string) (string, error) { ran = true; return "unit", nil }
+	dir := t.TempDir()
+	c.InitConfig(dir)
+	cfg := c.GetAutoConfig()
+	cfg.AutoInstall = true
+	_ = c.SetAutoConfig(cfg)
+
+	done := make(chan struct{})
+	go func() { c.autoPass(context.Background(), c.GetAutoConfig(), dir, nil, nil); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("auto-install deadlocked")
+	}
+	if got := c.GetAutoConfig(); !ran || got.LastUpdatedAt.IsZero() || got.LastError != "" {
+		t.Errorf("ran = %v, config = %+v", ran, got)
+	}
+}

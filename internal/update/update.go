@@ -52,10 +52,10 @@ type AutoConfig struct {
 
 // Status is what the Updates card shows.
 type Status struct {
-	Current   string     `json:"current"`
-	Repo      string     `json:"repo"`
-	Latest    *Release   `json:"latest,omitempty"`
-	Available bool       `json:"available"` // Latest is newer than Current
+	Current   string   `json:"current"`
+	Repo      string   `json:"repo"`
+	Latest    *Release `json:"latest,omitempty"`
+	Available bool     `json:"available"` // Latest is newer than Current
 	// Installable: this host runs the .deb package, so it can update itself.
 	Installable bool       `json:"installable"`
 	Reason      string     `json:"reason,omitempty"` // why not installable
@@ -66,11 +66,11 @@ type Status struct {
 
 // Checker talks to the GitHub API.
 type Checker struct {
-	Repo         string // owner/name; "" disables updates
-	Current      string // running version
-	Token        string // optional, for private repositories
-	API          string // https://api.github.com (tests replace it)
-	HTTP         *http.Client
+	Repo    string // owner/name; "" disables updates
+	Current string // running version
+	Token   string // optional, for private repositories
+	API     string // https://api.github.com (tests replace it)
+	HTTP    *http.Client
 	// Installed reports whether the virtomir package is installed (dpkg); tests replace it.
 	Installed    func() (bool, string)
 	RunInstaller func(ctx context.Context, debPath string) (string, error)
@@ -421,14 +421,65 @@ func (c *Checker) SetAutoConfig(cfg AutoConfig) error {
 	return nil
 }
 
+// autoPass is one background check, and an install when AutoInstall allows it. It holds
+// cfgMu only to record the outcome: Check and Install read the config themselves.
+func (c *Checker) autoPass(ctx context.Context, cfg AutoConfig, stateDir string, onActivity func(action, details string), log *slog.Logger) {
+	st := c.Check(ctx, true)
+	var result, lastErr string
+	var installed bool
+	switch {
+	case st.Error != "":
+		result, lastErr = "Check failed: "+st.Error, st.Error
+	case !st.Available:
+		result = fmt.Sprintf("Up to date (%s)", c.Current)
+	case !cfg.AutoInstall || !st.Installable:
+		result = fmt.Sprintf("New release %s available", st.Latest.Version)
+	default:
+		if log != nil {
+			log.Info("auto-update: installing the new release", "version", st.Latest.Version, "current", c.Current)
+		}
+		msg, err := c.Install(ctx, filepath.Join(stateDir, "updates"), func(step string) {
+			if log != nil {
+				log.Info("auto-update", "status", step)
+			}
+		})
+		if err != nil {
+			result, lastErr = fmt.Sprintf("Auto-install failed: %v", err), err.Error()
+			if onActivity != nil {
+				onActivity("update.auto_failed", fmt.Sprintf("Failed to auto-install %s: %v", st.Latest.Version, err))
+			}
+		} else {
+			result, installed = fmt.Sprintf("Auto-installed %s: %s", st.Latest.Version, msg), true
+			if onActivity != nil {
+				onActivity("update.auto_success", fmt.Sprintf("Installed %s automatically", st.Latest.Version))
+			}
+		}
+	}
+
+	c.cfgMu.Lock()
+	now := time.Now().UTC()
+	c.autoCfg.LastCheckedAt, c.autoCfg.LastResult, c.autoCfg.LastError = now, result, lastErr
+	if installed {
+		c.autoCfg.LastUpdatedAt = now
+	}
+	cur := c.autoCfg
+	c.cfgMu.Unlock()
+
+	upDir := filepath.Join(stateDir, "updates")
+	_ = os.MkdirAll(upDir, 0o700)
+	if data, err := json.MarshalIndent(cur, "", "  "); err == nil {
+		_ = os.WriteFile(filepath.Join(upDir, "config.json"), data, 0o600)
+	}
+}
+
 // StartAutoUpdater runs the periodic GitHub update poller in the background.
 // If AutoInstall is enabled and a new version is detected, it automatically downloads
-// and triggers the upgrade.
+// and triggers the upgrade. Call InitConfig first, so settings saved before the first
+// check are not overwritten.
 func (c *Checker) StartAutoUpdater(ctx context.Context, stateDir string, onActivity func(action, details string), log *slog.Logger) {
 	if c.Repo == "" {
 		return
 	}
-	c.InitConfig(stateDir)
 
 	// Delay initial check by 15s to allow daemon startup to settle
 	select {
@@ -440,53 +491,7 @@ func (c *Checker) StartAutoUpdater(ctx context.Context, stateDir string, onActiv
 	for {
 		cfg := c.GetAutoConfig()
 		if cfg.Enabled {
-			st := c.Check(ctx, true)
-
-			c.cfgMu.Lock()
-			c.autoCfg.LastCheckedAt = time.Now().UTC()
-			if st.Error != "" {
-				c.autoCfg.LastError = st.Error
-				c.autoCfg.LastResult = "Check failed: " + st.Error
-			} else {
-				c.autoCfg.LastError = ""
-				if st.Available {
-					c.autoCfg.LastResult = fmt.Sprintf("New release %s available", st.Latest.Version)
-					if c.autoCfg.AutoInstall && st.Installable {
-						if log != nil {
-							log.Info("auto-update: new release found; triggering automated installation", "version", st.Latest.Version, "current", c.Current)
-						}
-						dir := filepath.Join(stateDir, "updates")
-						msg, err := c.Install(ctx, dir, func(step string) {
-							if log != nil {
-								log.Info("auto-update", "status", step)
-							}
-						})
-						if err != nil {
-							c.autoCfg.LastError = err.Error()
-							c.autoCfg.LastResult = fmt.Sprintf("Auto-install failed: %v", err)
-							if onActivity != nil {
-								onActivity("update.auto_failed", fmt.Sprintf("Failed to auto-install %s: %v", st.Latest.Version, err))
-							}
-						} else {
-							c.autoCfg.LastUpdatedAt = time.Now().UTC()
-							c.autoCfg.LastResult = fmt.Sprintf("Auto-installed %s: %s", st.Latest.Version, msg)
-							if onActivity != nil {
-								onActivity("update.auto_success", fmt.Sprintf("Installed %s automatically", st.Latest.Version))
-							}
-						}
-					}
-				} else {
-					c.autoCfg.LastResult = fmt.Sprintf("Up to date (%s)", c.Current)
-				}
-			}
-			cur := c.autoCfg
-			c.cfgMu.Unlock()
-
-			upDir := filepath.Join(stateDir, "updates")
-			_ = os.MkdirAll(upDir, 0o700)
-			if data, err := json.MarshalIndent(cur, "", "  "); err == nil {
-				_ = os.WriteFile(filepath.Join(upDir, "config.json"), data, 0o600)
-			}
+			c.autoPass(ctx, cfg, stateDir, onActivity, log)
 		}
 
 		interval := time.Duration(cfg.IntervalHours) * time.Hour
