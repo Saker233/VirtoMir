@@ -31,6 +31,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/jobs"
 	"github.com/onurbaydas/virtomir/internal/live"
 	"github.com/onurbaydas/virtomir/internal/offsite"
+	"github.com/onurbaydas/virtomir/internal/placement"
 	"github.com/onurbaydas/virtomir/internal/project"
 	"github.com/onurbaydas/virtomir/internal/quota"
 	"github.com/onurbaydas/virtomir/internal/reports"
@@ -224,6 +225,11 @@ func run(c config, log *slog.Logger) error {
 		log.Warn("drs engine", "err", err)
 	} else {
 		opts.DRS = drsEng
+	}
+	if plStore, err := placement.Open(filepath.Join(c.stateDir, "placement.json")); err != nil {
+		log.Warn("placement store", "err", err)
+	} else {
+		opts.Placement = plStore
 	}
 	apiServer := api.NewServer(opts)
 	go syncCluster(ctx, apiServer)

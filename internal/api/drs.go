@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -17,6 +19,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/drs"
 	"github.com/onurbaydas/virtomir/internal/jobs"
 	"github.com/onurbaydas/virtomir/internal/live"
+	"github.com/onurbaydas/virtomir/internal/placement"
 	"github.com/onurbaydas/virtomir/internal/virt"
 )
 
@@ -42,12 +45,21 @@ type ClusterDomainSummary struct {
 
 func (s *Server) getDRS(w http.ResponseWriter, r *http.Request) {
 	if s.drs == nil {
-		s.writeJSON(w, http.StatusOK, drs.Status{Enabled: false, BalanceScore: 100.0})
+		var rules []drs.AffinityRule
+		if s.placement != nil {
+			rules = placementRulesToDRS(s.placement.Rules())
+		}
+		s.writeJSON(w, http.StatusOK, drs.Status{Enabled: false, BalanceScore: 100.0, Rules: rules})
 		return
 	}
 
 	hosts, domains := s.collectClusterPlacements(r.Context(), identity(r))
 	status := s.drs.Evaluate(r.Context(), hosts, domains)
+	if s.placement != nil {
+		status.Rules = placementRulesToDRS(s.placement.Rules())
+	} else {
+		status.Rules = []drs.AffinityRule{}
+	}
 	s.writeJSON(w, http.StatusOK, status)
 }
 
@@ -64,48 +76,61 @@ func (s *Server) setDRSConfig(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	s.drsToMembers(r, http.MethodPut, "/api/v1/cluster/drs/config", req)
+	s.replicateToMembers(r, http.MethodPut, "/api/v1/cluster/drs/config", req)
 	s.writeJSON(w, http.StatusOK, s.drs.GetConfig())
 }
 
 func (s *Server) createDRSRule(w http.ResponseWriter, r *http.Request) {
-	if s.drs == nil {
-		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "DRS is not available"})
+	if s.placement == nil {
+		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "placement is not available"})
 		return
 	}
 	var req drs.AffinityRule
 	if !s.decode(w, r, &req) {
 		return
 	}
-	created, err := s.drs.AddRule(req)
+	rule, err := drsRuleToPlacement(req)
 	if err != nil {
 		s.writeError(w, err)
 		return
 	}
-	s.drsToMembers(r, http.MethodPost, "/api/v1/cluster/drs/rules", created)
-	s.writeJSON(w, http.StatusCreated, created)
-}
-
-func (s *Server) deleteDRSRule(w http.ResponseWriter, r *http.Request) {
-	if s.drs == nil {
-		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "DRS is not available"})
-		return
-	}
-	id := r.PathValue("id")
-	if err := s.drs.DeleteRule(id); err != nil {
+	created, err := s.placement.AddRule(rule)
+	if err != nil {
 		s.writeError(w, err)
 		return
 	}
-	s.drsToMembers(r, http.MethodDelete, "/api/v1/cluster/drs/rules/"+id, nil)
+	resp := placementRuleToDRS(created)
+	if s.drs != nil {
+		if _, err := s.drs.AddRule(resp); err != nil {
+			s.log.Warn("failed to update DRS engine with rule", "id", resp.ID, "err", err)
+		}
+	}
+	s.replicateToMembers(r, http.MethodPost, "/api/v1/cluster/drs/rules", resp)
+	s.writeJSON(w, http.StatusCreated, resp)
+}
+
+func (s *Server) deleteDRSRule(w http.ResponseWriter, r *http.Request) {
+	if s.placement == nil {
+		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "placement is not available"})
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.placement.DeleteRule(id); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	if s.drs != nil {
+		if err := s.drs.DeleteRule(id); err != nil && !errors.Is(err, drs.ErrNotFound) {
+			s.log.Warn("failed to delete rule from DRS engine", "id", id, "err", err)
+		}
+	}
+	s.replicateToMembers(r, http.MethodDelete, "/api/v1/cluster/drs/rules/"+id, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// applyDRSRecommendation carries a recommendation out: the machine's host live-migrates it
-// to the target through the same path as the Move button (checks, job, activity).
-// drsToMembers repeats a DRS settings or rules change on the other members, so the cluster
-// has one DRS configuration whichever member the UI talks to (and every member acts in fully
-// automated mode). ?local=1 marks the copies, which are not passed on again.
-func (s *Server) drsToMembers(r *http.Request, method, path string, body any) {
+// replicateToMembers repeats a cluster-wide setting or rule change on the other members.
+// ?local=1 marks the copies, which are not passed on again.
+func (s *Server) replicateToMembers(r *http.Request, method, path string, body any) {
 	if r.URL.Query().Get("local") != "" || s.cluster == nil || !s.cluster.Clustered() {
 		return
 	}
@@ -122,11 +147,81 @@ func (s *Server) drsToMembers(r *http.Request, method, path string, body any) {
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 			defer cancel()
 			if err := s.peer(n).As(id.Name, id.Role.String(), id.Token).Call(ctx, method, path+"?local=1", body, nil); err != nil {
-				s.log.Warn("DRS change not copied to a member", "member", n.Name, "err", err)
+				s.log.Warn("cluster change not copied to a member", "member", n.Name, "err", err)
 			}
 		}(n)
 	}
 	wg.Wait()
+}
+
+func placementRuleToDRS(r placement.Rule) drs.AffinityRule {
+	var k drs.RuleKind
+	switch r.Kind {
+	case placement.VMAffinity:
+		k = drs.AffinityVMVM
+	case placement.VMAntiAffinity:
+		k = drs.AntiAffinityVMVM
+	case placement.VMHost:
+		k = drs.AffinityVMHost
+	default:
+		k = ""
+	}
+	targetHost := ""
+	if r.Kind == placement.VMHost && len(r.Hosts) == 1 {
+		targetHost = r.Hosts[0]
+	}
+	return drs.AffinityRule{
+		ID:         r.ID,
+		Name:       r.Name,
+		Kind:       k,
+		Enabled:    r.Enabled,
+		Mandatory:  r.Strength == placement.Must || r.Strength == "",
+		Domains:    r.Domains,
+		TargetHost: targetHost,
+	}
+}
+
+func placementRulesToDRS(rules []placement.Rule) []drs.AffinityRule {
+	out := make([]drs.AffinityRule, 0, len(rules))
+	for _, r := range rules {
+		drsRule := placementRuleToDRS(r)
+		if drsRule.Kind == "" {
+			continue
+		}
+		out = append(out, drsRule)
+	}
+	return out
+}
+
+func drsRuleToPlacement(r drs.AffinityRule) (placement.Rule, error) {
+	var k placement.Kind
+	switch r.Kind {
+	case drs.AffinityVMVM:
+		k = placement.VMAffinity
+	case drs.AntiAffinityVMVM:
+		k = placement.VMAntiAffinity
+	case drs.AffinityVMHost, "vm_host":
+		k = placement.VMHost
+	default:
+		return placement.Rule{}, fmt.Errorf("%w: unsupported rule kind %q", drs.ErrInvalid, r.Kind)
+	}
+	str := placement.Should
+	if r.Mandatory {
+		str = placement.Must
+	}
+	var hosts []string
+	if k == placement.VMHost && r.TargetHost != "" {
+		hosts = []string{r.TargetHost}
+	}
+	return placement.Rule{
+		ID:       r.ID,
+		Name:     r.Name,
+		Kind:     k,
+		Enabled:  r.Enabled,
+		Strength: str,
+		Domains:  r.Domains,
+		Hosts:    hosts,
+	}, nil
 }
 
 func (s *Server) applyDRSRecommendation(w http.ResponseWriter, r *http.Request) {

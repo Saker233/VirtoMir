@@ -24,6 +24,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/hostnet"
 	"github.com/onurbaydas/virtomir/internal/jobs"
 	"github.com/onurbaydas/virtomir/internal/offsite"
+	"github.com/onurbaydas/virtomir/internal/placement"
 	"github.com/onurbaydas/virtomir/internal/project"
 	"github.com/onurbaydas/virtomir/internal/quota"
 	"github.com/onurbaydas/virtomir/internal/reports"
@@ -137,6 +138,8 @@ type Options struct {
 	Offsite *offsite.Store
 	// DRS nil: no distributed resource scheduler.
 	DRS *drs.Engine
+	// Placement nil: no placement rules.
+	Placement *placement.Store
 	// Projects nil: no multi-tenancy (ADR-0060).
 	Projects *project.Store
 	// RateLimiter nil: standard token-bucket limiter (60/min) is used.
@@ -181,6 +184,7 @@ type Server struct {
 	hostnet     *hostnet.Manager
 	offsite     *offsite.Store
 	drs         *drs.Engine
+	placement   *placement.Store
 	projects    *project.Store
 	rateLimiter *auth.RateLimiter
 	zfsRep      *zfsrep.Manager
@@ -205,7 +209,7 @@ func NewServer(o Options) *Server {
 		cluster: o.Cluster, fingerprint: o.Fingerprint, hostName: o.HostName, listenPort: o.ListenPort,
 		confighist: o.ConfigHistory, quotas: o.Quotas, groupsOf: o.GroupsOf,
 		ha: o.HA, reports: o.Reports, respools: o.Respools, hostinfo: o.HostInfo, updater: o.Updater, stateDir: o.StateDir, hostnet: o.HostNet, offsite: o.Offsite,
-		drs: o.DRS, projects: o.Projects, rateLimiter: rl, zfsRep: o.ZFSRep}
+		drs: o.DRS, placement: o.Placement, projects: o.Projects, rateLimiter: rl, zfsRep: o.ZFSRep}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -250,6 +254,7 @@ func (s *Server) Handler() http.Handler {
 	s.updateRoutes(mux)
 	s.objectXMLRoutes(mux)
 	s.drsRoutes(mux)
+	s.placementRoutes(mux)
 	s.projectRoutes(mux)
 
 	spec := s.openAPI(mux.routes) // everything above, built once
@@ -409,9 +414,9 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 	var opErr *virt.OperationError
 	var invErr *virt.InvalidError
 	switch {
-	case errors.Is(err, virt.ErrNotFound), errors.Is(err, zfsrep.ErrNotFound), errors.Is(err, drs.ErrNotFound):
+	case errors.Is(err, virt.ErrNotFound), errors.Is(err, zfsrep.ErrNotFound), errors.Is(err, drs.ErrNotFound), errors.Is(err, placement.ErrNotFound):
 		status = http.StatusNotFound
-	case errors.As(err, &invErr), errors.Is(err, zfsrep.ErrInvalid), errors.Is(err, drs.ErrInvalid):
+	case errors.As(err, &invErr), errors.Is(err, zfsrep.ErrInvalid), errors.Is(err, drs.ErrInvalid), errors.Is(err, placement.ErrInvalid):
 		status = http.StatusUnprocessableEntity
 	case errors.As(err, &opErr), errors.Is(err, zfsrep.ErrBusy):
 		status = http.StatusConflict
