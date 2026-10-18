@@ -7,6 +7,7 @@ import (
 
 	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/project"
+	"github.com/onurbaydas/virtomir/internal/virt"
 )
 
 // Projects (ADR-0060): multi-tenancy. A machine belongs to at most one project, stored
@@ -91,6 +92,212 @@ func (s *Server) checkProject(w http.ResponseWriter, user string, role auth.Role
 		return false
 	}
 	return true
+}
+
+// projectRoleRank orders project roles like auth.Role orders global ones.
+var projectRoleRank = map[string]int{"viewer": 1, "operator": 2, "admin": 3}
+
+// effectiveRole is the caller's global role, raised to their role in the project of the
+// machine the path is about (ADR-0060): a project viewer may view that project's machines,
+// a project operator may run them, a project admin may also change and delete them. Paths
+// that are not about one machine, and machines without a project, keep the global role.
+func (s *Server) effectiveRole(id auth.Identity, path string) auth.Role {
+	rest, ok := strings.CutPrefix(path, "/api/v1/domains/")
+	if !ok || s.projects == nil {
+		return id.Role
+	}
+	uuid, _, _ := strings.Cut(rest, "/")
+	pid := s.projectOf(uuid)
+	if pid == "" {
+		return id.Role
+	}
+	r, ok := s.projects.RoleFor(pid, id.Name, s.groupsOf(id.Name))
+	if !ok {
+		return id.Role
+	}
+	switch projectRoleRank[r] {
+	case 3:
+		return max(id.Role, auth.Admin)
+	case 2:
+		return max(id.Role, auth.Operator)
+	}
+	return max(id.Role, auth.Viewer)
+}
+
+// memberAtLeast reports whether the caller has at least the given role in project pid,
+// directly or through one of their groups; an empty project puts no burden on anyone.
+func (s *Server) memberAtLeast(pid string, id auth.Identity, min string) bool {
+	if pid == "" {
+		return true
+	}
+	r, ok := s.projects.RoleFor(pid, id.Name, s.groupsOf(id.Name))
+	return ok && projectRoleRank[r] >= projectRoleRank[min]
+}
+
+func (s *Server) projectRoutes(mux *routeMux) {
+	mux.HandleFunc("GET /api/v1/projects", s.listProjects)
+	mux.HandleFunc("POST /api/v1/projects", s.createProject)
+	mux.HandleFunc("GET /api/v1/projects/{id}", s.getProject)
+	mux.HandleFunc("PUT /api/v1/projects/{id}", s.updateProject)
+	mux.HandleFunc("DELETE /api/v1/projects/{id}", s.deleteProject)
+	// Moving a machine into or out of a project needs Operator only here: the handler
+	// checks membership in both the source and the target project and the target's limits.
+	mux.HandleFunc("PUT /api/v1/domains/{uuid}/project", s.setMachineProject)
+}
+
+// listProjects: global admins see every project, everyone else only the ones they are a
+// member of (ProjectsFor, directly or through one of their groups).
+func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
+	if s.projects == nil {
+		s.writeJSON(w, http.StatusOK, map[string]any{"projects": []project.Project{}})
+		return
+	}
+	id := identity(r)
+	if id.Role >= auth.Admin {
+		s.writeJSON(w, http.StatusOK, map[string]any{"projects": s.projects.List()})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"projects": s.projects.ProjectsFor(id.Name, s.groupsOf(id.Name))})
+}
+
+// getProject: members and global admins; anyone else gets the same 404 as an unknown ID,
+// so they cannot even probe which projects exist.
+func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
+	if s.projects == nil {
+		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "no projects on this host"})
+		return
+	}
+	id := identity(r)
+	p, ok := s.projects.Get(r.PathValue("id"))
+	if !ok {
+		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "no project " + r.PathValue("id")})
+		return
+	}
+	if id.Role < auth.Admin {
+		if _, member := s.projects.RoleFor(p.ID, id.Name, s.groupsOf(id.Name)); !member {
+			s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "no project " + p.ID})
+			return
+		}
+	}
+	s.writeJSON(w, http.StatusOK, p)
+}
+
+// projectErrStatus maps the store's errors to HTTP like writeError does for the backend.
+func projectErrStatus(err error) int {
+	if strings.Contains(err.Error(), "exists already") {
+		return http.StatusConflict
+	}
+	if strings.Contains(err.Error(), "no project ") {
+		return http.StatusNotFound
+	}
+	return http.StatusUnprocessableEntity
+}
+
+// createProject is admin-only (the guard sees to that).
+func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
+	if s.projects == nil {
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "projects are not available on this host"})
+		return
+	}
+	var p project.Project
+	if !s.decode(w, r, &p) {
+		return
+	}
+	created, err := s.projects.Create(p)
+	if err != nil {
+		s.writeJSON(w, projectErrStatus(err), map[string]string{"error": err.Error()})
+		return
+	}
+	s.done(w, http.StatusCreated, map[string]any{"project": created})
+}
+
+func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
+	if s.projects == nil {
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "projects are not available on this host"})
+		return
+	}
+	var p project.Project
+	if !s.decode(w, r, &p) {
+		return
+	}
+	p.ID = r.PathValue("id")
+	if err := s.projects.Update(p); err != nil {
+		s.writeJSON(w, projectErrStatus(err), map[string]string{"error": err.Error()})
+		return
+	}
+	next, _ := s.projects.Get(p.ID)
+	s.done(w, http.StatusOK, map[string]any{"project": next})
+}
+
+func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
+	if s.projects == nil {
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "projects are not available on this host"})
+		return
+	}
+	if err := s.projects.Delete(r.PathValue("id")); err != nil {
+		s.writeJSON(w, projectErrStatus(err), map[string]string{"error": err.Error()})
+		return
+	}
+	s.done(w, http.StatusNoContent, nil)
+}
+
+// setMachineProject moves a machine into or out of a project (ADR-0060): a global admin may
+// move anywhere; anyone else needs to be an operator (or better) in both the source and the
+// target project, and the target's limits must cover the machine on top of what its machines
+// use now. An empty project makes the machine global again.
+func (s *Server) setMachineProject(w http.ResponseWriter, r *http.Request) {
+	if s.projects == nil {
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "projects are not available on this host"})
+		return
+	}
+	var b struct {
+		Project string `json:"project"`
+	}
+	if !s.decode(w, r, &b) {
+		return
+	}
+	uuid := r.PathValue("uuid")
+	id := identity(r)
+	doms, err := s.backend.ListDomains()
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	var dom *virt.Domain
+	for i := range doms {
+		if strings.EqualFold(doms[i].UUID, uuid) {
+			dom = &doms[i]
+			break
+		}
+	}
+	if dom == nil {
+		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "no machine " + uuid})
+		return
+	}
+	if id.Role < auth.Admin && !(s.memberAtLeast(dom.Project, id, "operator") && s.memberAtLeast(b.Project, id, "operator")) {
+		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "you need to be an operator in both the source and the target project"})
+		return
+	}
+	if b.Project != "" && !strings.EqualFold(b.Project, dom.Project) {
+		p, ok := s.projects.Get(b.Project)
+		if !ok {
+			s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "no project " + b.Project})
+			return
+		}
+		demand := project.Usage{Machines: 1, VCPUs: dom.VCPUs, MemoryMiB: int64(dom.MaxMemoryKiB >> 10), DiskGiB: int64(s.diskGiB([]string{uuid}))}
+		if err := p.Limits.Exceeded(s.projectUsage(b.Project), demand); err != nil {
+			s.writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if o, ok := s.backend.(interface {
+		SetProject(uuid, projectID string) error
+	}); ok {
+		if err := o.SetProject(uuid, b.Project); err != nil {
+			s.log.Warn("record project", "domain", uuid, "err", err)
+		}
+	}
+	s.done(w, http.StatusNoContent, nil)
 }
 
 // recordProject marks which project a machine belongs to.

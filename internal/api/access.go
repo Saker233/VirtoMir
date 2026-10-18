@@ -43,6 +43,8 @@ func requiredRole(method, path string) auth.Role {
 		return auth.Admin // who may sign in and who may create what is the admins' business
 	case strings.Contains(path, "/console/"):
 		return auth.Operator // a console is control over the machine
+	case strings.HasPrefix(path, "/api/v1/domains/") && strings.HasSuffix(path, "/project"):
+		return auth.Operator // moving a machine into/out of a project: the handler checks both projects
 	case method == http.MethodGet || method == http.MethodHead:
 		return auth.Viewer
 	case operatorWrite(method, path):
@@ -130,7 +132,10 @@ func (s *Server) guard(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if id.Role < need && !s.selfService(id, r.Method, path) {
+		// ADR-0060: on machine-scoped routes the effective role is the global one raised to
+		// the caller's role in the machine's project. selfService keeps using the global
+		// role, so quotas behave exactly as before.
+		if s.effectiveRole(id, path) < need && !s.selfService(id, r.Method, path) {
 			s.writeJSON(w, http.StatusForbidden, map[string]string{
 				"error": "your role (" + id.Role.String() + ") may not do this; it needs " + need.String(),
 			})
