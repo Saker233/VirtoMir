@@ -38,6 +38,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/systemd"
 	"github.com/onurbaydas/virtomir/internal/update"
 	"github.com/onurbaydas/virtomir/internal/virt"
+	"github.com/onurbaydas/virtomir/internal/zfsrep"
 	"github.com/onurbaydas/virtomir/web"
 )
 
@@ -202,6 +203,12 @@ func run(c config, log *slog.Logger) error {
 		log.Warn("respools store", "err", err)
 	} else {
 		opts.Respools = rpStore
+	}
+	if zr, err := zfsrep.Open(filepath.Join(c.stateDir, "zfs-replication.json"), zfsrep.Exec{}, log); err != nil {
+		log.Warn("zfs replication", "err", err)
+	} else {
+		opts.ZFSRep = zr
+		go zr.Run(ctx)
 	}
 	if drsEng, err := drs.New(c.stateDir); err != nil {
 		log.Warn("drs engine", "err", err)

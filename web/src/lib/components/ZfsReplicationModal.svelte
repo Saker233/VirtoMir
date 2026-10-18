@@ -4,6 +4,7 @@
   import { session } from '../session.svelte'
   import { toasts } from '../toast.svelte'
   import { errorText } from '../api'
+  import { formatBytes } from '../format'
   import Dialog from './Dialog.svelte'
   import RefreshCw from '@lucide/svelte/icons/refresh-cw'
   import Trash from '@lucide/svelte/icons/trash'
@@ -23,7 +24,8 @@
   let sourceVolume = $state('')
   let targetHost = $state('')
   let targetPool = $state('')
-  let intervalMinutes = $state(5)
+  let intervalMinutes = $state(15)
+  let keep = $state(3)
   let creating = $state(false)
   let formError = $state('')
 
@@ -44,16 +46,32 @@
     }
   })
 
+  // While a pass runs (here or on its schedule), follow it.
+  let anySyncing = $derived(replications.some((r) => r.state === 'syncing'))
+  $effect(() => {
+    if (!open || !anySyncing) return
+    const iv = setInterval(() => void load(), 2000)
+    return () => clearInterval(iv)
+  })
+
   async function syncNow(id: string) {
     syncingId = id
     try {
       await ent.syncZFSReplication(id)
-      toasts.push({ kind: 'info', title: t('ZFS differential replication completed') })
       await load()
     } catch (e) {
       toasts.push({ kind: 'error', title: t('Replication failed'), detail: errorText(e) })
     } finally {
       syncingId = null
+    }
+  }
+
+  async function toggle(rep: ZFSReplicationStatus) {
+    try {
+      await ent.updateZFSReplication({ ...rep.spec, enabled: !rep.spec.enabled })
+      await load()
+    } catch (e) {
+      toasts.push({ kind: 'error', title: t('Could not change the schedule'), detail: errorText(e) })
     }
   }
 
@@ -79,6 +97,7 @@
         targetHost: targetHost.trim(),
         targetPool: targetPool.trim(),
         intervalMinutes: Number(intervalMinutes),
+        keep: Number(keep),
         enabled: true,
       })
       toasts.push({ kind: 'info', title: t('ZFS replication schedule created') })
@@ -104,7 +123,7 @@
       <div class="info-banner">
         <ShieldCheck size={18} class="banner-icon" />
         <span>
-          {t('Synchronizes differential ZFS snapshots to remote target hosts every few minutes, enabling sub-minute RPO recovery without SAN/NAS.')}
+          {t('On its schedule VirtoMir snapshots the dataset or zvol and sends only what changed since the last snapshot both hosts have (zfs send -i | ssh … zfs receive). This host connects to the target as root with an SSH key — set that up first (ssh-copy-id) — and the target pool must exist there.')}
         </span>
       </div>
       <div class="header-actions">
@@ -125,7 +144,7 @@
         <div class="grid2">
           <label class="ui-field">
             <span class="label">{t('Source Pool')}</span>
-            <input class="ui-input mono" bind:value={sourcePool} placeholder="tank" required />
+            <input class="ui-input mono" bind:value={sourcePool} placeholder="tank/vms" required />
           </label>
           <label class="ui-field">
             <span class="label">{t('Source Dataset / Zvol')}</span>
@@ -134,8 +153,8 @@
         </div>
         <div class="grid2">
           <label class="ui-field">
-            <span class="label">{t('Target Host IP / FQDN')}</span>
-            <input class="ui-input mono" bind:value={targetHost} placeholder="192.168.1.50" required />
+            <span class="label">{t('Target host (SSH)')}</span>
+            <input class="ui-input mono" bind:value={targetHost} placeholder="root@192.168.1.50" required />
           </label>
           <label class="ui-field">
             <span class="label">{t('Target ZFS Pool')}</span>
@@ -145,7 +164,11 @@
         <div class="grid2">
           <label class="ui-field">
             <span class="label">{t('Sync Interval (Minutes)')}</span>
-            <input class="ui-input" type="number" min="1" max="1440" bind:value={intervalMinutes} required />
+            <input class="ui-input" type="number" min="1" max="10080" bind:value={intervalMinutes} required />
+          </label>
+          <label class="ui-field">
+            <span class="label">{t('Snapshots kept on each side')}</span>
+            <input class="ui-input" type="number" min="1" max="1000" bind:value={keep} required />
           </label>
         </div>
 
@@ -179,19 +202,24 @@
                 <span class="mono bold">{rep.spec.targetHost}:{rep.spec.targetPool}</span>
               </div>
               <div class="rep-meta">
-                <span class="badge" class:green={rep.state === 'idle'} class:sync={rep.state === 'syncing'}>
-                  {rep.state}
+                <span class="badge" class:green={rep.state === 'idle' && rep.lastSync} class:sync={rep.state === 'syncing'} class:red={rep.state === 'failed'}>
+                  {rep.state === 'syncing' ? t('syncing') : rep.state === 'failed' ? t('failed') : rep.lastSync ? t('in sync') : t('not synced yet')}
                 </span>
-                <span class="muted">{t('Interval: {n}m', { n: rep.spec.intervalMinutes })}</span>
+                <span class="muted">{rep.spec.enabled ? t('every {n} min', { n: rep.spec.intervalMinutes }) : t('paused')}</span>
                 {#if rep.lastSync}
-                  <span class="muted">{t('Last synced: {time}', { time: new Date(rep.lastSync).toLocaleTimeString() })}</span>
+                  <span class="muted">{t('Last synced: {time}', { time: new Date(rep.lastSync).toLocaleString() })}</span>
+                  <span class="muted mono">{rep.lastSnapshot} · {formatBytes(rep.bytesTransferred ?? 0)}</span>
                 {/if}
               </div>
+              {#if rep.error}<div class="rep-error">{rep.error}</div>{/if}
             </div>
             <div class="rep-actions" inert={!session.can('admin')}>
+              <button class="ui-btn sm ghost" onclick={() => toggle(rep)}>
+                {rep.spec.enabled ? t('Pause') : t('Resume')}
+              </button>
               <button
                 class="ui-btn sm ghost"
-                disabled={syncingId === rep.spec.id}
+                disabled={syncingId === rep.spec.id || rep.state === 'syncing'}
                 onclick={() => syncNow(rep.spec.id!)}
                 title={t('Trigger immediate differential sync')}
               >
@@ -221,7 +249,7 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
-    min-width: 580px;
+    width: min(620px, 100%);
   }
   .rep-header {
     display: flex;
@@ -235,13 +263,13 @@
     padding: 10px 12px;
     border-radius: var(--radius-sm);
     background: var(--surface-2);
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--border);
     font-size: 13px;
     color: var(--text-2);
     line-height: 1.4;
   }
   :global(.banner-icon) {
-    color: var(--accent-1);
+    color: var(--accent);
     flex-shrink: 0;
     margin-top: 2px;
   }
@@ -255,8 +283,8 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
-    background: var(--surface-1);
-    border: 1px solid var(--border-subtle);
+    background: var(--surface);
+    border: 1px solid var(--border);
     border-radius: var(--radius-sm);
   }
   .add-box h3 {
@@ -268,6 +296,11 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
+  }
+  @media (max-width: 560px) {
+    .grid2 {
+      grid-template-columns: 1fr;
+    }
   }
   .form-actions {
     display: flex;
@@ -284,10 +317,12 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
     padding: 12px 14px;
     border-radius: var(--radius-sm);
     background: var(--surface-2);
-    border: 1px solid var(--border-subtle);
+    border: 1px solid var(--border);
   }
   .rep-main {
     display: flex;
@@ -300,28 +335,38 @@
     gap: 8px;
     font-size: 13px;
   }
+  .rep-error {
+    font-size: 12px;
+    color: var(--danger);
+    overflow-wrap: anywhere;
+  }
   .rep-meta {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
     font-size: 12px;
   }
   .badge {
     padding: 2px 6px;
-    border-radius: var(--radius-xs);
+    border-radius: var(--radius-sm);
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
-    background: var(--surface-3);
+    background: var(--surface-hover);
     color: var(--text-2);
   }
   .badge.green {
-    background: rgba(34, 197, 94, 0.15);
-    color: #4ade80;
+    background: color-mix(in srgb, var(--ok) 15%, transparent);
+    color: var(--ok);
+  }
+  .badge.red {
+    background: var(--danger-soft);
+    color: var(--danger);
   }
   .badge.sync {
-    background: rgba(59, 130, 246, 0.15);
-    color: #60a5fa;
+    background: color-mix(in srgb, var(--info) 15%, transparent);
+    color: var(--info);
     animation: pulse 1.5s infinite;
   }
   @keyframes pulse {
@@ -334,7 +379,7 @@
     gap: 6px;
   }
   .red {
-    color: var(--danger-text, #ef4444);
+    color: var(--danger);
   }
   .empty-state {
     padding: 24px;

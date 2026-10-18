@@ -30,6 +30,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/schedule"
 	"github.com/onurbaydas/virtomir/internal/update"
 	"github.com/onurbaydas/virtomir/internal/virt"
+	"github.com/onurbaydas/virtomir/internal/zfsrep"
 )
 
 // Backend is what the API needs from the virtualization layer (implemented by *virt.Client).
@@ -137,6 +138,8 @@ type Options struct {
 	DRS *drs.Engine
 	// RateLimiter nil: standard token-bucket limiter (60/min) is used.
 	RateLimiter *auth.RateLimiter
+	// ZFSRep nil: no ZFS replication.
+	ZFSRep *zfsrep.Manager
 }
 
 type Server struct {
@@ -176,7 +179,7 @@ type Server struct {
 	offsite     *offsite.Store
 	drs         *drs.Engine
 	rateLimiter *auth.RateLimiter
-	zfsRep      *virt.ZFSReplicationManager
+	zfsRep      *zfsrep.Manager
 }
 
 func NewServer(o Options) *Server {
@@ -198,7 +201,7 @@ func NewServer(o Options) *Server {
 		cluster: o.Cluster, fingerprint: o.Fingerprint, hostName: o.HostName, listenPort: o.ListenPort,
 		confighist: o.ConfigHistory, quotas: o.Quotas, groupsOf: o.GroupsOf,
 		ha: o.HA, reports: o.Reports, respools: o.Respools, hostinfo: o.HostInfo, updater: o.Updater, stateDir: o.StateDir, hostnet: o.HostNet, offsite: o.Offsite,
-		drs: o.DRS, rateLimiter: rl, zfsRep: virt.NewZFSReplicationManager()}
+		drs: o.DRS, rateLimiter: rl, zfsRep: o.ZFSRep}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -401,11 +404,11 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 	var opErr *virt.OperationError
 	var invErr *virt.InvalidError
 	switch {
-	case errors.Is(err, virt.ErrNotFound):
+	case errors.Is(err, virt.ErrNotFound), errors.Is(err, zfsrep.ErrNotFound):
 		status = http.StatusNotFound
-	case errors.As(err, &invErr):
+	case errors.As(err, &invErr), errors.Is(err, zfsrep.ErrInvalid):
 		status = http.StatusUnprocessableEntity
-	case errors.As(err, &opErr):
+	case errors.As(err, &opErr), errors.Is(err, zfsrep.ErrBusy):
 		status = http.StatusConflict
 	case errors.Is(err, auth.ErrBadCredentials), errors.Is(err, auth.ErrNotAllowed):
 		status = http.StatusUnauthorized

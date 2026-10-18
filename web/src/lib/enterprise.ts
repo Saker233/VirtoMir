@@ -254,6 +254,8 @@ export interface ZFSReplicationSpec {
   targetPool: string
   intervalMinutes: number
   enabled: boolean
+  /** Replication snapshots kept on each side (3 when 0). */
+  keep?: number
 }
 
 export interface ZFSReplicationStatus {
@@ -261,8 +263,10 @@ export interface ZFSReplicationStatus {
   state: 'idle' | 'syncing' | 'failed'
   lastSync?: string
   lastSnapshot?: string
+  /** Bytes the last successful pass sent. */
   bytesTransferred?: number
   error?: string
+  lastAttempt?: string
 }
 
 /** Host CPUs and memory nodes, with the running machines' vCPUs on top (P5). */
@@ -409,6 +413,7 @@ export const ent = {
   // ZFS Asynchronous Storage Replication
   zfsReplications: async () => (await api.get<{ replications: ZFSReplicationStatus[] }>('/api/v1/storage/zfs/replications')).replications,
   createZFSReplication: (spec: ZFSReplicationSpec) => api.post<ZFSReplicationStatus>('/api/v1/storage/zfs/replications', spec),
+  updateZFSReplication: (spec: ZFSReplicationSpec) => api.put<ZFSReplicationStatus>(`/api/v1/storage/zfs/replications/${enc(spec.id ?? '')}`, spec),
   deleteZFSReplication: (id: string) => api.delete<void>(`/api/v1/storage/zfs/replications/${enc(id)}`),
   syncZFSReplication: (id: string) => api.post<ZFSReplicationStatus>(`/api/v1/storage/zfs/replications/${enc(id)}/sync`),
 

@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/reports"
 	"github.com/onurbaydas/virtomir/internal/respool"
 	"github.com/onurbaydas/virtomir/internal/virt"
+	"github.com/onurbaydas/virtomir/internal/zfsrep"
 )
 
 // poolBackend adds storage pools and volumes to the fake.
@@ -49,9 +52,23 @@ func enterpriseServer(t *testing.T, b Backend) (*Server, http.Handler) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	zr, err := zfsrep.Open(filepath.Join(dir, "zfs-replication.json"), noZFS{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := NewServer(Options{Backend: b, Live: &fakeLive{}, Version: "t", HostName: "hv1",
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Respools: rp, Reports: rs, HA: hs, HostInfo: &hostinfo.Reader{Root: dir}})
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Respools: rp, Reports: rs, HA: hs, HostInfo: &hostinfo.Reader{Root: dir}, ZFSRep: zr})
 	return s, s.Handler()
+}
+
+// noZFS answers like a host without the zfs command.
+type noZFS struct{}
+
+func (noZFS) Run(context.Context, string, ...string) ([]byte, error) {
+	return nil, errors.New("zfs: command not found")
+}
+func (noZFS) Pipe(context.Context, []string, []string) (uint64, error) {
+	return 0, errors.New("zfs: command not found")
 }
 
 func TestResourcePoolLimitsAreEnforced(t *testing.T) {
@@ -172,7 +189,7 @@ func TestDownloadValidation(t *testing.T) {
 }
 
 func TestZFSReplicationAPI(t *testing.T) {
-	_, h := enterpriseServer(t, &fakeBackend{})
+	s, h := enterpriseServer(t, &fakeBackend{})
 
 	// 1. Initially empty
 	rec := do(h, "GET", "/api/v1/storage/zfs/replications", "", nil)
@@ -180,21 +197,29 @@ func TestZFSReplicationAPI(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
 	}
 
-	// 2. Create replication task
-	body := `{"id":"rep1","sourcePool":"tank","sourceVolume":"vm100-disk0","targetHost":"10.0.0.2","targetPool":"backup","intervalMinutes":5,"enabled":true}`
+	// 2. Create replication task; bad names are refused
+	rec = do(h, "POST", "/api/v1/storage/zfs/replications", `{"sourcePool":"tank","sourceVolume":"x;reboot","targetHost":"10.0.0.2","targetPool":"backup","intervalMinutes":5}`, nil)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body)
+	}
+	body := `{"sourcePool":"tank","sourceVolume":"vm100-disk0","targetHost":"10.0.0.2","targetPool":"backup","intervalMinutes":5,"enabled":true}`
 	rec = do(h, "POST", "/api/v1/storage/zfs/replications", body, nil)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body)
 	}
+	var st zfsrep.Status
+	_ = json.Unmarshal(rec.Body.Bytes(), &st)
+	id := st.Spec.ID
 
-	// 3. Sync now
-	rec = do(h, "POST", "/api/v1/storage/zfs/replications/rep1/sync", "", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 on sync, got %d: %s", rec.Code, rec.Body)
+	// 3. Sync now: started in the background
+	rec = do(h, "POST", "/api/v1/storage/zfs/replications/"+id+"/sync", "", nil)
+	if rec.Code != http.StatusAccepted || !strings.Contains(rec.Body.String(), `"syncing"`) {
+		t.Fatalf("expected 202 syncing on sync, got %d: %s", rec.Code, rec.Body)
 	}
+	s.zfsRep.Wait()
 
 	// 4. Delete task
-	rec = do(h, "DELETE", "/api/v1/storage/zfs/replications/rep1", "", nil)
+	rec = do(h, "DELETE", "/api/v1/storage/zfs/replications/"+id, "", nil)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("expected 204 on delete, got %d: %s", rec.Code, rec.Body)
 	}

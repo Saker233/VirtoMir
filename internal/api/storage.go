@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/onurbaydas/virtomir/internal/virt"
+	"github.com/onurbaydas/virtomir/internal/zfsrep"
 )
 
 func (s *Server) storageRoutes(mux *routeMux) {
@@ -19,6 +20,7 @@ func (s *Server) storageRoutes(mux *routeMux) {
 
 	mux.HandleFunc("GET /api/v1/storage/zfs/replications", s.listZFSReplications)
 	mux.HandleFunc("POST /api/v1/storage/zfs/replications", s.createZFSReplication)
+	mux.HandleFunc("PUT /api/v1/storage/zfs/replications/{id}", s.updateZFSReplication)
 	mux.HandleFunc("DELETE /api/v1/storage/zfs/replications/{id}", s.deleteZFSReplication)
 	mux.HandleFunc("POST /api/v1/storage/zfs/replications/{id}/sync", s.syncZFSReplication)
 }
@@ -117,17 +119,34 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, v)
 }
 
+// zfsReplications answers 501 when this host has no ZFS replication.
+func (s *Server) zfsReplications(w http.ResponseWriter) (*zfsrep.Manager, bool) {
+	if s.zfsRep == nil {
+		s.writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "ZFS replication is not available on this host"})
+		return nil, false
+	}
+	return s.zfsRep, true
+}
+
 func (s *Server) listZFSReplications(w http.ResponseWriter, _ *http.Request) {
-	tasks := s.zfsRep.List()
-	s.writeJSON(w, http.StatusOK, map[string]any{"replications": tasks})
+	m, ok := s.zfsReplications(w)
+	if !ok {
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"replications": m.List()})
 }
 
 func (s *Server) createZFSReplication(w http.ResponseWriter, r *http.Request) {
-	var spec virt.ZFSReplicationSpec
+	m, ok := s.zfsReplications(w)
+	if !ok {
+		return
+	}
+	var spec zfsrep.Spec
 	if !s.decode(w, r, &spec) {
 		return
 	}
-	st, err := s.zfsRep.Add(spec)
+	spec.ID = ""
+	st, err := m.Put(spec)
 	if err != nil {
 		s.writeError(w, err)
 		return
@@ -135,21 +154,46 @@ func (s *Server) createZFSReplication(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, st)
 }
 
+func (s *Server) updateZFSReplication(w http.ResponseWriter, r *http.Request) {
+	m, ok := s.zfsReplications(w)
+	if !ok {
+		return
+	}
+	var spec zfsrep.Spec
+	if !s.decode(w, r, &spec) {
+		return
+	}
+	spec.ID = r.PathValue("id")
+	st, err := m.Put(spec)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, st)
+}
+
 func (s *Server) deleteZFSReplication(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if err := s.zfsRep.Delete(id); err != nil {
+	m, ok := s.zfsReplications(w)
+	if !ok {
+		return
+	}
+	if err := m.Delete(r.PathValue("id")); err != nil {
 		s.writeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// syncZFSReplication starts a pass now; the answer says "syncing" and the list shows how it went.
 func (s *Server) syncZFSReplication(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	st, err := s.zfsRep.SyncNow(id)
+	m, ok := s.zfsReplications(w)
+	if !ok {
+		return
+	}
+	st, err := m.Start(r.PathValue("id"))
 	if err != nil {
 		s.writeError(w, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, st)
+	s.writeJSON(w, http.StatusAccepted, st)
 }
