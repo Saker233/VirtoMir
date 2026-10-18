@@ -387,6 +387,35 @@ export function handle(method: string, url: URL, body: any): Reply {
       return json({ code: 'VMJ1-DEMO-7Q4K-PX2M-9WTE', address: 'https://10.20.0.11:8420', expires: new Date(Date.now() + 15 * 60e3).toISOString() })
     case 'POST /api/v1/cluster/join':
       return json({ error: DEMO_ONLY }, 422)
+    case 'GET /api/v1/containers/images':
+      return json({
+        available: true,
+        images: [
+          { key: 'debian-13', label: 'Debian 13 (trixie)' },
+          { key: 'ubuntu-24.04', label: 'Ubuntu 24.04 LTS' },
+          { key: 'alpine-3.22', label: 'Alpine Linux 3.22' },
+        ],
+      })
+    case 'GET /api/v1/host/confidential':
+      return json({ kinds: ['sev', 'sev-snp'] })
+    case 'GET /api/v1/host/ksm':
+      return json({ supported: true, active: true, pagesShared: 81234, pagesSharing: 412870, pagesUnshared: 96120, pagesVolatile: 2210, savedBytes: 412870 * 4096, sleepMillisecs: 20, pagesToScan: 100 })
+    case 'GET /api/v1/activity/siem':
+      return json({ enabled: false, target: '', facility: 1, tag: 'virtomir', hostname: '' })
+    case 'GET /api/v1/storage/zfs/replications':
+      return json({
+        replications: [
+          {
+            spec: { id: 'rep-demo00000001', sourcePool: 'tank/vms', sourceVolume: 'db-01-disk0', targetHost: 'root@10.20.0.12', targetPool: 'dr', intervalMinutes: 15, enabled: true, keep: 3 },
+            state: 'idle',
+            lastSync: new Date(Date.now() - 6 * 60e3).toISOString(),
+            lastSnapshot: 'virtomir-rep-' + new Date(Date.now() - 6 * 60e3).toISOString().slice(0, 19).replace(/[-:]/g, '').replace('T', '-'),
+            bytesTransferred: 184 * 2 ** 20,
+          },
+        ],
+      })
+    case 'GET /api/v1/cluster/drs/placement':
+      return json({ hostId: w.HOSTS[1].id, hostName: w.HOSTS[1].name, cpuPct: 22.1, memPct: 38.0 })
     case 'GET /api/v1/cluster/drs':
       return json({
         enabled: true,
