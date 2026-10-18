@@ -107,6 +107,7 @@ func run(c config, log *slog.Logger) error {
 	}
 
 	client := virt.NewClient(c.socket, log)
+	client.ContainerDir = filepath.Join(c.stateDir, "containers")
 	defer client.Close()
 
 	tokens, err := auth.OpenTokens(filepath.Join(c.stateDir, "tokens.json"))

@@ -3,6 +3,7 @@ package virt
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -55,7 +56,15 @@ func (c *Client) lookup(uuid string) (*libvirt.Libvirt, libvirt.Domain, error) {
 	}
 	d, err := l.DomainLookupByUUID(u)
 	if err != nil {
-		return nil, libvirt.Domain{}, classify(err)
+		err = classify(err)
+		if errors.Is(err, ErrNotFound) {
+			if x, xerr := c.lxc(); xerr == nil {
+				if d, xerr := x.DomainLookupByUUID(u); xerr == nil {
+					return x, d, nil
+				}
+			}
+		}
+		return nil, libvirt.Domain{}, err
 	}
 	return l, d, nil
 }
@@ -73,10 +82,15 @@ func (c *Client) DomainAction(uuid string, action Action) error {
 			return err
 		}
 		err = l.DomainCreate(d)
-	case ActionShutdown:
-		err = l.DomainShutdown(d)
-	case ActionReboot:
-		err = l.DomainReboot(d, libvirt.DomainRebootDefault)
+	case ActionShutdown, ActionReboot:
+		switch {
+		case c.isLXC(l):
+			err = powerContainer(l, d, action == ActionReboot)
+		case action == ActionReboot:
+			err = l.DomainReboot(d, libvirt.DomainRebootDefault)
+		default:
+			err = l.DomainShutdown(d)
+		}
 	case ActionForceOff:
 		err = l.DomainDestroy(d)
 	case ActionPause:

@@ -182,9 +182,13 @@ func (c *Client) SerialConsole(ctx context.Context, uuid, device string, in io.R
 	if device != "" {
 		dev = libvirt.OptString{device}
 	}
+	flags := uint32(libvirt.DomainConsoleForce)
+	if c.isLXC(l) {
+		flags = 0 // the LXC driver takes no flags (and cannot take a console over)
+	}
 	done := make(chan error, 1)
 	go func() {
-		done <- l.DomainOpenConsoleBidirectional(d, dev, in, out, uint32(libvirt.DomainConsoleForce))
+		done <- l.DomainOpenConsoleBidirectional(d, dev, in, out, flags)
 	}()
 	select {
 	case err := <-done:

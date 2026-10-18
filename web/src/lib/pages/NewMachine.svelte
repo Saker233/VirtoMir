@@ -11,7 +11,8 @@
   import Rocket from '@lucide/svelte/icons/rocket'
   import LayoutTemplate from '@lucide/svelte/icons/layout-template'
   import { openDeploy } from '../deploy.svelte'
-  import { api, errorText, type CreateSpec, type Pool, type VNetwork, type Volume } from '../api'
+  import { api, errorText, type ContainerImage, type CreateSpec, type Pool, type VNetwork, type Volume } from '../api'
+  import { track } from '../jobs'
   import { live } from '../live.svelte'
   import { formatBytes, formatKiB } from '../format'
   import { machineHref, router } from '../router.svelte'
@@ -152,7 +153,33 @@
   })
   let suggested = $derived(placement && cluster.current && placement.hostId !== cluster.current.id ? placement : null)
 
-  let canCreate = $derived(nameValid && !nameTaken && bootable && !ciProblem && vcpus >= 1 && memGiB > 0)
+  // System containers (ADR-0054): an image from the Linux Containers project and root's password.
+  let ctImages = $state<ContainerImage[]>([])
+  let ctAvailable = $state(true)
+  let ctReason = $state('')
+  let ctImage = $state('debian-13')
+  let rootPassword = $state('')
+  let rootPasswordOK = $derived(rootPassword.length >= 8 && !/[:\u0000-\u001f]/.test(rootPassword))
+  $effect(() => {
+    if (kind !== 'container' || ctImages.length) return
+    api
+      .containerImages()
+      .then((r) => {
+        ctImages = r.images
+        ctAvailable = r.available
+        ctReason = r.reason ?? ''
+      })
+      .catch((e) => {
+        ctAvailable = false
+        ctReason = errorText(e)
+      })
+  })
+
+  let canCreate = $derived(
+    kind === 'container'
+      ? nameValid && !nameTaken && ctAvailable && rootPasswordOK && vcpus >= 1 && memGiB > 0
+      : nameValid && !nameTaken && bootable && !ciProblem && vcpus >= 1 && memGiB > 0,
+  )
 
   let busy = $state(false)
   let error = $state('')
@@ -164,8 +191,26 @@
     void ent.respools().then((p) => (respools = p)).catch(() => {})
   })
 
+  let network = $derived<CreateSpec['network']>(
+    netChoice.startsWith('network:') ? { network: netChoice.slice(8) } : netChoice === 'bridge' ? { bridge } : undefined,
+  )
   // The request exactly as sent (also shown as code next to the form).
-  let spec = $derived<CreateSpec>({
+  let spec = $derived<CreateSpec>(kind === 'container' ? {
+    name,
+    kind,
+    os: 'linux',
+    vcpus,
+    memoryMiB: Math.round(memGiB * 1024),
+    firmware: 'uefi',
+    secureBoot: false,
+    tpm: false,
+    pool: '',
+    diskGiB: 0,
+    image: ctImage,
+    rootPassword,
+    network,
+    start,
+  } : {
     name,
     kind,
     os,
@@ -182,11 +227,7 @@
     baseImage: source === 'cloud' ? baseImage : undefined,
     diskPath: source === 'disk' ? existingDisk : undefined,
     cloudInit: source === 'cloud' ? { user: ciUser, password: ciPassword || undefined, sshKeys: keys } : undefined,
-    network: netChoice.startsWith('network:')
-      ? { network: netChoice.slice(8) }
-      : netChoice === 'bridge'
-        ? { bridge }
-        : undefined,
+    network,
     start,
   })
 
@@ -196,6 +237,15 @@
     busy = true
     error = ''
     try {
+      if (kind === 'container') {
+        const job = await api.createContainer(spec, respool || undefined)
+        track(job, {
+          success: t('{name} is ready', { name }),
+          onSuccess: (j) => j.result && router.navigate(machineHref(j.result)),
+        })
+        router.navigate('/')
+        return
+      }
       const res = await api.create(spec, respool || undefined)
       if (res.startError) toasts.push({ kind: 'warn', title: t('{name} was created but did not start', { name: name }), detail: res.startError })
       else toasts.push({ kind: 'info', title: start ? `${name} is starting` : `${name} created` })
@@ -265,7 +315,7 @@
       </div>
       {#if kind === 'container'}
         <p class="hint-note">
-          {t('High-grade lightweight system container sharing the Linux kernel via libvirt-lxc, with instant boot and bare-metal density.')}
+          {t('A Linux system that shares the host’s kernel (libvirt LXC): it starts in a second and uses only the memory it needs. Its root user is an unprivileged user on the host.')}
         </p>
       {:else}
         <div class="choices" role="radiogroup" aria-label={t('Operating system')}>
@@ -280,6 +330,29 @@
       {/if}
     </section>
 
+    {#if kind === 'container'}
+    <section class="ui-panel step">
+      <h2><span class="n">2</span> <Disc size={16} /> {t('Image')}</h2>
+      {#if !ctAvailable}
+        <div class="ui-error-box">{ctReason}</div>
+      {:else}
+        <div class="two">
+          <label class="ui-field">
+            <span class="label">{t('System')}</span>
+            <select class="ui-input" bind:value={ctImage}>
+              {#each ctImages as i (i.key)}<option value={i.key}>{i.label}</option>{/each}
+            </select>
+            <span class="hint">{t('From images.linuxcontainers.org, checked against its SHA-256 and kept for the next container.')}</span>
+          </label>
+          <label class="ui-field">
+            <span class="label">{t('Root password')}</span>
+            <input class="ui-input" type="password" bind:value={rootPassword} autocomplete="new-password" minlength="8" />
+            <span class="hint" class:warn={rootPassword !== '' && !rootPasswordOK}>{t('At least 8 characters, no colon. Sign in as root on the console.')}</span>
+          </label>
+        </div>
+      {/if}
+    </section>
+    {:else}
     <section class="ui-panel step">
       <h2><span class="n">2</span> <Disc size={16} /> {t('Source')}</h2>
       <div class="seg" role="radiogroup" aria-label={t('Where the system comes from')}>
@@ -346,6 +419,7 @@
         </label>
       {/if}
     </section>
+    {/if}
 
     <section class="ui-panel step">
       <h2><span class="n">3</span> <Cpu size={16} /> {t('Processor and memory')}</h2>
@@ -365,6 +439,7 @@
       </div>
     </section>
 
+    {#if kind === 'vm'}
     <section class="ui-panel step">
       <h2><span class="n">4</span> <HardDrive size={16} /> {t('Disk')}</h2>
       {#if source === 'disk'}
@@ -418,9 +493,10 @@
         <p class="error">{t('Without a disk the machine needs installation media to boot from.')}</p>
       {/if}
     </section>
+    {/if}
 
     <section class="ui-panel step">
-      <h2><span class="n">5</span> <Network size={16} /> {t('Network')}</h2>
+      <h2><span class="n">{kind === 'vm' ? 5 : 4}</span> <Network size={16} /> {t('Network')}</h2>
       <label class="ui-field">
         <span class="label">{t('Connect to')}</span>
         <select class="ui-input" bind:value={netChoice}>
@@ -479,6 +555,11 @@
     <dl>
       <dt>{t('Type')}</dt><dd>{kind === 'container' ? t('System Container (LXC)') : t('Virtual Machine (KVM)')}</dd>
       <dt>{t('Name')}</dt><dd>{name || '—'}</dd>
+      {#if kind === 'container'}
+      <dt>{t('System')}</dt><dd>{ctImages.find((i) => i.key === ctImage)?.label ?? '—'}</dd>
+      <dt>{t('CPU / RAM')}</dt><dd>{t('{vcpus} vCPU · {memGiB} GiB', { vcpus: vcpus, memGiB: memGiB })}</dd>
+      <dt>{t('Network')}</dt><dd>{netChoice.startsWith('network:') ? netChoice.slice(8) : netChoice === 'bridge' ? bridge : 'None'}</dd>
+      {:else}
       <dt>{t('System')}</dt><dd>{OSES.find((o) => o.key === os)?.label}</dd>
       <dt>{t('Source')}</dt><dd class="mono small">{(source === 'iso' ? iso : source === 'cloud' ? baseImage : existingDisk).split('/').pop() || (source === 'iso' && withDisk ? 'Empty disk' : '—')}</dd>
       <dt>{t('CPU / RAM')}</dt><dd>{t('{vcpus} vCPU · {memGiB} GiB', { vcpus: vcpus, memGiB: memGiB })}</dd>
@@ -486,6 +567,7 @@
       {#if source === 'cloud'}<dt>{t('Sign-in')}</dt><dd class="mono small">{ciUser}{ciPassword ? ' · password' : ''}{keys.length ? ` · ${keys.length} key${keys.length > 1 ? 's' : ''}` : ''}</dd>{/if}
       <dt>{t('Network')}</dt><dd>{netChoice.startsWith('network:') ? netChoice.slice(8) : netChoice === 'bridge' ? bridge : 'None'}</dd>
       <dt>{t('Firmware')}</dt><dd>{firmware === 'uefi' ? 'UEFI' : 'BIOS'}{secureBoot && firmware === 'uefi' ? ', Secure Boot' : ''}{tpm ? ', TPM' : ''}</dd>
+      {/if}
     </dl>
     {#if respools.length}
       <label class="ui-field">
@@ -506,7 +588,7 @@
       <Rocket size={15} />
       {busy ? 'Creating…' : start ? 'Create and start' : 'Create'}
     </button>
-    {#if !bootable}<span class="error">{t('Add a disk or installation media.')}</span>{/if}
+    {#if kind === 'vm' && !bootable}<span class="error">{t('Add a disk or installation media.')}</span>{/if}
 
     <IaCPanel {spec} />
   </aside>

@@ -3,6 +3,7 @@ package virt
 import (
 	"bytes"
 	"fmt"
+	"strings"
 
 	"github.com/digitalocean/go-libvirt"
 	"libvirt.org/go/libvirtxml"
@@ -12,7 +13,7 @@ import (
 // modern default (q35, VirtIO where the guest supports it, UEFI), and can be changed later.
 type CreateSpec struct {
 	Name      string `json:"name"`
-	Kind      string `json:"kind,omitempty"` // vm (default) or container
+	Kind      string `json:"kind,omitempty"` // vm (default) or container (CreateContainer)
 	OS        string `json:"os"`             // linux (default), windows, other
 	VCPUs     int    `json:"vcpus"`
 	MemoryMiB uint64 `json:"memoryMiB"`
@@ -21,6 +22,9 @@ type CreateSpec struct {
 	SecureBoot   bool   `json:"secureBoot"`
 	TPM          bool   `json:"tpm"`
 	Confidential string `json:"confidential,omitempty"` // sev, sev-snp, tdx
+	// Containers: one of ContainerImages and root's password.
+	Image        string `json:"image,omitempty"`
+	RootPassword string `json:"rootPassword,omitempty"`
 	// Disk: a new empty volume (Pool + DiskGiB), a copy of a cloud image grown to DiskGiB
 	// (BaseImage), an existing image used as is (DiskPath), or none.
 	Pool         string `json:"pool"`
@@ -67,7 +71,13 @@ func (s *CreateSpec) normalize() error {
 		if s.MemoryMiB < 64 || s.MemoryMiB > 16<<20 {
 			return invalidf("Memory must be between 64 MiB and 16 TiB.")
 		}
+		if len(s.RootPassword) < 8 || strings.ContainsFunc(s.RootPassword, func(r rune) bool { return r == ':' || r < ' ' }) {
+			return invalidf("Give root a password of at least 8 characters (no colon or line break); you sign in with it on the console.")
+		}
 		return nil
+	}
+	if s.Kind != "vm" {
+		return invalidf("Kind must be vm or container.")
 	}
 	s.OS = orDefault(s.OS, "linux")
 	if _, ok := profiles[s.OS]; !ok {
@@ -109,52 +119,6 @@ func (s *CreateSpec) normalize() error {
 // buildDomain returns the domain XML for a normalized spec. diskPath/diskFormat describe the
 // prepared system disk ("" for none). Optional diskVolume handles block storage pools (LVM, ZFS).
 func buildDomain(s CreateSpec, diskPath, diskFormat, seedPath string, diskVolume ...*libvirtxml.DomainDiskSourceVolume) *libvirtxml.Domain {
-	if s.Kind == "container" {
-		rootfs := diskPath
-		if rootfs == "" {
-			rootfs = fmt.Sprintf("/var/lib/virtomir/containers/%s/rootfs", s.Name)
-		}
-		x := &libvirtxml.Domain{
-			Type:          "lxc",
-			Name:          s.Name,
-			Memory:        &libvirtxml.DomainMemory{Value: uint(s.MemoryMiB), Unit: "MiB"},
-			CurrentMemory: &libvirtxml.DomainCurrentMemory{Value: uint(s.MemoryMiB), Unit: "MiB"},
-			VCPU:          &libvirtxml.DomainVCPU{Placement: "static", Value: uint(s.VCPUs)},
-			OS: &libvirtxml.DomainOS{
-				Type: &libvirtxml.DomainOSType{Type: "exe"},
-				Init: "/sbin/init",
-			},
-			Clock:      &libvirtxml.DomainClock{Offset: "utc"},
-			OnPoweroff: "destroy", OnReboot: "restart", OnCrash: "destroy",
-			Devices: &libvirtxml.DomainDeviceList{
-				Filesystems: []libvirtxml.DomainFilesystem{
-					{
-						AccessMode: "passthrough",
-						Source:     &libvirtxml.DomainFilesystemSource{Mount: &libvirtxml.DomainFilesystemSourceMount{Dir: rootfs}},
-						Target:     &libvirtxml.DomainFilesystemTarget{Dir: "/"},
-					},
-				},
-				Consoles: []libvirtxml.DomainConsole{
-					{
-						Source: &libvirtxml.DomainChardevSource{
-							Pty: &libvirtxml.DomainChardevSourcePty{},
-						},
-						Target: &libvirtxml.DomainConsoleTarget{Type: "lxc"},
-					},
-				},
-			},
-		}
-		if s.Network != nil {
-			x.Devices.Interfaces = []libvirtxml.DomainInterface{
-				{
-					Source: &libvirtxml.DomainInterfaceSource{
-						Network: &libvirtxml.DomainInterfaceSourceNetwork{Network: s.Network.Network},
-					},
-				},
-			}
-		}
-		return x
-	}
 	var diskVol *libvirtxml.DomainDiskSourceVolume
 	if len(diskVolume) > 0 {
 		diskVol = diskVolume[0]
@@ -303,6 +267,9 @@ func buildDomain(s CreateSpec, diskPath, diskFormat, seedPath string, diskVolume
 
 // CreateDomain creates the system disk, defines the machine and optionally starts it.
 func (c *Client) CreateDomain(spec CreateSpec) (CreateResult, error) {
+	if spec.Kind == "container" {
+		return CreateResult{}, invalidf("Containers are created with CreateContainer.")
+	}
 	if err := spec.normalize(); err != nil {
 		return CreateResult{}, err
 	}
@@ -310,7 +277,7 @@ func (c *Client) CreateDomain(spec CreateSpec) (CreateResult, error) {
 	if err != nil {
 		return CreateResult{}, err
 	}
-	if _, err := l.DomainLookupByName(spec.Name); err == nil {
+	if c.nameTaken(l, spec.Name) {
 		return CreateResult{}, refusedf("A machine named %s already exists.", spec.Name)
 	}
 	// Cloud-init seed requires a file (ISO); block pools (LVM, ZFS, Ceph, iSCSI) cannot store ISOs.
@@ -386,11 +353,7 @@ func (c *Client) CreateDomain(spec CreateSpec) (CreateResult, error) {
 		return CreateResult{}, classify(err)
 	}
 	res := CreateResult{UUID: formatUUID(d.UUID)}
-	c.log.Info("domain created", "domain", spec.Name, "os", spec.OS, "kind", spec.Kind)
-	if spec.Kind == "container" {
-		_ = c.writeMeta(l, d, vmMeta{Kind: "container"})
-		c.remember(res.UUID, vmMeta{Kind: "container"})
-	}
+	c.log.Info("domain created", "domain", spec.Name, "os", spec.OS)
 	if spec.Start {
 		if err := l.DomainCreate(d); err != nil {
 			res.StartError = classify(err).Error()

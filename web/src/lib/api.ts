@@ -502,6 +502,11 @@ export interface NICSpec {
   vlan?: number
 }
 
+export interface ContainerImage {
+  key: string
+  label: string
+}
+
 export interface CreateSpec {
   name: string
   kind?: 'vm' | 'container'
@@ -522,6 +527,9 @@ export interface CreateSpec {
   iso?: string
   network?: NICSpec
   start: boolean
+  /** Containers: a ContainerImage key and root's password. */
+  image?: string
+  rootPassword?: string
 }
 
 /** POST /api/v1/domains/{uuid}/deploy: a new machine from a template. */
@@ -985,6 +993,10 @@ export const api = {
   action: (uuid: string, action: Action) => request<void>('POST', `${domainPath(uuid)}/actions/${action}`),
   create: (spec: CreateSpec, respool?: string) =>
     request<{ uuid: string; startError?: string }>('POST', `/api/v1/domains${respool ? `?respool=${enc(respool)}` : ''}`, spec),
+  /** A system container is made in the background (the image may be downloaded first). */
+  createContainer: (spec: CreateSpec, respool?: string) =>
+    request<Job>('POST', `/api/v1/domains${respool ? `?respool=${enc(respool)}` : ''}`, spec),
+  containerImages: () => request<{ images: ContainerImage[]; available: boolean; reason?: string }>('GET', '/api/v1/containers/images'),
   setTemplate: (uuid: string, template: boolean) => request<void>('PUT', `${domainPath(uuid)}/template`, { template }),
   deploy: (uuid: string, spec: DeploySpec) => request<Job>('POST', `${domainPath(uuid)}/deploy`, spec),
   setAutostart: (uuid: string, enabled: boolean) => request<void>('PUT', `${domainPath(uuid)}/autostart`, { enabled }),

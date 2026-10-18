@@ -243,25 +243,33 @@ func mustRead(t *testing.T, file string) string {
 
 func TestContainerDomain(t *testing.T) {
 	spec := CreateSpec{
-		Name:      "c-alpine",
-		Kind:      "container",
-		VCPUs:     2,
-		MemoryMiB: 512,
-		Network:   &NICSpec{Network: "default"},
+		Name:         "c-alpine",
+		Kind:         "container",
+		VCPUs:        2,
+		MemoryMiB:    512,
+		RootPassword: "correct horse",
+		Network:      &NICSpec{Network: "default"},
 	}
 	if err := spec.normalize(); err != nil {
 		t.Fatalf("normalize failed: %v", err)
 	}
-	dom := buildDomain(spec, "/var/lib/virtomir/containers/c-alpine/rootfs", "", "")
-	xml, err := dom.Marshal()
+	for _, pw := range []string{"short", "has:colon", "line\nbreak"} {
+		bad := spec
+		bad.RootPassword = pw
+		if bad.normalize() == nil {
+			t.Errorf("root password %q accepted", pw)
+		}
+	}
+	xml, err := containerXML(spec, "/var/lib/virtomir/containers/c-alpine/rootfs").Marshal()
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)
 	}
-	if !strings.Contains(xml, `type="lxc"`) && !strings.Contains(xml, `type='lxc'`) {
-		t.Errorf("expected lxc domain, got: %s", xml)
-	}
-	if !strings.Contains(xml, "<type>exe</type>") || !strings.Contains(xml, "<init>/sbin/init</init>") {
-		t.Errorf("expected container OS, got: %s", xml)
+	for _, want := range []string{`type="lxc"`, "<type>exe</type>", "<init>/sbin/init</init>",
+		`<uid start="0" target="100000" count="65536">`, `<source dir="/var/lib/virtomir/containers/c-alpine/rootfs">`,
+		`<target type="lxc"`, `<source network="default">`} {
+		if !strings.Contains(xml, want) {
+			t.Errorf("container XML lacks %s:\n%s", want, xml)
+		}
 	}
 	var parsed libvirtxml.Domain
 	if err := parsed.Unmarshal(xml); err != nil {

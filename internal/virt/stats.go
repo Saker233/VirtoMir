@@ -65,7 +65,7 @@ func (c *Client) DomainStats() ([]DomainStats, error) {
 	for _, r := range recs {
 		out = append(out, parseStats(formatUUID(r.Dom.UUID), r.Params))
 	}
-	return out, nil
+	return append(out, c.containerStats()...), nil
 }
 
 // parseStats maps libvirt's flat "group.index.field" parameters onto DomainStats.

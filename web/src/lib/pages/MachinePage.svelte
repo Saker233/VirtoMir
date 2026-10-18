@@ -83,9 +83,13 @@
 
   type Tab = 'overview' | 'console' | 'firewall' | 'settings' | 'hardware' | 'snapshots' | 'backups' | 'changes' | 'xml'
   const TABS: Tab[] = ['overview', 'console', 'firewall', 'settings', 'hardware', 'snapshots', 'backups', 'changes', 'xml']
-  let tab = $derived<Tab>(
-    router.route.name === 'machine' && TABS.includes(router.route.tab as Tab) ? (router.route.tab as Tab) : 'overview',
-  )
+  // A system container (ADR-0054) has no VM settings, firewall, snapshots or backups.
+  const VM_ONLY: Tab[] = ['firewall', 'settings', 'snapshots', 'backups']
+  let container = $derived(detail?.kind === 'container')
+  let tab = $derived.by<Tab>(() => {
+    const want = router.route.name === 'machine' && TABS.includes(router.route.tab as Tab) ? (router.route.tab as Tab) : 'overview'
+    return container && VM_ONLY.includes(want) ? 'overview' : want
+  })
 
   // ---- Management ---------------------------------------------------------------------
   let dlg = $state<ManageDialog>(null)
@@ -419,21 +423,25 @@
         {t('Console')}
       </button>
     {/if}
+    {#if !container}
     <button role="tab" aria-selected={tab === 'firewall'} class:on={tab === 'firewall'} onclick={() => setTab('firewall')}>
       {t('Firewall')}
     </button>
     <button role="tab" aria-selected={tab === 'settings'} class:on={tab === 'settings'} onclick={() => setTab('settings')}>
       {t('Settings')}
     </button>
+    {/if}
     <button role="tab" aria-selected={tab === 'hardware'} class:on={tab === 'hardware'} onclick={() => setTab('hardware')}>
       {t('Hardware')} <span class="count num">{detail.devices.length}</span>
     </button>
+    {#if !container}
     <button role="tab" aria-selected={tab === 'snapshots'} class:on={tab === 'snapshots'} onclick={() => setTab('snapshots')}>
       {t('Snapshots')}
     </button>
     <button role="tab" aria-selected={tab === 'backups'} class:on={tab === 'backups'} onclick={() => setTab('backups')}>
       {t('Backups')}
     </button>
+    {/if}
     <button role="tab" aria-selected={tab === 'changes'} class:on={tab === 'changes'} onclick={() => setTab('changes')}>{t('Changes')}</button>
     <button role="tab" aria-selected={tab === 'xml'} class:on={tab === 'xml'} onclick={() => setTab('xml')}>{t('XML')}</button>
   </div>

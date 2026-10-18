@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -11,6 +12,7 @@ import (
 
 func (s *Server) domainRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/v1/domains", s.listDomains)
+	mux.HandleFunc("GET /api/v1/containers/images", s.containerImages)
 	mux.HandleFunc("POST /api/v1/domains", s.createDomain)
 	mux.HandleFunc("GET /api/v1/domains/{uuid}", s.getDomain)
 	mux.HandleFunc("DELETE /api/v1/domains/{uuid}", s.deleteDomain)
@@ -62,6 +64,10 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request) {
 	if rp != "" && !s.checkRespool(w, rp, "", d) {
 		return
 	}
+	if spec.Kind == "container" {
+		s.createContainer(w, r, spec, rp)
+		return
+	}
 	res, err := s.backend.CreateDomain(spec)
 	if err != nil {
 		s.writeError(w, err)
@@ -70,6 +76,59 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request) {
 	s.recordOwner(r, res.UUID)
 	s.joinRespool(rp, res.UUID)
 	s.done(w, http.StatusCreated, res)
+}
+
+// Containers (ADR-0054) are created in the background: the image may have to be downloaded.
+type containerBackend interface {
+	CreateContainer(ctx context.Context, spec virt.CreateSpec, report func(string)) (virt.CreateResult, error)
+	ContainerSupport() error
+}
+
+func (s *Server) containers(w http.ResponseWriter) (containerBackend, bool) {
+	cb, ok := s.backend.(containerBackend)
+	if !ok {
+		s.writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "system containers are not available"})
+	}
+	return cb, ok
+}
+
+// createContainer answers 202 with the job; its result is the new container's UUID.
+func (s *Server) createContainer(w http.ResponseWriter, r *http.Request, spec virt.CreateSpec, respool string) {
+	cb, ok := s.containers(w)
+	if !ok {
+		return
+	}
+	if err := cb.ContainerSupport(); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	job := s.jobs.Start("create", "Create container "+spec.Name, func(ctx context.Context, report func(string)) (string, error) {
+		res, err := cb.CreateContainer(ctx, spec, report)
+		if err != nil {
+			return "", err
+		}
+		s.recordOwner(r, res.UUID)
+		s.joinRespool(respool, res.UUID)
+		s.live.Refresh()
+		if res.StartError != "" {
+			return res.UUID, fmt.Errorf("created, but it did not start: %s", res.StartError)
+		}
+		return res.UUID, nil
+	})
+	s.writeJSON(w, http.StatusAccepted, job)
+}
+
+// containerImages lists the images containers start from, and whether this host can run them.
+func (s *Server) containerImages(w http.ResponseWriter, _ *http.Request) {
+	cb, ok := s.containers(w)
+	if !ok {
+		return
+	}
+	out := map[string]any{"images": virt.ContainerImages, "available": true}
+	if err := cb.ContainerSupport(); err != nil {
+		out["available"], out["reason"] = false, err.Error()
+	}
+	s.writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) getDomain(w http.ResponseWriter, r *http.Request) {

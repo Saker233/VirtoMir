@@ -114,6 +114,18 @@ func (c *Client) Delete(uuid string, removeStorage bool) (DeleteResult, error) {
 	if clones := c.linkedClones(l, uuid); len(clones) > 0 {
 		return res, refusedf("%s is the template of linked clones that read its disks: %s. Delete them first.", d.Name, strings.Join(clones, ", "))
 	}
+	if c.isLXC(l) { // a container: its storage is the root file system VirtoMir unpacked
+		if removeStorage {
+			if err := c.removeContainerFiles(l, d); err != nil {
+				return res, fmt.Errorf("remove the files of %s: %w", d.Name, err)
+			}
+		}
+		if err := l.DomainUndefine(d); err != nil {
+			return res, classify(err)
+		}
+		c.log.Info("container deleted", "domain", d.Name, "removeStorage", removeStorage)
+		return res, nil
+	}
 	var disks []string
 	if removeStorage {
 		x, err := c.parseDomain(l, d, true)

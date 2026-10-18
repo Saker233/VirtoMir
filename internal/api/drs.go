@@ -313,6 +313,9 @@ func placements(id, name string, snap live.Snapshot) (drs.HostMetrics, []drs.Dom
 	}
 	doms := make([]drs.DomainPlacement, 0, len(snap.Domains))
 	for _, d := range snap.Domains {
+		if d.Kind == "container" {
+			continue // containers do not live-migrate
+		}
 		doms = append(doms, drs.DomainPlacement{
 			UUID: d.UUID, Name: d.Name, HostID: id,
 			State:    strings.ToLower(string(d.State)),

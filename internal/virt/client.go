@@ -26,6 +26,11 @@ type Client struct {
 
 	mu sync.Mutex
 	l  *libvirt.Libvirt
+	lx lxcConn // system containers (lxc.go)
+
+	// ContainerDir holds the containers' root file systems and the downloaded images
+	// ("" = /var/lib/virtomir/containers).
+	ContainerDir string
 
 	metas metaCache
 }
@@ -62,6 +67,7 @@ func (c *Client) conn() (*libvirt.Libvirt, error) {
 }
 
 func (c *Client) Close() error {
+	c.closeLXC()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.l == nil {
@@ -164,7 +170,7 @@ func (c *Client) ListDomains() ([]Domain, error) {
 		c.addMeta(l, d, &s)
 		out = append(out, s)
 	}
-	return out, nil
+	return append(out, c.listContainers()...), nil
 }
 
 // DomainXML returns the domain definition. inactive selects the persistent config the
