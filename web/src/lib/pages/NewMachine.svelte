@@ -20,6 +20,7 @@
   import IaCPanel from '../components/IaCPanel.svelte'
   import { ent, type DRSPlacement, type PoolView } from '../enterprise'
   import { cluster } from '../cluster.svelte'
+  import { projects } from '../projects.svelte'
 
   type OS = CreateSpec['os']
   const OSES: { key: OS; label: string; hint: string }[] = [
@@ -76,6 +77,18 @@
   let maxCPUs = $derived(Math.max(1, live.host?.cpus ?? 8))
   let maxMemGiB = $derived(Math.max(1, Math.floor((live.host?.memoryKiB ?? 8 << 20) / (1 << 20))))
 
+  // Projects (ADR-0060): an optional home for the new machine. Only the ones the user may
+  // change things in (operator or better, admins get them all) are offered, and its pools
+  // and networks must be on the project's allowed lists.
+  let project = $state('')
+  $effect(() => {
+    if (!projects.loaded) void projects.load().catch(() => {})
+  })
+  let myProjects = $derived(
+    session.can('admin') ? projects.list : projects.operable(session.info?.user ?? ''),
+  )
+  let proj = $derived(projects.list.find((p) => p.id === project))
+
   let pools = $state<Pool[]>([])
   let isos = $state<{ pool: string; vol: Volume }[]>([])
   /** Unused disk images: candidates for cloud images and "use existing disk". */
@@ -118,9 +131,23 @@
 
   let templates = $derived((live.snapshot?.domains ?? []).filter((d) => d.template).sort((a, b) => a.name.localeCompare(b.name)))
   // File pools for cloud images and seeds:
-  let filePools = $derived(pools.filter((p) => ['dir', 'netfs', 'fs'].includes(p.type)))
+  let filePools = $derived(pools.filter((p) => ['dir', 'netfs', 'fs'].includes(p.type) && (!proj || proj.storagePools.includes(p.name))))
   // Disk pools for empty root disks: includes native LVM and ZFS block pools
-  let diskPools = $derived(pools.filter((p) => ['dir', 'netfs', 'fs', 'logical', 'zfs'].includes(p.type)))
+  let diskPools = $derived(pools.filter((p) => ['dir', 'netfs', 'fs', 'logical', 'zfs'].includes(p.type) && (!proj || proj.storagePools.includes(p.name))))
+  // Networks the project allows ("" while no project is chosen: every network).
+  let projNets = $derived(proj ? networks.filter((n) => proj.networks.includes(n.name)) : networks)
+
+  // Keep the choices inside the project's allowed lists.
+  $effect(() => {
+    void proj
+    if (!proj) return
+    if (!proj.storagePools.includes(pool)) {
+      const ok = diskPools[0]?.name ?? filePools[0]?.name
+      if (ok) pool = ok
+    }
+    const net = netChoice.startsWith('network:') ? netChoice.slice(8) : ''
+    if (net && !proj.networks.includes(net)) netChoice = projNets[0] ? `network:${projNets[0].name}` : 'none'
+  })
   let selectedPool = $derived(pools.find((p) => p.name === pool))
   let isBlockPool = $derived(selectedPool ? ['logical', 'zfs'].includes(selectedPool.type) : false)
   let diskTooBig = $derived(!!selectedPool && withDisk && diskGiB * 2 ** 30 > selectedPool.availableBytes)
@@ -216,6 +243,7 @@
     rootPassword,
     network,
     start,
+    project: project || undefined,
   } : {
     name,
     kind,
@@ -235,6 +263,7 @@
     cloudInit: source === 'cloud' ? { user: ciUser, password: ciPassword || undefined, sshKeys: keys } : undefined,
     network,
     start,
+    project: project || undefined,
   })
 
   async function create(e: SubmitEvent) {
@@ -506,7 +535,7 @@
       <label class="ui-field">
         <span class="label">{t('Connect to')}</span>
         <select class="ui-input" bind:value={netChoice}>
-          {#each networks as n (n.name)}
+          {#each projNets as n (n.name)}
             <option value="network:{n.name}">{n.name} ({n.mode === 'nat' ? 'NAT, internet through the host' : n.mode})</option>
           {/each}
           <option value="bridge">{t('A host bridge (machine appears on your LAN)')}</option>
@@ -576,6 +605,16 @@
       <dt>{t('Firmware')}</dt><dd>{firmware === 'uefi' ? 'UEFI' : 'BIOS'}{secureBoot && firmware === 'uefi' ? ', Secure Boot' : ''}{tpm ? ', TPM' : ''}</dd>
       {/if}
     </dl>
+    {#if myProjects.length}
+      <label class="ui-field">
+        <span class="label">{t('Project')}</span>
+        <select class="ui-input" bind:value={project}>
+          <option value="">{t('No project (global)')}</option>
+          {#each myProjects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
+        </select>
+        <span class="hint">{t('Only the projects you may change things in; their pools and networks are the choices above.')}</span>
+      </label>
+    {/if}
     {#if respools.length}
       <label class="ui-field">
         <span class="label">{t('Resource pool')}</span>

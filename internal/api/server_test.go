@@ -10,10 +10,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
 
+	"github.com/onurbaydas/virtomir/internal/project"
 	"github.com/onurbaydas/virtomir/internal/virt"
 )
 
@@ -232,3 +234,35 @@ func TestStream(t *testing.T) {
 		t.Errorf("stream data = %s, want backlog then live update", got)
 	}
 }
+
+func TestServerWiringProjectsAndVMware(t *testing.T) {
+	pj, err := project.Open(filepath.Join(t.TempDir(), "projects.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vmStore := &fakeVMwareStore{}
+	s := NewServer(Options{
+		Backend:     &fakeBackend{},
+		Live:        &fakeLive{},
+		Projects:    pj,
+		VMwareStore: vmStore,
+	})
+	if s.projects != pj {
+		t.Errorf("expected projects to be wired in Server struct")
+	}
+	if s.vmwareStore != vmStore {
+		t.Errorf("expected vmwareStore to be wired in Server struct")
+	}
+	recProj := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recProj, httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil))
+	if recProj.Code != http.StatusOK {
+		t.Errorf("GET /api/v1/projects status = %d, want 200", recProj.Code)
+	}
+
+	recVm := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recVm, httptest.NewRequest(http.MethodGet, "/api/v1/vmware/connection", nil))
+	if recVm.Code != http.StatusOK {
+		t.Errorf("GET /api/v1/vmware/connection status = %d, want 200", recVm.Code)
+	}
+}
+

@@ -1,8 +1,11 @@
 package virt
 
 import (
+	"encoding/xml"
 	"strings"
 	"testing"
+
+	"libvirt.org/go/libvirtxml"
 )
 
 func TestRewriteForMove(t *testing.T) {
@@ -24,6 +27,50 @@ func TestRewriteForMove(t *testing.T) {
 	}
 	if strings.Count(out, "device=\"cdrom\"") != 1 {
 		t.Errorf("the CD-ROM drive must stay (only its media goes)")
+	}
+}
+
+// A machine's project lives in its <metadata>, which is part of the domain XML, so it
+// travels with the definition: a move turns the XML into a plan and adopts it on the
+// target, and a live migration carries the same definition through libvirt. The project
+// must come out of that round-trip (ADR-0060).
+func TestProjectSurvivesTheMoveXML(t *testing.T) {
+	doc := string(mustRead(t, "testdata/debian-uefi.xml"))
+	// Where libvirt puts custom metadata, as DomainGetXMLDesc hands it back.
+	doc = strings.Replace(doc, "</description>",
+		"</description>\n  <metadata><virtomir:vm xmlns:virtomir=\""+metaURI+"\" owner=\"op\" project=\"dev\"/></metadata>", 1)
+
+	// PlanMove parses the definition and marshals it into the plan's XML.
+	var plan libvirtxml.Domain
+	if err := plan.Unmarshal(doc); err != nil {
+		t.Fatal(err)
+	}
+	planXML, err := plan.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The target host adopts the definition after RewriteForMove pointed it at the
+	// copied disks, which parses and marshals it once more.
+	moved, _, err := RewriteForMove(planXML, map[string]string{
+		"/var/lib/libvirt/images/debian-uefi.qcow2": "/srv/pool-b/debian-uefi.qcow2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var there libvirtxml.Domain
+	if err := there.Unmarshal(moved); err != nil {
+		t.Fatal(err)
+	}
+	if there.Metadata == nil {
+		t.Fatalf("the metadata element was dropped:\n%s", moved)
+	}
+	// readMeta reads this same element out of DomainGetMetadata's answer.
+	var m vmMeta
+	if err := xml.Unmarshal([]byte(there.Metadata.XML), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Owner != "op" || m.Project != "dev" {
+		t.Fatalf("the project did not travel: %+v (metadata: %s)", m, there.Metadata.XML)
 	}
 }
 

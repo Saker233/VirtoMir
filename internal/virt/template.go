@@ -28,11 +28,13 @@ type vmMeta struct {
 	LinkedFrom string   `xml:"linked-from,attr,omitempty"`
 	// Owner is who created the machine through VirtoMir (quotas, ADR-0022).
 	Owner string `xml:"owner,attr,omitempty"`
-	Kind  string `xml:"kind,attr,omitempty"`
+	// Project is the multi-tenancy project the machine belongs to (ADR-0060).
+	Project string `xml:"project,attr,omitempty"`
+	Kind    string `xml:"kind,attr,omitempty"`
 }
 
 func (m vmMeta) empty() bool {
-	return !m.Template && m.LinkedFrom == "" && m.Owner == "" && m.Kind == ""
+	return !m.Template && m.LinkedFrom == "" && m.Owner == "" && m.Project == "" && m.Kind == ""
 }
 
 // metaCache spares the 1-second domain list a metadata RPC per machine. Entries VirtoMir
@@ -68,7 +70,7 @@ func (c *Client) meta(l *libvirt.Libvirt, d libvirt.Domain) vmMeta {
 
 func (c *Client) addMeta(l *libvirt.Libvirt, d libvirt.Domain, s *Domain) {
 	m := c.meta(l, d)
-	s.Template, s.LinkedFrom, s.Owner, s.Kind = m.Template, m.LinkedFrom, m.Owner, m.Kind
+	s.Template, s.LinkedFrom, s.Owner, s.Project, s.Kind = m.Template, m.LinkedFrom, m.Owner, m.Project, m.Kind
 	if s.Kind == "" {
 		s.Kind = "vm"
 	}
@@ -85,6 +87,20 @@ func (c *Client) SetOwner(uuid, owner string) error {
 		return err
 	}
 	m.Owner = owner
+	return c.writeMeta(l, d, m)
+}
+
+// SetProject puts a machine into a project ("" takes it out again; kept in its <metadata>).
+func (c *Client) SetProject(uuid, projectID string) error {
+	l, d, err := c.lookup(uuid)
+	if err != nil {
+		return err
+	}
+	m, err := readMeta(l, d)
+	if err != nil {
+		return err
+	}
+	m.Project = projectID
 	return c.writeMeta(l, d, m)
 }
 

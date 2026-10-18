@@ -12,6 +12,8 @@ type Role int
 
 const (
 	NoAccess Role = iota
+	// Member has no global role, but belongs to one or more projects (ADR-0060).
+	Member
 	// Viewer sees everything (machines, metrics, XML) but changes nothing.
 	Viewer
 	// Operator runs machines day to day: power, console, media, snapshots.
@@ -20,7 +22,7 @@ const (
 	Admin
 )
 
-var roleNames = map[Role]string{NoAccess: "none", Viewer: "viewer", Operator: "operator", Admin: "admin"}
+var roleNames = map[Role]string{NoAccess: "none", Member: "member", Viewer: "viewer", Operator: "operator", Admin: "admin"}
 
 func (r Role) String() string { return roleNames[r] }
 
@@ -30,7 +32,7 @@ func ParseRole(s string) (Role, error) {
 			return r, nil
 		}
 	}
-	return NoAccess, fmt.Errorf("unknown role %q (viewer, operator or admin)", s)
+	return NoAccess, fmt.Errorf("unknown role %q (member, viewer, operator or admin)", s)
 }
 
 func (r Role) MarshalJSON() ([]byte, error) { return json.Marshal(r.String()) }

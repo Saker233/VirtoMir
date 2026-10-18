@@ -2,7 +2,7 @@
 // from world.ts; the common changes (power actions, snapshots, new machines, clones, rename,
 // delete, schedules, alerts) are applied to it, everything else answers "done" without effect.
 
-import type { CreateSpec, DeploySpec, DomainState, Job, ScheduleInfo, SnapshotInfo, VMwareConnection, VMwareInventory, VMwareWave } from '../api'
+import type { CreateSpec, DeploySpec, DomainState, Job, Project, ScheduleInfo, SnapshotInfo, VMwareConnection, VMwareInventory, VMwareWave } from '../api'
 import * as w from './world'
 
 export interface Reply {
@@ -288,6 +288,9 @@ function domainRoute(host: w.DemoHost, method: string, rest: string[], q: URLSea
       for (const p of w.respools) p.machines = p.machines.filter((u) => u !== m.uuid)
       w.respools.find((p) => p.id === body?.pool)?.machines.push(m.uuid)
       return none()
+    case op === 'PUT project':
+      m.project = body?.project || undefined
+      return none()
     case op === 'PUT media' || op === 'POST disks' || op === 'POST interfaces' || op === 'POST hostdevs' || op === 'POST devices' || op === 'POST devices/detach':
       return json({ appliesOnNextBoot: false, target: 'vdb', liveError: '' })
     case method === 'POST' && rest[1] === 'disks' && rest[3] === 'resize':
@@ -309,6 +312,7 @@ function createMachine(host: w.DemoHost, spec: CreateSpec): Reply {
     secureBoot: spec.secureBoot,
     tpm: spec.tpm,
     network: spec.network?.network ?? 'default',
+    project: spec.project,
     state: 'shutoff',
     profile: 'web',
   })
@@ -576,6 +580,18 @@ export function handle(method: string, url: URL, body: any): Reply {
     case 'POST /api/v1/domains/import':
       return json({ error: DEMO_ONLY }, 422)
 
+    // Projects (ADR-0060)
+    case 'GET /api/v1/projects':
+      return json({ projects: w.projects })
+    case 'POST /api/v1/projects': {
+      const p = body as Project
+      if (!p?.id || !p?.name) return json({ error: 'a project needs an ID and a name' }, 422)
+      if (w.projects.some((x) => x.id === p.id)) return json({ error: `a project named ${p.id} exists already` }, 409)
+      const created: Project = { ...p, created: new Date().toISOString() }
+      w.projects.push(created)
+      return json({ project: created }, 201)
+    }
+
     // Storage and networks
     case 'GET /api/v1/storage/pools':
       return json({ pools: w.pools })
@@ -776,6 +792,23 @@ export function handle(method: string, url: URL, body: any): Reply {
     if (method === 'POST' && parts[3] === 'download') return json(job('download', `Download ${body?.name ?? 'image'} into ${p.name}`, 6000))
     if (method === 'POST' && (parts[3] === 'upload' || parts[3] === 'import-ova')) return json({ error: DEMO_ONLY }, 422)
     return method === 'GET' ? notFound() : json({ restartNeeded: false })
+  }
+  if (parts[0] === 'projects' && parts.length >= 2) {
+    const i = w.projects.findIndex((p) => p.id === parts[1])
+    if (method === 'GET') return i >= 0 ? json(w.projects[i]) : notFound(`no project ${parts[1]}`)
+    if (method === 'PUT') {
+      if (i < 0) return notFound(`no project ${parts[1]}`)
+      const p = body as Project
+      w.projects[i] = { ...p, id: w.projects[i].id, created: w.projects[i].created }
+      return json({ project: w.projects[i] })
+    }
+    if (method === 'DELETE') {
+      if (i >= 0) {
+        w.projects.splice(i, 1)
+        for (const m of w.machines) if (m.project === parts[1]) m.project = undefined
+      }
+      return none()
+    }
   }
   if (parts[0] === 'networks' && parts.length >= 2) {
     const n = w.networks.find((x) => x.name === parts[1])

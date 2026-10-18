@@ -2,7 +2,7 @@
 
 import { api, setUnauthorizedHandler, type Domain, type MyQuota, type Role, type Session } from './api'
 
-const RANK: Record<Role, number> = { viewer: 1, operator: 2, admin: 3 }
+const RANK: Record<Role, number> = { member: 0, viewer: 1, operator: 2, admin: 3 }
 
 class SessionStore {
   /** null until the first check finished. */

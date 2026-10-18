@@ -97,6 +97,29 @@ func tagOf(path string) string {
 	return seg
 }
 
+// projectSchema describes a project (ADR-0060) in the OpenAPI document; machines carry
+// their project as the "project" field (empty = global).
+func projectSchema() map[string]any {
+	str := func() map[string]any { return map[string]any{"type": "string"} }
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":          str(),
+			"name":        str(),
+			"description": str(),
+			"members": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{
+				"kind": map[string]any{"type": "string", "description": "user or group"},
+				"name": str(),
+				"role": map[string]any{"type": "string", "description": "viewer, operator or admin"},
+			}}},
+			"limits":       map[string]any{"type": "object", "description": "machines, vcpus, memoryMiB, diskGiB; zero = unlimited"},
+			"storagePools": map[string]any{"type": "array", "items": str()},
+			"networks":     map[string]any{"type": "array", "items": str()},
+			"created":      str(),
+		},
+	}
+}
+
 // openAPI builds an OpenAPI 3.1 document of the registered routes: path, method, parameters,
 // the role each needs and how to authenticate. Bodies are JSON unless noted; the types are
 // the ones in web/src/lib/api.ts.
@@ -144,7 +167,15 @@ func (s *Server) openAPI(routes []route) map[string]any {
 			op["parameters"] = params
 		}
 		if r.method == http.MethodPost || r.method == http.MethodPut || r.method == http.MethodPatch {
-			op["requestBody"] = map[string]any{"content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"type": "object"}}}}
+			body := map[string]any{"type": "object"}
+			if strings.HasPrefix(p, "/api/v1/projects") {
+				// Projects (ADR-0060): bodies are whole Project objects.
+				body = map[string]any{"$ref": "#/components/schemas/Project"}
+			}
+			if strings.HasPrefix(p, "/api/v1/domains/") && strings.HasSuffix(p, "/project") {
+				body = map[string]any{"type": "object", "properties": map[string]any{"project": map[string]any{"type": "string", "description": "the project the machine moves into; empty makes it global again"}}}
+			}
+			op["requestBody"] = map[string]any{"content": map[string]any{"application/json": map[string]any{"schema": body}}}
 		}
 		if paths[p] == nil {
 			paths[p] = map[string]any{}
@@ -178,7 +209,8 @@ func (s *Server) openAPI(routes []route) map[string]any {
 				"session": map[string]any{"type": "apiKey", "in": "cookie", "name": auth.CookieName},
 			},
 			"schemas": map[string]any{
-				"Error": map[string]any{"type": "object", "properties": map[string]any{"error": map[string]any{"type": "string"}}},
+				"Error":   map[string]any{"type": "object", "properties": map[string]any{"error": map[string]any{"type": "string"}}},
+				"Project": projectSchema(),
 			},
 		},
 		"security": []any{map[string]any{"token": []any{}}, map[string]any{"session": []any{}}},

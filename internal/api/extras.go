@@ -7,6 +7,7 @@ import (
 
 	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/history"
+	"github.com/onurbaydas/virtomir/internal/project"
 	"github.com/onurbaydas/virtomir/internal/respool"
 	"github.com/onurbaydas/virtomir/internal/virt"
 )
@@ -73,6 +74,13 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 	if (addCPU > 0 || addMem > 0) && !s.checkRespool(w, "", r.PathValue("uuid"), respool.Demand{VCPUs: addCPU, MemoryMiB: addMem}) {
 		return
 	}
+	// A project machine may only grow within its project's limits (ADR-0060).
+	if addCPU > 0 || addMem > 0 {
+		id := identity(r)
+		if !s.checkProject(w, id.Name, id.Role, s.projectOf(r.PathValue("uuid")), project.Usage{VCPUs: addCPU, MemoryMiB: int64(addMem)}, "", nil) {
+			return
+		}
+	}
 	res, err := s.backend.SaveSettings(r.PathValue("uuid"), set)
 	if err != nil {
 		s.writeError(w, err)
@@ -133,10 +141,20 @@ func (s *Server) resizeDisk(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &b) {
 		return
 	}
-	if d, ok := s.diskGrowth(r.PathValue("uuid"), r.PathValue("target"), b.SizeGiB); ok && !s.checkRespool(w, "", r.PathValue("uuid"), d) {
-		return
+	uuid := r.PathValue("uuid")
+	if d, ok := s.diskGrowth(uuid, r.PathValue("target"), b.SizeGiB); ok {
+		if !s.checkRespool(w, "", uuid, d) {
+			return
+		}
+		// Growing a project machine's disk must fit its project's limits (ADR-0060).
+		if g := (d.StorageBytes + 1<<30 - 1) >> 30; g > 0 {
+			id := identity(r)
+			if !s.checkProject(w, id.Name, id.Role, s.projectOf(uuid), project.Usage{DiskGiB: int64(g)}, "", nil) {
+				return
+			}
+		}
 	}
-	if err := s.backend.ResizeDisk(r.PathValue("uuid"), r.PathValue("target"), b.SizeGiB); err != nil {
+	if err := s.backend.ResizeDisk(uuid, r.PathValue("target"), b.SizeGiB); err != nil {
 		s.writeError(w, err)
 		return
 	}

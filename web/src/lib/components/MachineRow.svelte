@@ -11,7 +11,7 @@
   import Sparkline from './Sparkline.svelte'
   import MachineActions from './MachineActions.svelte'
 
-  let { d, selected = false, onselect, hostName }: { d: Domain; selected?: boolean; onselect?: (on: boolean) => void; hostName?: string } = $props()
+  let { d, selected = false, onselect, hostName, projectName }: { d: Domain; selected?: boolean; onselect?: (on: boolean) => void; hostName?: string; projectName?: string } = $props()
 
   let pending = $derived(live.pending[d.uuid])
   let active = $derived(isActive(d.state))
@@ -54,6 +54,10 @@
   </div>
 
   <div role="cell"><StatePill state={d.state} progress={pending ? ACTIONS[pending.action].progress : undefined} /></div>
+
+  <div class="metric" role="cell" title={projectName ?? t('No project (global)')}>
+    {#if projectName}<span class="proj">{projectName}</span>{:else}<span class="proj none">—</span>{/if}
+  </div>
 
   <div class="metric num" role="cell" title={t('Virtual CPUs')}>{plural(d.vcpus, 'vCPU')}</div>
 
@@ -196,6 +200,23 @@
   .metric {
     color: var(--text-2);
     white-space: nowrap;
+  }
+  .proj {
+    display: inline-block;
+    max-width: 110px;
+    overflow: hidden;
+    padding: 1px 6px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-size: 11.5px;
+    text-overflow: ellipsis;
+  }
+  .proj.none {
+    border: 0;
+    background: none;
+    padding: 0;
+    color: var(--text-3);
   }
   .off .metric {
     color: var(--text-3);
