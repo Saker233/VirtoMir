@@ -13,11 +13,17 @@
   import Power from '@lucide/svelte/icons/power'
   import Zap from '@lucide/svelte/icons/zap'
   import { router } from '../router.svelte'
+  import { projects } from '../projects.svelte'
 
   type Filter = 'all' | 'running' | 'stopped'
   let filter = $state<Filter>('all')
   let hostFilter = $state<string | null>(null) // null = all nodes
+  let projectFilter = $state('') // '' = all projects, 'none' = only global machines
   let query = $state('')
+
+  $effect(() => {
+    if (!projects.loaded) void projects.load().catch(() => {})
+  })
 
   interface ClusterDomain extends Domain {
     hostId?: string
@@ -87,6 +93,8 @@
       const on = isActive(d.state) || d.state === 'paused'
       if (filter === 'running' && !on) return false
       if (filter === 'stopped' && on) return false
+      if (projectFilter === 'none' && d.project) return false
+      if (projectFilter !== '' && projectFilter !== 'none' && (d.project ?? '') !== projectFilter) return false
       const q = query.trim().toLowerCase()
       return (
         !q ||
@@ -163,6 +171,14 @@
           </button>
         {/each}
       </div>
+      <label class="proj-filter">
+        <span class="sr-only">{t('Filter by project')}</span>
+        <select bind:value={projectFilter} aria-label={t('Filter by project')}>
+          <option value="">{t('All projects')}</option>
+          <option value="none">{t('No project (global)')}</option>
+          {#each projects.list as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
+        </select>
+      </label>
       <label class="search">
         <Search size={15} />
         <input type="search" placeholder={t('Find by name or UUID')} bind:value={query} spellcheck="false" />
@@ -200,6 +216,7 @@
         {t('Name')}
       </span>
       <span role="columnheader">{t('State')}</span>
+      <span role="columnheader">{t('Project')}</span>
       <span role="columnheader">{t('CPUs')}</span>
       <span role="columnheader">{t('Memory')}</span>
       <span role="columnheader">{t('CPU usage · 60 s')}</span>
@@ -224,7 +241,7 @@
       </div>
     {:else}
       {#each shown as d (d.uuid)}
-        <MachineRow {d} hostName={cluster.clustered ? d.hostName : undefined} selected={selected.has(d.uuid)} onselect={session.can('operator') ? (on) => select(d.uuid, on) : undefined} />
+        <MachineRow {d} projectName={d.project ? projects.name(d.project) : undefined} hostName={cluster.clustered ? d.hostName : undefined} selected={selected.has(d.uuid)} onselect={session.can('operator') ? (on) => select(d.uuid, on) : undefined} />
       {/each}
     {/if}
   </div>
@@ -232,7 +249,7 @@
 
 <style>
   .panel {
-    --cols: minmax(200px, 1.6fr) 150px 80px 120px minmax(140px, 1.2fr) 190px;
+    --cols: minmax(200px, 1.6fr) 150px 110px 80px 120px minmax(140px, 1.2fr) 190px;
     background: var(--surface);
     border: var(--frame) solid var(--border-strong);
     border-radius: var(--radius-sm);
@@ -287,6 +304,19 @@
   .count {
     font-size: 11.5px;
     color: var(--text-3);
+  }
+  .proj-filter select {
+    height: 34px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elev);
+    color: var(--text);
+    font-size: 13px;
+    outline: none;
+  }
+  .proj-filter select:focus {
+    border-color: var(--accent);
   }
   .search {
     margin-left: auto;
@@ -481,7 +511,7 @@
     .panel :global(.row > :nth-child(5)) {
       display: none;
     }
-    .panel :global(.row > :nth-child(6)) {
+    .panel :global(.row > :nth-child(7)) {
       grid-column: 1 / -1;
       justify-content: flex-start;
     }

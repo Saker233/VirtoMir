@@ -92,7 +92,7 @@ func (t *Tokens) Create(owner Identity, name string, role Role, ttl time.Duratio
 	if name == "" || len(name) > 64 {
 		return "", Token{}, errTokenName
 	}
-	if role == NoAccess || role > owner.Role {
+	if role < Viewer || role > owner.Role {
 		return "", Token{}, ErrTokenRole
 	}
 	id := randHex(6)

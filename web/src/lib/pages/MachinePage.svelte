@@ -30,6 +30,7 @@
   import Maximize2 from '@lucide/svelte/icons/maximize-2'
   import Gauge from '@lucide/svelte/icons/gauge'
   import ConfirmButton from '../components/ConfirmButton.svelte'
+  import Dialog from '../components/Dialog.svelte'
   import ManageDialogs, { type ManageDialog } from '../components/ManageDialogs.svelte'
   import ChangesPanel from '../components/ChangesPanel.svelte'
   import QemuArgsCard from '../components/QemuArgsCard.svelte'
@@ -44,6 +45,8 @@
   import Disc from '@lucide/svelte/icons/disc'
   import LayoutTemplate from '@lucide/svelte/icons/layout-template'
   import ArrowRightLeft from '@lucide/svelte/icons/arrow-right-left'
+  import FolderKanban from '@lucide/svelte/icons/folder-kanban'
+  import { projects } from '../projects.svelte'
   import { cluster } from '../cluster.svelte'
   import { machineHref } from '../router.svelte'
   import { errorText } from '../api'
@@ -96,6 +99,12 @@
   let mediaDrive = $state<Device | undefined>()
   let addOpen = $state(false)
   let addKind = $state<ExtraDeviceKind | null>(null)
+  let projectDlg = $state(false)
+  let targetProject = $state('')
+
+  $effect(() => {
+    if (!projects.loaded) void projects.load().catch(() => {})
+  })
 
   let manageItems = $derived.by((): MenuItem[] => {
     if (!detail) return []
@@ -112,6 +121,13 @@
           ? { label: t('Turn into a normal machine'), icon: LayoutTemplate, run: () => void setTemplate(false), disabled: admin }
           : { label: t('Make template…'), icon: LayoutTemplate, run: () => (dlg = 'template'), disabled: admin },
       )
+    if (detail.persistent)
+      items.push({
+        label: t('Move to project…'),
+        icon: FolderKanban,
+        run: () => ((targetProject = dom?.project ?? ''), (projectDlg = true)),
+        disabled: session.why('operator') || undefined,
+      })
     if (detail.persistent)
       items.push({
         label: liveDom?.autostart ?? detail.autostart ? 'Don’t start with the host' : t('Start with the host'),
@@ -140,6 +156,21 @@
       await load()
     } catch (e) {
       toasts.push({ kind: 'error', title: t('Autostart not changed'), detail: errorText(e) })
+    }
+  }
+
+  async function saveProject() {
+    try {
+      await api.setMachineProject(uuid, targetProject)
+      projectDlg = false
+      toasts.push({
+        kind: 'info',
+        title: targetProject ? t('{name} moved to {project}', { name: detail?.name, project: projects.name(targetProject) }) : t('{name} is global again', { name: detail?.name }),
+      })
+      await load()
+      await projects.load()
+    } catch (e) {
+      toasts.push({ kind: 'error', title: t('Project not changed'), detail: errorText(e) })
     }
   }
 
@@ -348,6 +379,7 @@
           <span class="chip" title={dom.persistent ? 'Defined: survives a host reboot' : t('Exists only while running')}>
             {dom.persistent ? 'persistent' : 'transient'}
           </span>
+          {#if dom.project}<span class="chip" title={t('The project this machine belongs to')}>{projects.name(dom.project) || dom.project}</span>{/if}
           {#if dom.autostart}<span class="chip" title={t('Starts when the host boots')}>{t('autostart')}</span>{/if}
           {#if dom.template}<span class="chip accent" title={t('Never starts; new machines are made from it')}><LayoutTemplate size={12} /> {t('template')}</span>{/if}
           {#if dom.linkedFrom}
@@ -562,6 +594,24 @@
   {/if}
 
   <ManageDialogs which={dlg} {detail} drive={mediaDrive} {active} onclose={() => (dlg = null)} onchange={load} />
+
+  <Dialog open={projectDlg} title={t('Move to project')} width={440} onclose={() => (projectDlg = false)}>
+    <p class="dlg-lead">
+      {t('{name} moves with its disks; the target project\'s limits and allowed pools and networks apply.', { name: dom?.name })}
+    </p>
+    <label class="ui-field">
+      <span class="label">{t('Project')}</span>
+      <select class="ui-input" bind:value={targetProject}>
+        <option value="">{t('No project (global)')}</option>
+        {#each projects.list as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
+      </select>
+      <span class="hint">{t('Only projects where you are an operator (or better) accept it.')}</span>
+    </label>
+    <div class="dlg-btns">
+      <button class="ui-btn" onclick={() => (projectDlg = false)}>{t('Cancel')}</button>
+      <button class="ui-btn primary" onclick={() => void saveProject()}>{t('Move')}</button>
+    </div>
+  </Dialog>
   {#if addOpen}
     <!-- Loaded on first use: keeps the main bundle small. -->
     {#await import('../components/AddDeviceDialog.svelte') then { default: AddDeviceDialog }}
@@ -571,6 +621,16 @@
 {/if}
 
 <style>
+  .dlg-lead {
+    margin: 0;
+    color: var(--text-2);
+    font-size: 13px;
+  }
+  .dlg-btns {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
   .back {
     display: inline-flex;
     align-items: center;

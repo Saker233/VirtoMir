@@ -16,6 +16,7 @@
   import Boxes from '@lucide/svelte/icons/boxes'
   import CircuitBoard from '@lucide/svelte/icons/circuit-board'
   import FileText from '@lucide/svelte/icons/file-text'
+  import FolderKanban from '@lucide/svelte/icons/folder-kanban'
   import { cluster } from '../cluster.svelte'
   import { alerts } from '../alerts.svelte'
   import { session } from '../session.svelte'
@@ -44,6 +45,7 @@
     { name: 'backups', href: '/backups', label: t('Backups'), icon: Archive, role: 'viewer' },
     { name: 'alerts', href: '/alerts', label: t('Alerts'), icon: Bell, role: 'viewer' },
     { name: 'activity', href: '/activity', label: t('Activity'), icon: ClockArrowUp, role: 'admin' },
+    { name: 'projects', href: '/projects', label: t('Projects'), icon: FolderKanban, role: 'admin' },
     { name: 'reports', href: '/reports', label: t('Reports'), icon: FileText, role: 'viewer' },
   ] as const
   // Cluster: admins always (that is where hosts are added), others once there is one.

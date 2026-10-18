@@ -47,6 +47,8 @@ export interface Domain {
   linkedFrom?: string
   /** Who created it through VirtoMir (counts against their quota). */
   owner?: string
+  /** The multi-tenancy project the machine belongs to (ADR-0060); empty = global. */
+  project?: string
   /** Machine kind: 'vm' (default) or 'container' (LXC). */
   kind?: 'vm' | 'container'
   /** Share of the domain's own vCPUs in use (0–100). */
@@ -296,7 +298,7 @@ const netPath = (name: string) => `/api/v1/networks/${enc(name)}`
 
 // ---- Management API types (mirror internal/virt) ------------------------------------
 
-export type Role = 'viewer' | 'operator' | 'admin'
+export type Role = 'member' | 'viewer' | 'operator' | 'admin'
 
 export interface Session {
   mode: 'pam' | 'none'
@@ -527,6 +529,8 @@ export interface CreateSpec {
   iso?: string
   network?: NICSpec
   start: boolean
+  /** The project the new machine belongs to (ADR-0060); empty = global. */
+  project?: string
   /** Containers: a ContainerImage key and root's password. */
   image?: string
   rootPassword?: string
@@ -849,6 +853,41 @@ export interface MyQuota {
   used?: { machines: number; vcpus: number; memoryMiB: number; diskGiB?: number }
 }
 
+/** A member of a project: one user (kind "user") or a whole Linux group (kind "group"). */
+export interface ProjectMember {
+  kind: 'user' | 'group'
+  name: string
+  role: Role
+}
+
+/** What a project's machines together may use; zero means unlimited. */
+export interface ProjectLimits {
+  machines: number
+  vcpus: number
+  memoryMiB: number
+  diskGiB: number
+}
+
+/** What a project's machines use now. */
+export interface ProjectUsage {
+  machines: number
+  vcpus: number
+  memoryMiB: number
+  diskGiB: number
+}
+
+/** One tenant (ADR-0060): machines, storage pools and networks with members and limits. */
+export interface Project {
+  id: string
+  name: string
+  description?: string
+  members: ProjectMember[]
+  limits: ProjectLimits
+  storagePools: string[]
+  networks: string[]
+  created: string
+}
+
 export interface ConfigVersion {
   id: string
   time: string
@@ -1011,6 +1050,12 @@ export const api = {
   saveQuotas: async (rules: QuotaRule[], host?: string) =>
     (await request<{ rules: QuotaRule[] }>('PUT', at(host, '/api/v1/quotas'), { rules })).rules,
   myQuota: () => request<MyQuota>('GET', '/api/v1/quotas/mine'),
+  projects: async () => (await request<{ projects: Project[] }>('GET', '/api/v1/projects')).projects,
+  createProject: (p: Project) => request<{ project: Project }>('POST', '/api/v1/projects', p),
+  updateProject: (id: string, p: Project) => request<{ project: Project }>('PUT', `/api/v1/projects/${enc(id)}`, p),
+  deleteProject: (id: string) => request<void>('DELETE', `/api/v1/projects/${enc(id)}`),
+  /** Moves a machine into a project ("" makes it global again). */
+  setMachineProject: (uuid: string, project: string) => request<void>('PUT', `${domainPath(uuid)}/project`, { project }),
   attachHostdev: (uuid: string, spec: { type: 'pci' | 'usb'; address?: string; vendorId?: string; productId?: string }) =>
     request<{ liveError: string }>('POST', `${domainPath(uuid)}/hostdevs`, spec),
   configVersions: async (uuid: string) =>

@@ -145,6 +145,8 @@ type Domain struct {
 	LinkedFrom string `json:"linkedFrom,omitempty"`
 	// Owner created the machine through VirtoMir; it counts against their quota.
 	Owner string `json:"owner,omitempty"`
+	// Project is the multi-tenancy project the machine belongs to (ADR-0060); empty = global.
+	Project string `json:"project,omitempty"`
 	// Kind: "vm" (default) or "container" (LXC).
 	Kind string `json:"kind,omitempty"`
 }

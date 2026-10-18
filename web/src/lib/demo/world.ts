@@ -16,6 +16,7 @@ import type {
   HostInfo,
   Lease,
   Pool,
+  Project,
   ScheduleInfo,
   SettingsView,
   SnapshotInfo,
@@ -51,6 +52,8 @@ export interface DemoMachine {
   template?: boolean
   linkedFrom?: string
   owner?: string
+  /** The project this machine belongs to (ADR-0060); empty = global. */
+  project?: string
   profile: Profile
   network: string
   mac: string
@@ -162,12 +165,44 @@ const ago = (ms: number) => new Date(now() - ms).toISOString()
 const H = 3600_000
 const D = 24 * H
 
+// ---- Projects (ADR-0060) ----------------------------------------------------------------------
+
+export const projects: Project[] = [
+  {
+    id: 'prod',
+    name: 'Production',
+    description: 'Customer-facing services',
+    members: [
+      { kind: 'user', name: 'onur', role: 'admin' },
+      { kind: 'group', name: 'ops', role: 'operator' },
+      { kind: 'group', name: 'devs', role: 'viewer' },
+    ],
+    limits: { machines: 10, vcpus: 48, memoryMiB: 131072, diskGiB: 2000 },
+    storagePools: ['default', 'nas-nfs'],
+    networks: ['default', 'lan-bridge'],
+    created: ago(120 * D),
+  },
+  {
+    id: 'ml',
+    name: 'ML team',
+    description: 'GPU workloads',
+    members: [
+      { kind: 'group', name: 'ml-team', role: 'admin' },
+      { kind: 'user', name: 'deniz', role: 'operator' },
+    ],
+    limits: { machines: 4, vcpus: 32, memoryMiB: 65536, diskGiB: 500 },
+    storagePools: ['fast-zfs'],
+    networks: ['default'],
+    created: ago(40 * D),
+  },
+]
+
 export const machines: DemoMachine[] = [
   // hv-01
   machine({
     uuid: '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e01', host: SELF.id, name: 'web-01', title: 'Public web (nginx)',
     description: 'Front end for the company site. Behind the load balancer with web-02.',
-    os: 'debian', state: 'running', vcpus: 2, memoryMiB: 4096, diskGiB: 40, autostart: true, profile: 'web',
+    os: 'debian', state: 'running', vcpus: 2, memoryMiB: 4096, diskGiB: 40, autostart: true, profile: 'web', project: 'prod',
     mac: '52:54:00:3a:11:01', ip: '192.168.122.11',
     firewall: {
       enabled: true, defaultIn: 'drop', defaultOut: 'accept', antiSpoof: true, adapters: ['vnet0'],
@@ -184,13 +219,13 @@ export const machines: DemoMachine[] = [
   }),
   machine({
     uuid: '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e02', host: SELF.id, name: 'web-02', title: 'Public web (nginx)',
-    os: 'debian', state: 'running', vcpus: 2, memoryMiB: 4096, diskGiB: 40, autostart: true, profile: 'web',
+    os: 'debian', state: 'running', vcpus: 2, memoryMiB: 4096, diskGiB: 40, autostart: true, profile: 'web', project: 'prod',
     mac: '52:54:00:3a:11:02', ip: '192.168.122.12',
   }),
   machine({
     uuid: '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e03', host: SELF.id, name: 'db-01', title: 'PostgreSQL 17 primary',
     description: 'Main database. Huge pages, pinned to NUMA node 0.',
-    os: 'rocky', state: 'running', vcpus: 8, memoryMiB: 32768, diskGiB: 500, autostart: true, profile: 'db', hugepages: true,
+    os: 'rocky', state: 'running', vcpus: 8, memoryMiB: 32768, diskGiB: 500, autostart: true, profile: 'db', hugepages: true, project: 'prod',
     mac: '52:54:00:3a:11:03', ip: '192.168.122.20', memUsedFrac: 0.82,
     snapshots: [
       { name: 'pre-pg17', description: 'PostgreSQL 16, before pg_upgrade', state: 'shutoff', created: (now() - 30 * D) / 1000, current: false, memory: false, location: 'internal' },
@@ -205,12 +240,12 @@ export const machines: DemoMachine[] = [
   machine({
     uuid: '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e05', host: SELF.id, name: 'gpu-train-01', title: 'Model training (vGPU)',
     description: 'NVIDIA vGPU slice, CUDA 13.',
-    os: 'ubuntu', state: 'running', vcpus: 16, memoryMiB: 65536, diskGiB: 300, profile: 'gpu', gpu: true, owner: 'deniz',
+    os: 'ubuntu', state: 'running', vcpus: 16, memoryMiB: 65536, diskGiB: 300, profile: 'gpu', gpu: true, owner: 'deniz', project: 'ml',
     mac: '52:54:00:3a:11:05', ip: '192.168.122.50', memUsedFrac: 0.7,
   }),
   machine({
     uuid: '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e06', host: SELF.id, name: 'ci-runner-03',
-    os: 'debian', state: 'shutoff', vcpus: 4, memoryMiB: 8192, diskGiB: 80, profile: 'build', owner: 'deniz',
+    os: 'debian', state: 'shutoff', vcpus: 4, memoryMiB: 8192, diskGiB: 80, profile: 'build', owner: 'deniz', project: 'ml',
     mac: '52:54:00:3a:11:06', linkedFrom: '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e07',
   }),
   machine({
@@ -294,6 +329,7 @@ export function liveDomain(m: DemoMachine, i: number): Domain {
     template: m.template || undefined,
     linkedFrom: m.linkedFrom,
     owner: m.owner,
+    project: m.project,
     cpuPercent: 0,
   }
   if (!running(m.state)) return base
@@ -445,6 +481,7 @@ export function detail(m: DemoMachine): DomainDetail {
     template: m.template,
     linkedFrom: m.linkedFrom,
     owner: m.owner,
+    project: m.project,
     title: m.title,
     description: m.description,
     system: {

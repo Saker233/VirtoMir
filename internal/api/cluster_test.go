@@ -18,17 +18,20 @@ import (
 	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/cluster"
 	"github.com/onurbaydas/virtomir/internal/drs"
+	"github.com/onurbaydas/virtomir/internal/project"
 	"github.com/onurbaydas/virtomir/internal/virt"
 )
 
 // testNode is a complete virtomird API on its own TLS port with its own certificate.
 type testNode struct {
-	url     string
-	store   *cluster.Store
-	backend *fakeBackend
-	acts    *activity.Log
-	lv      *fakeLive
-	api     *Server
+	url      string
+	store    *cluster.Store
+	backend  *fakeBackend
+	acts     *activity.Log
+	lv       *fakeLive
+	api      *Server
+	projects *project.Store
+	srv      *httptest.Server
 }
 
 func (n *testNode) live() *fakeLive { return n.lv }
@@ -50,6 +53,10 @@ func newTestNode(t *testing.T, name string, domains []virt.Domain) *testNode {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pj, err := project.Open(filepath.Join(dir, "projects.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	m := auth.New(stubAuthn{}, func(u string) auth.Role {
 		return map[string]auth.Role{"onur": auth.Admin, "op": auth.Operator, "view": auth.Viewer}[u]
 	})
@@ -61,9 +68,10 @@ func newTestNode(t *testing.T, name string, domains []virt.Domain) *testNode {
 		Backend: b, Live: lv, Auth: m, Activity: acts, Version: "v-" + name,
 		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Cluster: store, Fingerprint: fp, HostName: name, ListenPort: port,
+		Projects: pj,
 	})
 	srv.Config.Handler = s.Handler()
-	return &testNode{url: srv.URL, store: store, backend: b, acts: acts, lv: lv, api: s}
+	return &testNode{url: srv.URL, store: store, backend: b, acts: acts, lv: lv, api: s, projects: pj, srv: srv}
 }
 
 // browser is a user's HTTPS client signed in on one node.
@@ -390,5 +398,116 @@ func TestDRSChangesReachEveryMember(t *testing.T) {
 	}
 	if resp, _ := admin.req("PUT", "/api/v1/cluster/drs/config", `{"enabled":true,"mode":"sometimes"}`, "Origin", a.url); resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Errorf("bad mode answered %d, want 422", resp.StatusCode)
+	}
+}
+
+// Project changes made on one member reach the others (ADR-0060: the same projects on
+// every host), and the answer names the members that could not be reached.
+func TestProjectChangesReachEveryMember(t *testing.T) {
+	a := newTestNode(t, "alpha", nil)
+	b := newTestNode(t, "beta", nil)
+	g := newTestNode(t, "gamma", nil)
+	joinNodes(t, a, b)
+	joinNodes(t, a, g)
+	admin := a.signIn(t, "onur")
+
+	// Create: every member gets the project, and each one is named in the answer.
+	resp, body := admin.req("POST", "/api/v1/projects",
+		`{"id":"lab","name":"Lab","members":[{"kind":"user","name":"op","role":"operator"}]}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: %d %s", resp.StatusCode, body)
+	}
+	var made struct {
+		Project project.Project `json:"project"`
+		Results []HostResult    `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(body), &made); err != nil {
+		t.Fatal(err)
+	}
+	byHost := map[string]HostResult{}
+	for _, res := range made.Results {
+		byHost[res.Host] = res
+	}
+	if len(byHost) != 2 || !byHost["beta"].OK || !byHost["gamma"].OK || byHost["beta"].Error != "" {
+		t.Fatalf("create results: %s", body)
+	}
+	for _, n := range []*testNode{b, g} {
+		p, ok := n.projects.Get("lab")
+		if !ok || p.Name != "Lab" || len(p.Members) != 1 || p.Members[0].Name != "op" {
+			t.Errorf("%s's copy: %+v", n.srv.URL, p)
+		}
+	}
+
+	// Update: the same end state everywhere.
+	resp, body = admin.req("PUT", "/api/v1/projects/lab", `{"name":"Laboratory","limits":{"vcpus":8}}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update: %d %s", resp.StatusCode, body)
+	}
+	made = struct {
+		Project project.Project `json:"project"`
+		Results []HostResult    `json:"results"`
+	}{}
+	if err := json.Unmarshal([]byte(body), &made); err != nil {
+		t.Fatal(err)
+	}
+	for _, res := range made.Results {
+		if !res.OK {
+			t.Errorf("update results: %s", body)
+		}
+	}
+	for _, n := range []*testNode{b, g} {
+		p, _ := n.projects.Get("lab")
+		if p.Name != "Laboratory" || p.Limits.VCPUs != 8 {
+			t.Errorf("update did not reach %s: %+v", p.Name, p)
+		}
+	}
+
+	// Delete: gone everywhere; a full sweep stays the plain 204.
+	if resp, _ := admin.req("DELETE", "/api/v1/projects/lab", ""); resp.StatusCode != http.StatusNoContent {
+		t.Errorf("delete: %d", resp.StatusCode)
+	}
+	for _, n := range []*testNode{b, g} {
+		if _, ok := n.projects.Get("lab"); ok {
+			t.Errorf("%s still has the project", n.store.SelfID())
+		}
+	}
+
+	// A member that is down keeps its old projects, and every answer names it.
+	g.srv.Close()
+	resp, body = admin.req("POST", "/api/v1/projects", `{"id":"site","name":"Site"}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create with a member down: %d %s", resp.StatusCode, body)
+	}
+	if err := json.Unmarshal([]byte(body), &made); err != nil {
+		t.Fatal(err)
+	}
+	byHost = map[string]HostResult{}
+	for _, res := range made.Results {
+		byHost[res.Host] = res
+	}
+	if !byHost["beta"].OK || byHost["gamma"].OK || byHost["gamma"].Error == "" {
+		t.Errorf("create with a member down: %s", body)
+	}
+	if _, ok := b.projects.Get("site"); !ok {
+		t.Error("beta did not take the change")
+	}
+	// The delete answers 200 with the failures, so nobody has to guess who still has it.
+	resp, body = admin.req("DELETE", "/api/v1/projects/site", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete with a member down: %d %s", resp.StatusCode, body)
+	}
+	var del struct{ Results []HostResult }
+	if err := json.Unmarshal([]byte(body), &del); err != nil {
+		t.Fatal(err)
+	}
+	byHost = map[string]HostResult{}
+	for _, res := range del.Results {
+		byHost[res.Host] = res
+	}
+	if !byHost["beta"].OK || byHost["gamma"].OK || byHost["gamma"].Error == "" {
+		t.Errorf("delete with a member down: %s", body)
+	}
+	if _, ok := b.projects.Get("site"); ok {
+		t.Error("beta still has the project")
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/activity"
 	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/cluster"
+	"github.com/onurbaydas/virtomir/internal/project"
 )
 
 type ctxKey int
@@ -24,6 +25,71 @@ const identityKey ctxKey = 0
 func identity(r *http.Request) auth.Identity {
 	id, _ := r.Context().Value(identityKey).(auth.Identity)
 	return id
+}
+
+// RoleOfWithProjects builds a roleOf function that falls back to auth.Member if the normal
+// role is NoAccess and the user belongs to at least one project.
+func RoleOfWithProjects(normal func(string) auth.Role, pj *project.Store, groupsOf func(string) []string) func(string) auth.Role {
+	return func(user string) auth.Role {
+		var r auth.Role
+		if normal != nil {
+			r = normal(user)
+		}
+		if r == auth.NoAccess && pj != nil {
+			var groups []string
+			if groupsOf != nil {
+				groups = groupsOf(user)
+			}
+			if len(pj.ProjectsFor(user, groups)) > 0 {
+				return auth.Member
+			}
+			if strings.Contains(user, "@") {
+				short, _, _ := strings.Cut(user, "@")
+				if len(pj.ProjectsFor(short, groups)) > 0 {
+					return auth.Member
+				}
+			}
+		}
+		return r
+	}
+}
+
+// ExternalRoleFallback returns a roleFallback func for LDAP/OIDC external auth.
+// When an external user or their directory groups belong to at least one project,
+// they are granted auth.Member role. pj is a concrete *project.Store (safe when nil).
+func ExternalRoleFallback(pj *project.Store) func(user string, groups []string) auth.Role {
+	return func(user string, groups []string) auth.Role {
+		if pj == nil {
+			return auth.NoAccess
+		}
+		if len(pj.ProjectsFor(user, groups)) > 0 {
+			return auth.Member
+		}
+		if strings.Contains(user, "@") {
+			short, _, _ := strings.Cut(user, "@")
+			if len(pj.ProjectsFor(short, groups)) > 0 {
+				return auth.Member
+			}
+		}
+		return auth.NoAccess
+	}
+}
+
+// memberAllowed reports whether a GET/HEAD endpoint is accessible to a Member.
+func (s *Server) memberAllowed(id auth.Identity, method, path string) bool {
+	if id.Role != auth.Member {
+		return false
+	}
+	if method != http.MethodGet && method != http.MethodHead {
+		return false
+	}
+	if path == "/api/v1/domains" || path == "/api/v1/projects" {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(path, "/api/v1/projects/"); ok {
+		return rest != "" && !strings.Contains(rest, "/")
+	}
+	return false
 }
 
 // requiredRole is the least role a request needs. Reading is for viewers; running machines
@@ -43,6 +109,8 @@ func requiredRole(method, path string) auth.Role {
 		return auth.Admin // who may sign in and who may create what is the admins' business
 	case strings.Contains(path, "/console/"):
 		return auth.Operator // a console is control over the machine
+	case strings.HasPrefix(path, "/api/v1/domains/") && strings.HasSuffix(path, "/project"):
+		return auth.Operator // moving a machine into/out of a project: the handler checks both projects
 	case method == http.MethodGet || method == http.MethodHead:
 		return auth.Viewer
 	case operatorWrite(method, path):
@@ -130,7 +198,10 @@ func (s *Server) guard(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if id.Role < need && !s.selfService(id, r.Method, path) {
+		// ADR-0060: on machine-scoped routes the effective role is the global one raised to
+		// the caller's role in the machine's project. selfService keeps using the global
+		// role, so quotas behave exactly as before.
+		if s.effectiveRole(id, path) < need && !s.selfService(id, r.Method, path) && !s.memberAllowed(id, r.Method, path) {
 			s.writeJSON(w, http.StatusForbidden, map[string]string{
 				"error": "your role (" + id.Role.String() + ") may not do this; it needs " + need.String(),
 			})

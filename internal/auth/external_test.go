@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -73,6 +74,36 @@ func TestLoginFallsBackToLDAP(t *testing.T) {
 	if _, err := m.Login(ctx, "1.2.3.5:5", "bob", "secret"); !errors.Is(err, ErrNotAllowed) {
 		t.Errorf("bob without a mapped group: %v", err)
 	}
+	// Bob with a role fallback (e.g. project member) signs in as Member.
+	var receivedGroups []string
+	e.SetRoleFallback(func(u string, groups []string) Role {
+		receivedGroups = groups
+		if (u == "bob@ldap" || u == "bob") && slices.Contains(groups, "cn=nobody") {
+			return Member
+		}
+		return NoAccess
+	})
+	tok, err = m.Login(ctx, "1.2.3.5:5", "bob", "secret")
+	if err != nil {
+		t.Fatalf("bob with role fallback: %v", err)
+	}
+	if id, _ := m.User(tok); id.Name != "bob@ldap" || id.Role != Member {
+		t.Errorf("bob: %+v", id)
+	}
+	// RoleOf evaluates roleFallback dynamically with the remembered groups.
+	receivedGroups = nil
+	if r := m.RoleOf("bob@ldap"); r != Member {
+		t.Errorf("bob RoleOf with fallback: got %v, want Member", r)
+	}
+	if !slices.Contains(receivedGroups, "cn=nobody") {
+		t.Errorf("expected remembered groups in RoleOf, got: %v", receivedGroups)
+	}
+	// Member role is not permanently saved in st.Roles: when fallback returns NoAccess, access is revoked immediately.
+	e.SetRoleFallback(func(string, []string) Role { return NoAccess })
+	if r := m.RoleOf("bob@ldap"); r != NoAccess {
+		t.Errorf("bob RoleOf after revocation: got %v, want NoAccess", r)
+	}
+	e.SetRoleFallback(nil)
 	// "root" from LDAP is root@ldap with its directory role, never the local root.
 	tok, err = m.Login(ctx, "1.2.3.6:5", "root", "ldappw")
 	if err != nil {
