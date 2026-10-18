@@ -38,6 +38,7 @@
   let memGiB = $state(2)
   let withDisk = $state(true)
   let diskGiB = $state(20)
+  let provisioning = $state<'thin' | 'thick'>('thin')
   let pool = $state('default')
   let iso = $state('')
   // Where the system comes from: an installer ISO, a ready cloud image, or an existing disk.
@@ -83,8 +84,8 @@
       try {
         const [p, n] = await Promise.all([api.pools(), api.networks()])
         pools = p.filter((x) => x.active)
-        networks = n.filter((x) => x.active)
-        if (!filePools.some((x) => x.name === pool) && filePools[0]) pool = filePools[0].name
+        const candidatePools = pools.filter((p) => ['dir', 'netfs', 'fs', 'logical', 'zfs'].includes(p.type))
+        if (!candidatePools.some((x) => x.name === pool) && candidatePools[0]) pool = candidatePools[0].name
         if (!networks.some((x) => x.name === 'default')) netChoice = networks[0] ? `network:${networks[0].name}` : 'none'
         const lists = await Promise.all(pools.map(async (p) => ({ p: p.name, v: await api.volumes(p.name).catch(() => []) })))
         isos = lists.flatMap(({ p, v }) => v.filter((x) => x.format === 'iso').map((vol) => ({ pool: p, vol })))
@@ -112,9 +113,12 @@
   }
 
   let templates = $derived((live.snapshot?.domains ?? []).filter((d) => d.template).sort((a, b) => a.name.localeCompare(b.name)))
-  // The new system disk is a qcow2 file: block pools (LVM, ZFS, Ceph, iSCSI) cannot hold it.
+  // File pools for cloud images and seeds:
   let filePools = $derived(pools.filter((p) => ['dir', 'netfs', 'fs'].includes(p.type)))
+  // Disk pools for empty root disks: includes native LVM and ZFS block pools
+  let diskPools = $derived(pools.filter((p) => ['dir', 'netfs', 'fs', 'logical', 'zfs'].includes(p.type)))
   let selectedPool = $derived(pools.find((p) => p.name === pool))
+  let isBlockPool = $derived(selectedPool ? ['logical', 'zfs'].includes(selectedPool.type) : false)
   let diskTooBig = $derived(!!selectedPool && withDisk && diskGiB * 2 ** 30 > selectedPool.availableBytes)
   let nameValid = $derived(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(name))
   let nameTaken = $derived((live.snapshot?.domains ?? []).some((d) => d.name === name))
@@ -153,6 +157,7 @@
     tpm,
     pool,
     diskGiB: source === 'cloud' ? Math.max(diskGiB, baseCapGiB) : source === 'iso' && withDisk ? diskGiB : 0,
+    provisioning: (source === 'iso' && withDisk) || source === 'cloud' ? provisioning : undefined,
     iso: source === 'iso' ? iso || undefined : undefined,
     baseImage: source === 'cloud' ? baseImage : undefined,
     diskPath: source === 'disk' ? existingDisk : undefined,
@@ -350,18 +355,28 @@
             <span class="label">{t('Size (GiB)')}</span>
             <input class="ui-input" type="number" min="1" max="65536" bind:value={diskGiB} aria-invalid={diskTooBig} />
             <span class="hint" class:warn={diskTooBig}>
-              {t('Thin provisioned: it only uses what the guest writes.{v}', { v: diskTooBig ? ' Larger than the free space in the pool.' : '' })}
+              {provisioning === 'thin' ? t('Thin provisioned: it only uses what the guest writes.{v}', { v: diskTooBig ? ' Larger than the free space in the pool.' : '' }) : t('Thick provisioned: preallocated blocks on storage.')}
             </span>
           </label>
           <label class="ui-field">
             <span class="label">{t('Storage pool')}</span>
             <select class="ui-input" bind:value={pool}>
-              {#each filePools as p (p.name)}
-                <option value={p.name}>{p.name} — {formatBytes(p.availableBytes)} free</option>
+              {#each diskPools as p (p.name)}
+                <option value={p.name}>{p.name}{p.type === 'logical' ? ' (LVM)' : p.type === 'zfs' ? ' (ZFS)' : ''} — {formatBytes(p.availableBytes)} free</option>
               {/each}
             </select>
+            {#if isBlockPool}
+              <span class="hint">{t('Block volume: raw disk device created directly in pool.')}</span>
+            {/if}
           </label>
         </div>
+        <label class="ui-field">
+          <span class="label">{t('Provisioning Policy')}</span>
+          <select class="ui-input" bind:value={provisioning}>
+            <option value="thin">{t('Thin (sparse, allocate on demand)')}</option>
+            <option value="thick">{t('Thick (fully preallocated, highest sustained performance)')}</option>
+          </select>
+        </label>
       {:else if source === 'iso' && !iso}
         <p class="error">{t('Without a disk the machine needs installation media to boot from.')}</p>
       {/if}

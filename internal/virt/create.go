@@ -21,9 +21,10 @@ type CreateSpec struct {
 	TPM        bool   `json:"tpm"`
 	// Disk: a new empty volume (Pool + DiskGiB), a copy of a cloud image grown to DiskGiB
 	// (BaseImage), an existing image used as is (DiskPath), or none.
-	Pool      string `json:"pool"`
-	DiskGiB   uint64 `json:"diskGiB"`
-	DiskPath  string `json:"diskPath,omitempty"`
+	Pool         string `json:"pool"`
+	DiskGiB      uint64 `json:"diskGiB"`
+	Provisioning string `json:"provisioning,omitempty"` // thin (default) or thick
+	DiskPath     string `json:"diskPath,omitempty"`
 	BaseImage string `json:"baseImage,omitempty"`
 	// CloudInit configures a cloud image on first boot (seed ISO attached as a CD-ROM).
 	CloudInit *CloudInit `json:"cloudInit,omitempty"`
@@ -94,8 +95,12 @@ func (s *CreateSpec) normalize() error {
 }
 
 // buildDomain returns the domain XML for a normalized spec. diskPath/diskFormat describe the
-// prepared system disk ("" for none).
-func buildDomain(s CreateSpec, diskPath, diskFormat, seedPath string) *libvirtxml.Domain {
+// prepared system disk ("" for none). Optional diskVolume handles block storage pools (LVM, ZFS).
+func buildDomain(s CreateSpec, diskPath, diskFormat, seedPath string, diskVolume ...*libvirtxml.DomainDiskSourceVolume) *libvirtxml.Domain {
+	var diskVol *libvirtxml.DomainDiskSourceVolume
+	if len(diskVolume) > 0 {
+		diskVol = diskVolume[0]
+	}
 	p := profiles[s.OS]
 	x := &libvirtxml.Domain{
 		Type:          "kvm",
@@ -154,7 +159,7 @@ func buildDomain(s CreateSpec, diskPath, diskFormat, seedPath string) *libvirtxm
 		})
 		boot++
 	}
-	if diskPath != "" {
+	if diskPath != "" || diskVol != nil {
 		target := "vda"
 		if p.diskBus != "virtio" {
 			target = "sdb"
@@ -163,10 +168,16 @@ func buildDomain(s CreateSpec, diskPath, diskFormat, seedPath string) *libvirtxm
 			}
 		}
 		driver := &libvirtxml.DomainDiskDriver{Name: "qemu", Type: orDefault(diskFormat, "raw"), Cache: "none", Discard: "unmap"}
+		src := &libvirtxml.DomainDiskSource{}
+		if diskVol != nil {
+			src.Volume = diskVol
+		} else {
+			src.File = &libvirtxml.DomainDiskSourceFile{File: diskPath}
+		}
 		dev.Disks = append(dev.Disks, libvirtxml.DomainDisk{
 			Device: "disk",
 			Driver: driver,
-			Source: &libvirtxml.DomainDiskSource{File: &libvirtxml.DomainDiskSourceFile{File: diskPath}},
+			Source: src,
 			Target: &libvirtxml.DomainDiskTarget{Dev: target, Bus: p.diskBus},
 			Boot:   &libvirtxml.DomainDeviceBoot{Order: boot},
 		})
@@ -228,13 +239,15 @@ func (c *Client) CreateDomain(spec CreateSpec) (CreateResult, error) {
 	if _, err := l.DomainLookupByName(spec.Name); err == nil {
 		return CreateResult{}, refusedf("A machine named %s already exists.", spec.Name)
 	}
-	// The system disk is a qcow2 file and the cloud-init seed an ISO file; block pools
-	// (LVM, ZFS, Ceph, iSCSI) hold neither. Their volumes are added from the Hardware tab.
-	if spec.Pool != "" && (spec.BaseImage != "" || (spec.DiskPath == "" && spec.DiskGiB > 0) || spec.CloudInit != nil) && !poolKeepsFiles(l, spec.Pool) {
-		return CreateResult{}, invalidf("Pool %s holds block volumes, not disk image files. Create the machine in a directory or NFS pool, then add a disk from %s on its Hardware tab.", spec.Pool, spec.Pool)
+	// Cloud-init seed requires a file (ISO); block pools (LVM, ZFS, Ceph, iSCSI) cannot store ISOs.
+	// Cloud base images are also image files. Empty disks can be native raw block volumes.
+	keepsFiles := spec.Pool == "" || poolKeepsFiles(l, spec.Pool)
+	if !keepsFiles && (spec.BaseImage != "" || spec.CloudInit != nil) {
+		return CreateResult{}, invalidf("Pool %s holds block volumes, not files. Cloud images and cloud-init require a directory or NFS pool.", spec.Pool)
 	}
 
 	diskPath, diskFormat := spec.DiskPath, ""
+	var diskVol *libvirtxml.DomainDiskSourceVolume
 	var created []libvirt.StorageVol
 	rollback := func() {
 		for _, v := range created {
@@ -249,11 +262,22 @@ func (c *Client) CreateDomain(spec CreateSpec) (CreateResult, error) {
 		}
 		created, diskPath, diskFormat = append(created, vol), p, "qcow2"
 	case diskPath == "" && spec.DiskGiB > 0:
-		vol, p, err := createVolume(l, spec.Pool, spec.Name+".qcow2", spec.DiskGiB<<30, "qcow2")
-		if err != nil {
-			return CreateResult{}, err
+		if keepsFiles {
+			vol, p, err := createVolume(l, spec.Pool, spec.Name+".qcow2", spec.DiskGiB<<30, "qcow2", spec.Provisioning)
+			if err != nil {
+				return CreateResult{}, err
+			}
+			created, diskPath, diskFormat = append(created, vol), p, "qcow2"
+		} else {
+			volName := spec.Name + "-root"
+			vol, _, err := createVolume(l, spec.Pool, volName, spec.DiskGiB<<30, "raw", spec.Provisioning)
+			if err != nil {
+				return CreateResult{}, err
+			}
+			created = append(created, vol)
+			diskVol = &libvirtxml.DomainDiskSourceVolume{Pool: spec.Pool, Volume: volName}
+			diskFormat = "raw"
 		}
-		created, diskPath, diskFormat = append(created, vol), p, "qcow2"
 	case diskPath != "":
 		if v, err := l.StorageVolLookupByPath(diskPath); err == nil {
 			if info, err := volumeInfo(l, v); err == nil && info.Format != "iso" {
@@ -277,7 +301,7 @@ func (c *Client) CreateDomain(spec CreateSpec) (CreateResult, error) {
 		created, seedPath = append(created, vol), p
 	}
 
-	doc, err := buildDomain(spec, diskPath, diskFormat, seedPath).Marshal()
+	doc, err := buildDomain(spec, diskPath, diskFormat, seedPath, diskVol).Marshal()
 	if err != nil {
 		rollback()
 		return CreateResult{}, err

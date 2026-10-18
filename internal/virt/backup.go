@@ -235,8 +235,11 @@ func (c *Client) liveBackup(ctx context.Context, l *libvirt.Libvirt, d libvirt.D
 		fmt.Fprintf(&xb, "<disk name='%s' backup='yes' type='file'><target file='%s'/><driver type='qcow2'/></disk>",
 			xmlEscape(bd.Target), xmlEscape(filepath.Join(dest, bd.File)))
 	}
-	xb.WriteString("</disks></domainbackup>")
 	report("Starting live backup…")
+	// Application consistency: if guest agent is active, freeze filesystems briefly
+	if _, err := l.DomainFsfreeze(d, nil, 0); err == nil {
+		defer func() { _, _ = l.DomainFsthaw(d, nil, 0) }()
+	}
 	if err := l.DomainBackupBegin(d, xb.String(), nil, 0); err != nil {
 		return classify(err)
 	}

@@ -10,7 +10,7 @@
   import Sparkline from './Sparkline.svelte'
   import MachineActions from './MachineActions.svelte'
 
-  let { d, selected = false, onselect }: { d: Domain; selected?: boolean; onselect?: (on: boolean) => void } = $props()
+  let { d, selected = false, onselect, hostName }: { d: Domain; selected?: boolean; onselect?: (on: boolean) => void; hostName?: string } = $props()
 
   let pending = $derived(live.pending[d.uuid])
   let active = $derived(isActive(d.state))
@@ -29,7 +29,14 @@
     {/if}
     <span class="avatar" class:on={active} title={d.template ? 'Template' : undefined}>{#if d.template}<LayoutTemplate size={16} />{:else}<Monitor size={16} />{/if}</span>
     <div class="titles">
-      <a class="title" href={machineHref(d.uuid)} onclick={router.link}>{d.name}</a>
+      <div class="title-line">
+        <a class="title" href={machineHref(d.uuid)} onclick={router.link}>{d.name}</a>
+        {#if hostName}
+          <span class="host-badge" title={t('Running on {host}', { host: hostName })}>
+            <span class="host-dot"></span>{hostName}
+          </span>
+        {/if}
+      </div>
       <span class="uuid mono" title={d.uuid}>{d.uuid.slice(0, 8)}{#if !d.persistent} {t('· transient')}{/if}{#if d.autostart} {t('· autostart')}{/if}{#if d.template} {t('· template')}{:else if d.linkedFrom} {t('· linked clone')}{/if}</span>
     </div>
   </div>
@@ -115,6 +122,32 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .title-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .host-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    padding: 1px 6px;
+    letter-spacing: 0.05em;
+    flex-shrink: 0;
+  }
+  .host-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ok);
   }
   .title:hover {
     color: var(--accent);

@@ -114,11 +114,29 @@
               <span class="dev" role="cell">{diskTitle(x.name)}</span>
               <span class="cell" role="cell">
                 <small>{t('read')}</small><b class="mono">{formatBps(x.readBps)}</b>
-                <small class="mono">{formatRate(x.readIops)} IOPS · {latency(x.readLatencyMs)}</small>
+                <small class="mono">
+                  {formatRate(x.readIops)} IOPS ·
+                  {#if (x.readLatencyMs ?? 0) >= 50}
+                    <span class="badge-brutal danger" title={t('Critical read latency: >50ms')}>{latency(x.readLatencyMs)}</span>
+                  {:else if (x.readLatencyMs ?? 0) >= 20}
+                    <span class="badge-brutal warn" title={t('High read latency: >20ms')}>{latency(x.readLatencyMs)}</span>
+                  {:else}
+                    {latency(x.readLatencyMs)}
+                  {/if}
+                </small>
               </span>
               <span class="cell" role="cell">
                 <small>{t('write')}</small><b class="mono">{formatBps(x.writeBps)}</b>
-                <small class="mono">{formatRate(x.writeIops)} IOPS · {latency(x.writeLatencyMs)}</small>
+                <small class="mono">
+                  {formatRate(x.writeIops)} IOPS ·
+                  {#if (x.writeLatencyMs ?? 0) >= 50}
+                    <span class="badge-brutal danger" title={t('Critical write latency: >50ms')}>{latency(x.writeLatencyMs)}</span>
+                  {:else if (x.writeLatencyMs ?? 0) >= 20}
+                    <span class="badge-brutal warn" title={t('High write latency: >20ms')}>{latency(x.writeLatencyMs)}</span>
+                  {:else}
+                    {latency(x.writeLatencyMs)}
+                  {/if}
+                </small>
               </span>
             </div>
           {/each}

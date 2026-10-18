@@ -138,9 +138,9 @@
     {#if !editing}
       {#if configured}
         <p class="muted">
-          {t('To')} <span class="mono">{cfg.repository}</span>{t('{v}{v2}. Encrypted with the repository password — without it the copies cannot be read.', { v: cfg.afterScheduled ? ' · every scheduled backup is copied' : ' · copies on request', v2: cfg.keepLast || cfg.keepDaily || cfg.keepWeekly || cfg.keepMonthly
-            ? ` · keeps ${[cfg.keepLast && `last ${cfg.keepLast}`, cfg.keepDaily && `${cfg.keepDaily} daily`, cfg.keepWeekly && `${cfg.keepWeekly} weekly`, cfg.keepMonthly && `${cfg.keepMonthly} monthly`].filter(Boolean).join(', ')} per machine`
-            : ' · keeps everything' })}
+          {t('To')} <span class="mono">{cfg.repository}</span>{t('{v}{v2}. Encrypted with the repository password — without it the copies cannot be read.', { v: cfg.afterScheduled ? ' · every scheduled backup is copied' : ' · copies on request', v2: cfg.keepLast || cfg.keepDaily || cfg.keepWeekly || cfg.keepMonthly || cfg.keepYearly
+            ? ` · keeps ${[cfg.keepLast && `last ${cfg.keepLast}`, cfg.keepDaily && `${cfg.keepDaily} daily`, cfg.keepWeekly && `${cfg.keepWeekly} weekly`, cfg.keepMonthly && `${cfg.keepMonthly} monthly`, cfg.keepYearly && `${cfg.keepYearly} yearly`].filter(Boolean).join(', ')} per machine`
+            : ' · keeps everything' })}{cfg.immutabilityDays ? ` · WORM locked for ${cfg.immutabilityDays} days` : ''}
         </p>
       {:else}
         <p class="muted">{t('Not set up. A backup next to the machine does not survive a fire or a stolen server: copy backups to S3, B2, SFTP or a disk elsewhere.')}</p>
@@ -172,17 +172,24 @@
         </fieldset>
         <label class="check"><input type="checkbox" bind:checked={cfg.afterScheduled} /> {t('Copy every scheduled backup off-site right after it is made')}</label>
         <div class="keep">
-          <span class="label">{t('Keep per machine')}</span>
+          <span class="label">{t('Keep per machine (GFS)')}</span>
           <label>{t('last')} <input class="ui-input mono" type="number" min="0" bind:value={cfg.keepLast} /></label>
           <label>{t('daily')} <input class="ui-input mono" type="number" min="0" bind:value={cfg.keepDaily} /></label>
           <label>{t('weekly')} <input class="ui-input mono" type="number" min="0" bind:value={cfg.keepWeekly} /></label>
           <label>{t('monthly')} <input class="ui-input mono" type="number" min="0" bind:value={cfg.keepMonthly} /></label>
+          <label>{t('yearly')} <input class="ui-input mono" type="number" min="0" bind:value={cfg.keepYearly} /></label>
           <span class="hint">{t('All 0: keep every copy.')}</span>
         </div>
-        <label class="ui-field narrow">
-          <span class="label">{t('Upload limit')} <span class="muted">{t('KiB/s, 0 = none')}</span></span>
-          <input class="ui-input mono" type="number" min="0" bind:value={cfg.limitUploadKiB} />
-        </label>
+        <div class="two">
+          <label class="ui-field narrow">
+            <span class="label">{t('Immutability (days)')} <span class="muted">{t('WORM object lock')}</span></span>
+            <input class="ui-input mono" type="number" min="0" bind:value={cfg.immutabilityDays} placeholder="0" />
+          </label>
+          <label class="ui-field narrow">
+            <span class="label">{t('Upload limit')} <span class="muted">{t('KiB/s, 0 = none')}</span></span>
+            <input class="ui-input mono" type="number" min="0" bind:value={cfg.limitUploadKiB} />
+          </label>
+        </div>
         <div class="actions">
           <button class="ui-btn primary" disabled={!!busy}>{busy === 'save' ? 'Saving…' : 'Save'}</button>
           <button type="button" class="ui-btn ghost" onclick={() => { editing = false; void load() }}>{t('Cancel')}</button>

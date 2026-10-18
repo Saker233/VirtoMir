@@ -17,6 +17,7 @@
   import HostChassisCard from '../components/HostChassisCard.svelte'
   import NoisyNeighborsPanel from '../components/NoisyNeighborsPanel.svelte'
   import CapacitySimulator from '../components/CapacitySimulator.svelte'
+  import DrsRecommendationDeck from '../components/DrsRecommendationDeck.svelte'
 
   let histRange = $state<Range>('24h')
   let snap = $derived(live.snapshot)
@@ -127,6 +128,8 @@
 <NoisyNeighborsPanel />
 
 <CapacitySimulator />
+
+<DrsRecommendationDeck />
 
 <section class="ui-panel history">
   <header class="h-head">

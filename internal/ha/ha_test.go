@@ -346,6 +346,25 @@ func TestTwoMembersNeedTheWitness(t *testing.T) {
 	}
 }
 
+func TestTwoMembersWitnessDown(t *testing.T) {
+	m, fc, clk, st := newTestManager(t, "a", &fakeHV{})
+	fc.nodes = fc.nodes[:2]
+	m.dial = func(ctx context.Context, addr string) error {
+		return errors.New("witness down")
+	}
+	st.UpdateSettings(Settings{Witness: "10.0.0.9:22"})
+	m.Tick(context.Background())
+	fc.down["b"] = true
+	clk.add(time.Minute)
+	m.Tick(context.Background())
+	if m.Status().Quorum.Quorate {
+		t.Fatal("node with failed witness should not be quorate in 2-node cluster")
+	}
+	if m.Status().Quorum.WitnessReachable {
+		t.Fatal("witness should be reported unreachable")
+	}
+}
+
 func TestReplicationTurnsOffAutostart(t *testing.T) {
 	hv := &fakeHV{doms: []virt.Domain{
 		{UUID: "u1", Name: "db", State: virt.StateRunning, Persistent: true, Autostart: true, VCPUs: 2, MaxMemoryKiB: 4 << 20},

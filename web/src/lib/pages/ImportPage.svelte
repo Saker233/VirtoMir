@@ -124,8 +124,16 @@
   </section>
 
   <section class="ui-panel card">
-    <h2><HardDrive size={16} /> {t('Disk image on this host')}</h2>
-    <p class="hint">A <span class="mono">.qcow2</span>, <span class="mono">.img</span> {t('or')} <span class="mono">.raw</span> {t('disk that is already in a storage pool (or upload it on the Storage page first). The new-machine wizard builds a machine around it.')}</p>
+    <h2><HardDrive size={16} /> {t('Universal disk image')}</h2>
+    <p class="hint">{t('VirtoMir automatically sniffs image headers and supports all major virtualization formats. Place images into a storage pool or upload via the Storage deck, then wrap a virtual machine around it.')}</p>
+    <div class="supported-badges">
+      <span class="fmt-pill">QCOW2</span>
+      <span class="fmt-pill">VMDK (VMware)</span>
+      <span class="fmt-pill">VHDX (Hyper-V)</span>
+      <span class="fmt-pill">VHD</span>
+      <span class="fmt-pill">VDI (VirtualBox)</span>
+      <span class="fmt-pill">RAW / IMG</span>
+    </div>
     <div class="actions">
       <a class="ui-btn" href={router.scoped('/machines/new')} onclick={router.link}>{t('Open the new-machine wizard')}</a>
     </div>
@@ -199,5 +207,23 @@
     height: 100%;
     background: var(--accent);
     transition: width 0.3s;
+  }
+  .supported-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 4px 0 8px;
+  }
+  .fmt-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 8px;
+    font-size: 11px;
+    font-family: var(--font-mono, monospace);
+    font-weight: 600;
+    border-radius: var(--radius-sm, 4px);
+    background: var(--surface-2);
+    color: var(--text-2);
+    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
   }
 </style>

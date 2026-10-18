@@ -90,12 +90,14 @@
   let vName = $state('')
   let vSize = $state(20)
   let vFormat = $state<'qcow2' | 'raw'>('qcow2')
+  let vProvisioning = $state<'thin' | 'thick'>('thin')
   let vBusy = $state(false)
   let vErr = $state('')
   function openVolume() {
     vName = ''
     vSize = 20
     vFormat = 'qcow2'
+    vProvisioning = 'thin'
     vErr = ''
     volDlg = true
   }
@@ -106,7 +108,7 @@
     vErr = ''
     try {
       const name = /\.(qcow2|img|raw)$/i.test(vName) ? vName : `${vName}.${vFormat === 'qcow2' ? 'qcow2' : 'img'}`
-      await api.createVolume(current.name, name, vSize, vFormat)
+      await api.createVolume(current.name, name, vSize, vFormat, vProvisioning)
       volDlg = false
       toasts.push({ kind: 'info', title: `${name} created` })
       await refresh()
@@ -428,11 +430,18 @@
       <label class="ui-field">
         <span class="label">{t('Format')}</span>
         <select class="ui-input" bind:value={vFormat}>
-          <option value="qcow2">{t('QCOW2 (thin, snapshots)')}</option>
+          <option value="qcow2">{t('QCOW2 (snapshots, overlay)')}</option>
           <option value="raw">{t('Raw (fastest)')}</option>
         </select>
       </label>
     </div>
+    <label class="ui-field">
+      <span class="label">{t('Provisioning Policy')}</span>
+      <select class="ui-input" bind:value={vProvisioning}>
+        <option value="thin">{t('Thin (sparse, allocate on demand)')}</option>
+        <option value="thick">{t('Thick (fully preallocated, zeroed, highest sustained I/O)')}</option>
+      </select>
+    </label>
     {#if vErr}<div class="ui-error-box">{vErr}</div>{/if}
   </form>
   {#snippet footer()}

@@ -137,25 +137,53 @@ func convertArgs(format, src, dst string, compress bool) []string {
 	return append(args, src, dst)
 }
 
-// sniffFormat names the format of a file someone else made (an OVA's disk) from its magic
-// bytes: qcow2 and sparse VMDK are recognised, everything else is read as raw, which never
-// refers to other files. A text VMDK descriptor (which could name any host file as its data)
-// is therefore raw, not VMDK.
+// sniffFormat names the format of a file from its magic bytes:
+// qcow2, vmdk, vhdx, vhd (vpc), vdi, qed, or raw.
 func sniffFormat(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
-	head := make([]byte, 4)
-	if _, err := io.ReadFull(f, head); err != nil {
-		return "raw", nil // shorter than any header
+
+	fi, err := f.Stat()
+	if err != nil {
+		return "", err
 	}
+	size := fi.Size()
+
+	buf := make([]byte, 512)
+	n, _ := io.ReadFull(f, buf)
+	if n < 4 {
+		return "raw", nil
+	}
+
 	switch {
-	case bytes.Equal(head, []byte("QFI\xfb")):
+	case bytes.Equal(buf[:4], []byte("QFI\xfb")):
 		return "qcow2", nil
-	case bytes.Equal(head, []byte("KDMV")):
+	case bytes.Equal(buf[:4], []byte("KDMV")):
 		return "vmdk", nil
+	case n >= 8 && bytes.Equal(buf[:8], []byte("vhdxfile")):
+		return "vhdx", nil
+	case n >= 8 && bytes.Equal(buf[:8], []byte("conectix")):
+		return "vpc", nil // qemu-img format for VHD
+	case bytes.Equal(buf[:4], []byte("QED\x00")):
+		return "qed", nil
+	case n >= 68 && bytes.Equal(buf[64:68], []byte("\x7f\x10\xda\xbe")):
+		return "vdi", nil
+	case bytes.HasPrefix(buf, []byte("<<< Oracle VM VirtualBox")):
+		return "vdi", nil
 	}
+
+	// Dynamic VHDs store the "conectix" header in the last 512-byte footer
+	if size >= 512 {
+		footer := make([]byte, 512)
+		if _, err := f.ReadAt(footer, size-512); err == nil {
+			if bytes.Equal(footer[:8], []byte("conectix")) {
+				return "vpc", nil
+			}
+		}
+	}
+
 	return "raw", nil
 }

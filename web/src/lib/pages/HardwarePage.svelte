@@ -109,7 +109,15 @@
         <div class="dev">
           <span class="dot" class:ok={!p.blocked && !p.usedBy.length} class:used={p.usedBy.length > 0}></span>
           <div class="main">
-            <span><b>{p.product || p.productId}</b> <span class="muted">{p.vendor}</span></span>
+            <span>
+              <b>{p.product || p.productId}</b>
+              <span class="muted">{p.vendor}</span>
+              {#if p.sriov}
+                <span class="badge-brutal accent" title={t('SR-IOV Physical Function')}>SR-IOV PF ({p.sriovCurrentVfs ?? 0}/{p.sriovTotalVfs} VFs)</span>
+              {:else if p.isVf}
+                <span class="badge-brutal ok" title={t('SR-IOV Virtual Function')}>SR-IOV VF{#if p.pfAddress} · PF {p.pfAddress}{/if}</span>
+              {/if}
+            </span>
             <span class="meta mono">{p.address} · {p.className || p.class} · {p.vendorId.replace('0x', '')}:{p.productId.replace('0x', '')}{p.driver ? ` · driver ${p.driver}` : ''}</span>
             {#if p.usedBy.length}<span class="used-by">Given to {p.usedBy.join(', ')}</span>
             {:else if p.blocked && hw.iommu}<span class="why">{p.blocked}</span>{/if}

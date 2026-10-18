@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/onurbaydas/virtomir/internal/activity"
 	"github.com/onurbaydas/virtomir/internal/auth"
@@ -48,6 +49,13 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if s.auth == nil {
 		s.writeJSON(w, http.StatusOK, sessionInfo{Mode: "none", Role: auth.Admin})
 		return
+	}
+	if s.rateLimiter != nil {
+		if allowed, retryAfter := s.rateLimiter.Allow(r.RemoteAddr); !allowed {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			s.writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many login attempts, please slow down"})
+			return
+		}
 	}
 	var body struct {
 		User     string `json:"user"`

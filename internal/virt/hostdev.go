@@ -2,6 +2,8 @@ package virt
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,6 +41,13 @@ type HostPCI struct {
 	Blocked string `json:"blocked,omitempty"`
 	// MDevTypes: the slices this card can be split into (NVIDIA vGPU, Intel GVT-g, …).
 	MDevTypes []HostMDevType `json:"mdevTypes,omitempty"`
+	// SRIOV is true if the device is an SR-IOV Physical Function.
+	SRIOV           bool   `json:"sriov,omitempty"`
+	SRIOVTotalVFs   int    `json:"sriovTotalVfs,omitempty"`
+	SRIOVCurrentVFs int    `json:"sriovCurrentVfs,omitempty"`
+	// IsVF is true if the device is an SR-IOV Virtual Function.
+	IsVF      bool   `json:"isVf,omitempty"`
+	PFAddress string `json:"pfAddress,omitempty"`
 }
 
 type HostUSB struct {
@@ -129,6 +138,12 @@ func (c *Client) HostHardware() (HostHardware, error) {
 			p.MDevTypes = mdevTypes(cp.PCI)
 			p.UsedBy = append(p.UsedBy, usedPCI[p.Address]...)
 			p.HostUse = pciHostUse(p.Address)
+			isPF, totalVFs, numVFs, isVF, pfAddr := readSRIOV(p.Address)
+			p.SRIOV = isPF
+			p.SRIOVTotalVFs = totalVFs
+			p.SRIOVCurrentVFs = numVFs
+			p.IsVF = isVF
+			p.PFAddress = pfAddr
 			drivers[p.Address] = driver
 			hw.PCI = append(hw.PCI, p)
 		case cp.USBDevice != nil:
@@ -322,3 +337,28 @@ func (c *Client) AttachHostdev(uuid string, spec HostdevSpec) (liveErr string, e
 	c.log.Info("host device attached", "domain", d.Name, "type", spec.Type, "address", spec.Address, "usb", spec.VendorID+":"+spec.ProductID)
 	return liveErr, nil
 }
+
+// sysPciDevices is the sysfs root for PCI devices, overridable in tests.
+var sysPciDevices = "/sys/bus/pci/devices"
+
+// readSRIOV inspects sysfs for SR-IOV Physical Function and Virtual Function markers.
+func readSRIOV(addr string) (isPF bool, totalVFs int, numVFs int, isVF bool, pfAddr string) {
+	base := filepath.Join(sysPciDevices, addr)
+	// Check if this is a Physical Function (sriov_totalvfs > 0)
+	if b, err := os.ReadFile(filepath.Join(base, "sriov_totalvfs")); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && n > 0 {
+			isPF = true
+			totalVFs = n
+			if cur, err := os.ReadFile(filepath.Join(base, "sriov_numvfs")); err == nil {
+				numVFs, _ = strconv.Atoi(strings.TrimSpace(string(cur)))
+			}
+		}
+	}
+	// Check if this is a Virtual Function (physfn symlink points to parent PF)
+	if target, err := os.Readlink(filepath.Join(base, "physfn")); err == nil {
+		isVF = true
+		pfAddr = filepath.Base(target)
+	}
+	return
+}
+

@@ -387,6 +387,65 @@ export function handle(method: string, url: URL, body: any): Reply {
       return json({ code: 'VMJ1-DEMO-7Q4K-PX2M-9WTE', address: 'https://10.20.0.11:8420', expires: new Date(Date.now() + 15 * 60e3).toISOString() })
     case 'POST /api/v1/cluster/join':
       return json({ error: DEMO_ONLY }, 422)
+    case 'GET /api/v1/cluster/drs':
+      return json({
+        enabled: true,
+        mode: 'manual',
+        balanceScore: 78.5,
+        cpuStdDev: 24.2,
+        memStdDev: 18.7,
+        thresholdStdDev: 15.0,
+        lastEvaluationTime: new Date().toISOString(),
+        hosts: w.HOSTS.map((h, i) => ({
+          id: h.id,
+          name: h.name,
+          reachable: true,
+          cpuPct: [68.4, 22.1, 41.3][i % 3],
+          memPct: [74.2, 38.0, 52.6][i % 3],
+          memUsedB: [48 * 2 ** 30, 16 * 2 ** 30, 32 * 2 ** 30][i % 3],
+          memTotalB: 64 * 2 ** 30,
+          vmCount: [7, 2, 4][i % 3],
+        })),
+        recommendations: [
+          {
+            id: 'drs-rec-01',
+            priority: 4,
+            domainUuid: '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e03',
+            domainName: 'db-01',
+            sourceHostId: 'hv-01',
+            sourceName: 'hv-01',
+            targetHostId: 'hv-02',
+            targetName: 'hv-02',
+            reason: 'hv-01 CPU utilization (68.4%) exceeds cluster average by 24.2%. Migrating db-01 to hv-02 balances compute load.',
+            expectedGain: 14.8,
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        rules: [
+          {
+            id: 'rule-app-anti',
+            name: 'Separate Web Frontends',
+            kind: 'vm_anti_affinity',
+            enabled: true,
+            mandatory: true,
+            domains: ['4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e01', '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e02'],
+          },
+        ],
+      })
+    case 'PUT /api/v1/cluster/drs/config':
+      return json({ status: 'ok' })
+    case 'POST /api/v1/cluster/drs/rules':
+      return json({ status: 'created', id: `rule-${Date.now()}` })
+    case 'GET /api/v1/cluster/inventory/machines': {
+      const all = w.HOSTS.flatMap((h) =>
+        w.onHost(h.id).map((m, i) => ({
+          ...w.liveDomain(m, i),
+          hostId: h.id,
+          hostName: h.name,
+        })),
+      )
+      return json({ domains: all })
+    }
 
     // Live data
     case 'GET /api/v1/summary':

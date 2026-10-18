@@ -169,3 +169,50 @@ func TestVMDKDescriptorCannotReadHostFiles(t *testing.T) {
 		t.Error("a VMDK reading another file passed the check")
 	}
 }
+
+func TestSniffFormat_MultiFormats(t *testing.T) {
+	dir := t.TempDir()
+
+	makeImg := func(name string, header []byte, size int) string {
+		p := filepath.Join(dir, name)
+		data := make([]byte, size)
+		copy(data, header)
+		if err := os.WriteFile(p, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	vhdxPath := makeImg("test.vhdx", []byte("vhdxfile"), 1024)
+	if f, _ := sniffFormat(vhdxPath); f != "vhdx" {
+		t.Errorf("got %s, want vhdx", f)
+	}
+
+	vhdFixedPath := makeImg("fixed.vhd", []byte("conectix"), 1024)
+	if f, _ := sniffFormat(vhdFixedPath); f != "vpc" {
+		t.Errorf("got %s, want vpc (vhd)", f)
+	}
+
+	vdiBuf := make([]byte, 1024)
+	copy(vdiBuf[64:], []byte("\x7f\x10\xda\xbe"))
+	vdiImg := filepath.Join(dir, "test.vdi")
+	_ = os.WriteFile(vdiImg, vdiBuf, 0o600)
+	if f, _ := sniffFormat(vdiImg); f != "vdi" {
+		t.Errorf("got %s, want vdi", f)
+	}
+
+	qedPath := makeImg("test.qed", []byte("QED\x00"), 1024)
+	if f, _ := sniffFormat(qedPath); f != "qed" {
+		t.Errorf("got %s, want qed", f)
+	}
+
+	qcow2Path := makeImg("test.qcow2", []byte("QFI\xfb"), 1024)
+	if f, _ := sniffFormat(qcow2Path); f != "qcow2" {
+		t.Errorf("got %s, want qcow2", f)
+	}
+
+	vmdkPath := makeImg("test.vmdk", []byte("KDMV"), 1024)
+	if f, _ := sniffFormat(vmdkPath); f != "vmdk" {
+		t.Errorf("got %s, want vmdk", f)
+	}
+}

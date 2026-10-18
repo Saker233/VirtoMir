@@ -23,6 +23,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/cluster"
 	"github.com/onurbaydas/virtomir/internal/confighist"
+	"github.com/onurbaydas/virtomir/internal/drs"
 	"github.com/onurbaydas/virtomir/internal/ha"
 	"github.com/onurbaydas/virtomir/internal/history"
 	"github.com/onurbaydas/virtomir/internal/hostinfo"
@@ -34,6 +35,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/reports"
 	"github.com/onurbaydas/virtomir/internal/respool"
 	"github.com/onurbaydas/virtomir/internal/schedule"
+	"github.com/onurbaydas/virtomir/internal/systemd"
 	"github.com/onurbaydas/virtomir/internal/update"
 	"github.com/onurbaydas/virtomir/internal/virt"
 	"github.com/onurbaydas/virtomir/web"
@@ -194,6 +196,11 @@ func run(c config, log *slog.Logger) error {
 	} else {
 		opts.Respools = rpStore
 	}
+	if drsEng, err := drs.New(c.stateDir); err != nil {
+		log.Warn("drs engine", "err", err)
+	} else {
+		opts.DRS = drsEng
+	}
 	apiServer := api.NewServer(opts)
 	go syncCluster(ctx, apiServer)
 	go apiServer.RunReportSchedules(ctx)
@@ -222,6 +229,8 @@ func run(c config, log *slog.Logger) error {
 			scheme = "https"
 		}
 		log.Info("virtomird listening", "addr", scheme+"://"+c.listen, "version", version, "auth", c.authMode)
+		_ = systemd.Notify(systemd.Ready)
+		systemd.StartWatchdog(ctx, func(msg string, args ...any) { log.Info(fmt.Sprintf(msg, args...)) })
 		if tlsConf != nil {
 			errc <- srv.ListenAndServeTLS("", "")
 		} else {
@@ -234,6 +243,7 @@ func run(c config, log *slog.Logger) error {
 		return err
 	case <-ctx.Done():
 		log.Info("shutting down")
+		_ = systemd.Notify(systemd.Stopping)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {

@@ -1,6 +1,8 @@
 package virt
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -47,3 +49,41 @@ func TestParsePCIAddress(t *testing.T) {
 		}
 	}
 }
+
+func TestReadSRIOV(t *testing.T) {
+	tmp := t.TempDir()
+	orig := sysPciDevices
+	sysPciDevices = tmp
+	t.Cleanup(func() { sysPciDevices = orig })
+
+	// Case 1: Physical Function with 16 total VFs and 4 active VFs
+	pfAddr := "0000_03_00.0"
+	pfDir := filepath.Join(tmp, pfAddr)
+	if err := os.MkdirAll(pfDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(pfDir, "sriov_totalvfs"), []byte("16\n"), 0644)
+	_ = os.WriteFile(filepath.Join(pfDir, "sriov_numvfs"), []byte("4\n"), 0644)
+
+	isPF, total, num, isVF, parent := readSRIOV(pfAddr)
+	if !isPF || total != 16 || num != 4 || isVF || parent != "" {
+		t.Errorf("unexpected PF result: isPF=%v total=%d num=%d isVF=%v parent=%s", isPF, total, num, isVF, parent)
+	}
+
+	// Case 2: Virtual Function pointing to the PF
+	vfAddr := "0000_03_10.0"
+	vfDir := filepath.Join(tmp, vfAddr)
+	if err := os.MkdirAll(vfDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Symlink(pfDir, filepath.Join(vfDir, "physfn"))
+
+	isPF2, _, _, isVF2, parent2 := readSRIOV(vfAddr)
+	if isVF2 && parent2 != pfAddr {
+		t.Errorf("unexpected VF parent: %s", parent2)
+	}
+	if isPF2 {
+		t.Errorf("VF marked as PF")
+	}
+}
+

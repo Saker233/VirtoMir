@@ -22,7 +22,7 @@
   function blank(kind: Kind): ScheduleInfo {
     return kind === 'snapshot'
       ? { id: '', kind, domain: uuid, enabled: false, every: 'daily', at: '03:00', weekday: 0, hours: 6, keep: 7 }
-      : { id: '', kind, domain: uuid, enabled: false, every: 'weekly', at: '02:00', weekday: 0, hours: 6, keep: 4 }
+      : { id: '', kind, domain: uuid, enabled: false, every: 'weekly', at: '02:00', weekday: 0, hours: 6, keep: 4, keepDaily: 7, keepWeekly: 4, keepMonthly: 12, keepYearly: 1 }
   }
 
   async function load() {
@@ -113,6 +113,15 @@
             {/if}
             <span class="keep">{t('keep the last')} <input class="ui-input num" type="number" min="1" max="365" bind:value={d.keep} aria-label={t('Keep')} /></span>
           </div>
+          {#if k === 'backup'}
+            <div class="gfs-row" inert={!session.can('admin')}>
+              <span class="gfs-title">{t('GFS Retention:')}</span>
+              <label class="gfs-item">{t('Daily')} <input class="ui-input gfs-num" type="number" min="0" max="365" bind:value={d.keepDaily} placeholder="0" /></label>
+              <label class="gfs-item">{t('Weekly')} <input class="ui-input gfs-num" type="number" min="0" max="52" bind:value={d.keepWeekly} placeholder="0" /></label>
+              <label class="gfs-item">{t('Monthly')} <input class="ui-input gfs-num" type="number" min="0" max="120" bind:value={d.keepMonthly} placeholder="0" /></label>
+              <label class="gfs-item">{t('Yearly')} <input class="ui-input gfs-num" type="number" min="0" max="10" bind:value={d.keepYearly} placeholder="0" /></label>
+            </div>
+          {/if}
           <div class="status">
             {#if d.lastError}
               <span class="err">{t('Last run failed: {lastError}', { lastError: d.lastError })}</span>
@@ -190,6 +199,33 @@
   .num {
     width: 60px;
     height: 32px;
+  }
+  .gfs-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--surface-2);
+    border-radius: var(--radius-sm);
+    font-size: 11.5px;
+  }
+  .gfs-title {
+    font-weight: 600;
+    color: var(--text-2);
+    margin-right: 4px;
+  }
+  .gfs-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-3);
+  }
+  .gfs-num {
+    width: 48px;
+    height: 26px;
+    padding: 2px 6px;
+    font-size: 12px;
   }
   .status {
     display: flex;

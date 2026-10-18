@@ -71,6 +71,9 @@ type Config struct {
 	KeepDaily   int `json:"keepDaily,omitempty"`
 	KeepWeekly  int `json:"keepWeekly,omitempty"`
 	KeepMonthly int `json:"keepMonthly,omitempty"`
+	KeepYearly  int `json:"keepYearly,omitempty"`
+	// ImmutabilityDays sets minimum retention for immutable objects (e.g. S3 Object Lock).
+	ImmutabilityDays int `json:"immutabilityDays,omitempty"`
 	// LimitUploadKiB caps the upload rate (KiB/s); 0 is unlimited.
 	LimitUploadKiB int `json:"limitUploadKiB,omitempty"`
 }
@@ -94,7 +97,7 @@ func (c Config) validate() error {
 			return invalidf("%s is not a storage credential VirtoMir passes on (AWS_…, B2_…, AZURE_…, GOOGLE_…, OS_…, ST_…, RCLONE_…).", k)
 		}
 	}
-	for _, n := range []int{c.KeepLast, c.KeepDaily, c.KeepWeekly, c.KeepMonthly, c.LimitUploadKiB} {
+	for _, n := range []int{c.KeepLast, c.KeepDaily, c.KeepWeekly, c.KeepMonthly, c.KeepYearly, c.ImmutabilityDays, c.LimitUploadKiB} {
 		if n < 0 {
 			return invalidf("Numbers must not be negative.")
 		}
@@ -368,7 +371,7 @@ func (s *Store) Upload(ctx context.Context, dir, backupID, domainUUID, machine s
 	if len(snap) > 8 {
 		snap = snap[:8]
 	}
-	if c.KeepLast+c.KeepDaily+c.KeepWeekly+c.KeepMonthly > 0 {
+	if c.KeepLast+c.KeepDaily+c.KeepWeekly+c.KeepMonthly+c.KeepYearly > 0 {
 		if report != nil {
 			report("Applying the off-site retention…")
 		}
@@ -389,7 +392,7 @@ func (s *Store) Forget(ctx context.Context, domainUUID string) error {
 	for _, k := range []struct {
 		flag string
 		n    int
-	}{{"--keep-last", c.KeepLast}, {"--keep-daily", c.KeepDaily}, {"--keep-weekly", c.KeepWeekly}, {"--keep-monthly", c.KeepMonthly}} {
+	}{{"--keep-last", c.KeepLast}, {"--keep-daily", c.KeepDaily}, {"--keep-weekly", c.KeepWeekly}, {"--keep-monthly", c.KeepMonthly}, {"--keep-yearly", c.KeepYearly}} {
 		if k.n > 0 {
 			args = append(args, k.flag, strconv.Itoa(k.n))
 		}

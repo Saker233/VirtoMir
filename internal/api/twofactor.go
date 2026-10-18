@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/skip2/go-qrcode" // MIT
@@ -53,6 +54,13 @@ func (s *Server) loginCode(w http.ResponseWriter, r *http.Request) {
 	if s.auth == nil {
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "sign-in is disabled"})
 		return
+	}
+	if s.rateLimiter != nil {
+		if allowed, retryAfter := s.rateLimiter.Allow(r.RemoteAddr); !allowed {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			s.writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many attempts, please slow down"})
+			return
+		}
 	}
 	var b struct {
 		Pending string `json:"pending"`

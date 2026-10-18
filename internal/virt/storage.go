@@ -153,9 +153,10 @@ func volumeInfo(l *libvirt.Libvirt, v libvirt.StorageVol) (Volume, error) {
 
 // VolumeSpec describes a new empty volume.
 type VolumeSpec struct {
-	Name    string `json:"name"`
-	SizeGiB uint64 `json:"sizeGiB"`
-	Format  string `json:"format"` // qcow2 (default) or raw
+	Name         string `json:"name"`
+	SizeGiB      uint64 `json:"sizeGiB"`
+	Format       string `json:"format"` // qcow2 (default) or raw
+	Provisioning string `json:"provisioning,omitempty"` // thin (default/sparse) or thick (preallocated)
 }
 
 func (c *Client) CreateVolume(pool string, spec VolumeSpec) (Volume, error) {
@@ -173,15 +174,15 @@ func (c *Client) CreateVolume(pool string, spec VolumeSpec) (Volume, error) {
 	if !poolKeepsFiles(l, pool) {
 		format = "raw" // LVM, ZFS and Ceph volumes are block storage with no format of their own
 	}
-	vol, _, err := createVolume(l, pool, spec.Name, spec.SizeGiB<<30, format)
+	vol, _, err := createVolume(l, pool, spec.Name, spec.SizeGiB<<30, format, spec.Provisioning)
 	if err != nil {
 		return Volume{}, err
 	}
-	c.log.Info("volume created", "pool", pool, "volume", spec.Name)
+	c.log.Info("volume created", "pool", pool, "volume", spec.Name, "provisioning", spec.Provisioning)
 	return volumeInfo(l, vol)
 }
 
-func createVolume(l *libvirt.Libvirt, pool, name string, bytes uint64, format string) (libvirt.StorageVol, string, error) {
+func createVolume(l *libvirt.Libvirt, pool, name string, bytes uint64, format string, provisioning ...string) (libvirt.StorageVol, string, error) {
 	if format != "qcow2" && format != "raw" {
 		return libvirt.StorageVol{}, "", invalidf("Format must be qcow2 or raw.")
 	}
@@ -192,10 +193,13 @@ func createVolume(l *libvirt.Libvirt, pool, name string, bytes uint64, format st
 	if _, err := l.StorageVolLookupByName(p, name); err == nil {
 		return libvirt.StorageVol{}, "", refusedf("Pool %s already has a volume named %s.", pool, name)
 	}
-	// Thin everywhere except LVM: there a smaller allocation makes libvirt create a sparse
-	// snapshot volume that breaks once the guest writes more than that.
+	prov := "thin"
+	if len(provisioning) > 0 && provisioning[0] != "" {
+		prov = provisioning[0]
+	}
+	// Thin everywhere except LVM or explicit thick provisioning:
 	var alloc uint64
-	if poolTypeOf(l, p) == "logical" {
+	if poolTypeOf(l, p) == "logical" || prov == "thick" {
 		alloc = bytes
 	}
 	x := libvirtxml.StorageVolume{
@@ -210,7 +214,11 @@ func createVolume(l *libvirt.Libvirt, pool, name string, bytes uint64, format st
 	}
 	var flags libvirt.StorageVolCreateFlags
 	if format == "qcow2" {
-		flags = libvirt.StorageVolCreatePreallocMetadata
+		if prov == "thick" {
+			flags = 0
+		} else {
+			flags = libvirt.StorageVolCreatePreallocMetadata
+		}
 	}
 	vol, err := l.StorageVolCreateXML(p, doc, flags)
 	if err != nil {

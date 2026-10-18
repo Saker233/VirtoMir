@@ -373,6 +373,8 @@ export interface OffsiteConfig {
   keepDaily?: number
   keepWeekly?: number
   keepMonthly?: number
+  keepYearly?: number
+  immutabilityDays?: number
   limitUploadKiB?: number
 }
 export const OFFSITE_SECRET = '••••••••'
@@ -411,6 +413,10 @@ export interface ScheduleInfo {
   at?: string
   weekday?: number
   keep: number
+  keepDaily?: number
+  keepWeekly?: number
+  keepMonthly?: number
+  keepYearly?: number
   lastRun?: string
   lastError?: string
   lastResult?: string
@@ -477,6 +483,7 @@ export interface CreateSpec {
   tpm: boolean
   pool: string
   diskGiB: number
+  provisioning?: 'thin' | 'thick'
   diskPath?: string
   /** Cloud image to copy and grow to diskGiB. */
   baseImage?: string
@@ -664,6 +671,13 @@ export interface HostPCI {
   blocked?: string
   /** Slices the card can be split into (NVIDIA vGPU, Intel GVT-g, …). */
   mdevTypes?: HostMDevType[]
+  /** SR-IOV Physical Function indicator and VF capacity */
+  sriov?: boolean
+  sriovTotalVfs?: number
+  sriovCurrentVfs?: number
+  /** SR-IOV Virtual Function indicator and parent PF address */
+  isVf?: boolean
+  pfAddress?: string
 }
 
 export interface HostMDevType {
@@ -1006,8 +1020,8 @@ export const api = {
   poolAction: (name: string, action: 'start' | 'stop' | 'refresh') => request<void>('POST', `${poolPath(name)}/actions/${action}`),
   poolAutostart: (name: string, enabled: boolean) => request<void>('PUT', `${poolPath(name)}/autostart`, { enabled }),
   volumes: async (pool: string) => (await request<{ volumes: Volume[] }>('GET', `${poolPath(pool)}/volumes`)).volumes,
-  createVolume: (pool: string, name: string, sizeGiB: number, format: 'qcow2' | 'raw') =>
-    request<Volume>('POST', `${poolPath(pool)}/volumes`, { name, sizeGiB, format }),
+  createVolume: (pool: string, name: string, sizeGiB: number, format: 'qcow2' | 'raw', provisioning?: 'thin' | 'thick') =>
+    request<Volume>('POST', `${poolPath(pool)}/volumes`, { name, sizeGiB, format, provisioning }),
   resizeVolume: (pool: string, name: string, sizeGiB: number) =>
     request<void>('POST', `${poolPath(pool)}/volumes/${enc(name)}/resize`, { sizeGiB }),
   deleteVolume: (pool: string, name: string) => request<void>('DELETE', `${poolPath(pool)}/volumes/${enc(name)}`),

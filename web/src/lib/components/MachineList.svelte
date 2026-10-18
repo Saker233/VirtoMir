@@ -3,32 +3,97 @@
   import { session } from '../session.svelte'
   import Search from '@lucide/svelte/icons/search'
   import MonitorOff from '@lucide/svelte/icons/monitor-off'
+  import Server from '@lucide/svelte/icons/server'
   import { isActive, live } from '../live.svelte'
+  import { cluster } from '../cluster.svelte'
+  import { api, type Action, type Domain, type Snapshot } from '../api'
   import MachineRow from './MachineRow.svelte'
   import ConfirmButton from './ConfirmButton.svelte'
   import Play from '@lucide/svelte/icons/play'
   import Power from '@lucide/svelte/icons/power'
   import Zap from '@lucide/svelte/icons/zap'
-  import type { Action, Domain } from '../api'
   import { router } from '../router.svelte'
 
   type Filter = 'all' | 'running' | 'stopped'
   let filter = $state<Filter>('all')
+  let hostFilter = $state<string | null>(null) // null = all nodes
   let query = $state('')
 
-  let domains = $derived(live.snapshot?.domains ?? [])
+  interface ClusterDomain extends Domain {
+    hostId?: string
+    hostName?: string
+  }
+
+  let peerSnaps = $state<Record<string, Snapshot | null>>({})
+
+  async function pollPeers() {
+    if (!cluster.clustered) return
+    await Promise.all(
+      cluster.members.map(async (m) => {
+        if (!m.reachable || m.self) return
+        try {
+          peerSnaps[m.id] = await api.summary(m.id)
+        } catch {
+          peerSnaps[m.id] = null
+        }
+      }),
+    )
+  }
+
+  $effect(() => {
+    if (cluster.clustered) {
+      void pollPeers()
+      const iv = setInterval(() => void pollPeers(), 4000)
+      return () => clearInterval(iv)
+    }
+  })
+
+  let allDomains = $derived.by(() => {
+    const list: ClusterDomain[] = []
+    const selfName = cluster.current?.name ?? 'local'
+    const selfId = cluster.current?.id ?? ''
+
+    for (const d of live.snapshot?.domains ?? []) {
+      list.push({ ...d, hostId: selfId, hostName: selfName })
+    }
+
+    if (cluster.clustered) {
+      for (const m of cluster.members) {
+        if (m.self) continue
+        const snap = peerSnaps[m.id]
+        if (snap?.domains) {
+          for (const d of snap.domains) {
+            list.push({ ...d, hostId: m.id, hostName: m.name })
+          }
+        }
+      }
+    }
+    return list
+  })
+
+  let domains = $derived.by(() => {
+    if (!cluster.clustered || !hostFilter) return allDomains
+    return allDomains.filter((d) => d.hostId === hostFilter)
+  })
+
   let counts = $derived({
     all: domains.length,
     running: domains.filter((d) => isActive(d.state) || d.state === 'paused').length,
     stopped: domains.filter((d) => !isActive(d.state) && d.state !== 'paused').length,
   })
+
   let shown = $derived(
     domains.filter((d) => {
       const on = isActive(d.state) || d.state === 'paused'
       if (filter === 'running' && !on) return false
       if (filter === 'stopped' && on) return false
       const q = query.trim().toLowerCase()
-      return !q || d.name.toLowerCase().includes(q) || d.uuid.startsWith(q)
+      return (
+        !q ||
+        d.name.toLowerCase().includes(q) ||
+        d.uuid.startsWith(q) ||
+        (d.hostName && d.hostName.toLowerCase().includes(q))
+      )
     }),
   )
   let loading = $derived(live.snapshot === null)
@@ -57,6 +122,32 @@
 </script>
 
 <section class="panel">
+  {#if cluster.clustered}
+    <div class="node-filters" role="group" aria-label={t('Filter by host')}>
+      <button
+        class="node-pill"
+        class:active={hostFilter === null}
+        onclick={() => (hostFilter = null)}
+      >
+        <Server size={13} />
+        <span>{t('ALL NODES')}</span>
+        <span class="pill-count">{allDomains.length}</span>
+      </button>
+      {#each cluster.members as m (m.id)}
+        {@const hostVMs = allDomains.filter((d) => d.hostId === m.id).length}
+        <button
+          class="node-pill"
+          class:active={hostFilter === m.id}
+          onclick={() => (hostFilter = m.id)}
+        >
+          <span class="node-dot" class:down={!m.reachable}></span>
+          <span>{m.name}</span>
+          <span class="pill-count">{hostVMs}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
   <header class="head">
     <h2>{t('Machines')}</h2>
     {#if counts.all > 0}
@@ -133,7 +224,7 @@
       </div>
     {:else}
       {#each shown as d (d.uuid)}
-        <MachineRow {d} selected={selected.has(d.uuid)} onselect={session.can('operator') ? (on) => select(d.uuid, on) : undefined} />
+        <MachineRow {d} hostName={cluster.clustered ? d.hostName : undefined} selected={selected.has(d.uuid)} onselect={session.can('operator') ? (on) => select(d.uuid, on) : undefined} />
       {/each}
     {/if}
   </div>
@@ -315,6 +406,54 @@
     color: var(--accent);
     cursor: pointer;
     padding: 0;
+  }
+
+  .node-filters {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .node-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: 11.5px;
+    font-weight: 700;
+    cursor: pointer;
+    color: var(--text-2);
+    border-radius: var(--radius-sm);
+    transition: all var(--dur-fast);
+  }
+  .node-pill:hover {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+  .node-pill.active {
+    background: var(--accent);
+    color: #000;
+    border-color: var(--accent);
+  }
+  .pill-count {
+    padding: 1px 5px;
+    background: color-mix(in srgb, currentColor 18%, transparent);
+    font-size: 10.5px;
+    font-weight: 800;
+  }
+  .node-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ok);
+  }
+  .node-dot.down {
+    background: var(--danger);
   }
 
   @media (max-width: 1100px) {

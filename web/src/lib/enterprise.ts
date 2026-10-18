@@ -371,6 +371,76 @@ export const ent = {
   /** Fetches an image from a URL into a pool (background job). */
   download: (pool: string, url: string, name: string, sha256: string) =>
     api.post<Job>(`/api/v1/storage/pools/${enc(pool)}/download`, { url, name, sha256 }),
+
+  // DRS (Distributed Resource Scheduler) & Unified Inventory
+  drsStatus: () => api.get<DRSStatus>('/api/v1/cluster/drs'),
+  saveDRSConfig: (cfg: { enabled: boolean; mode: DRSMode; thresholdStdDev: number }) => api.put<void>('/api/v1/cluster/drs/config', cfg),
+  addDRSRule: (rule: Partial<AffinityRule>) => api.post<AffinityRule>('/api/v1/cluster/drs/rules', rule),
+  deleteDRSRule: (id: string) => api.delete<void>(`/api/v1/cluster/drs/rules/${enc(id)}`),
+  applyDRSRecommendation: (id: string) => api.post<{ message: string; recommendation: DRSRecommendation }>(`/api/v1/cluster/drs/recommendations/${enc(id)}/apply`),
+  clusterInventoryMachines: () => api.get<ClusterDomainSummary[]>('/api/v1/cluster/inventory/machines'),
+}
+
+export type DRSMode = 'manual' | 'partially_automated' | 'fully_automated'
+
+export interface AffinityRule {
+  id: string
+  name: string
+  kind: 'vm_anti_affinity' | 'vm_affinity' | 'vm_host_affinity'
+  enabled: boolean
+  mandatory: boolean
+  domains: string[]
+  targetHost?: string
+}
+
+export interface DRSRecommendation {
+  id: string
+  priority: number
+  domainUuid: string
+  domainName: string
+  sourceHostId: string
+  sourceName: string
+  targetHostId: string
+  targetName: string
+  reason: string
+  expectedGain: number
+  createdAt: string
+}
+
+export interface DRSHostMetric {
+  id: string
+  name: string
+  reachable: boolean
+  cpuPct: number
+  memPct: number
+  memUsedB: number
+  memTotalB: number
+  vmCount: number
+}
+
+export interface DRSStatus {
+  enabled: boolean
+  mode: DRSMode
+  balanceScore: number
+  cpuStdDev: number
+  memStdDev: number
+  thresholdStdDev: number
+  hosts: DRSHostMetric[]
+  recommendations: DRSRecommendation[]
+  rules: AffinityRule[]
+  lastEvaluationTime: string
+}
+
+export interface ClusterDomainSummary {
+  uuid: string
+  name: string
+  state: string
+  vcpus: number
+  memoryKiB: number
+  cpuPercent: number
+  autostart: boolean
+  hostId: string
+  hostName: string
 }
 
 export const PRIORITIES: Priority[] = ['critical', 'high', 'normal', 'low']

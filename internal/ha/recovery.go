@@ -328,7 +328,7 @@ func (m *Manager) Simulate(nodeID string) (Simulation, error) {
 			votes++
 		}
 	}
-	if cfg.Witness != "" {
+	if cfg.Witness != "" && len(members) > 1 {
 		total++
 		if m.quorum.WitnessReachable {
 			votes++
