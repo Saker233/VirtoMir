@@ -2,6 +2,8 @@ package activity
 
 import (
 	"crypto/tls"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -19,34 +21,89 @@ type SIEMConfig struct {
 	Tag         string `json:"tag"`         // e.g. "virtomir"
 	Hostname    string `json:"hostname"`    // host name or empty for os.Hostname
 	TLSInsecure bool   `json:"tlsInsecure"` // skip cert verification if self-signed
+	// LastError is the outcome of the latest delivery ("" when it worked); set on reads only.
+	LastError string `json:"lastError,omitempty"`
+}
+
+// withDefaults fills in the facility, tag and host name the receiver sees.
+func (c SIEMConfig) withDefaults() SIEMConfig {
+	if c.Facility <= 0 {
+		c.Facility = 1 // user-level
+	}
+	if c.Tag == "" {
+		c.Tag = "virtomir"
+	}
+	if c.Hostname == "" {
+		if h, err := os.Hostname(); err == nil {
+			c.Hostname = h
+		} else {
+			c.Hostname = "localhost"
+		}
+	}
+	c.LastError = ""
+	return c
+}
+
+// Validate checks the target is udp://, tcp:// or tls:// with a host and port.
+func (c SIEMConfig) Validate() error {
+	if c.Facility < 0 || c.Facility > 23 {
+		return fmt.Errorf("facility must be between 0 and 23")
+	}
+	if !c.Enabled && c.Target == "" {
+		return nil
+	}
+	u, err := url.Parse(c.Target)
+	if err != nil || (u.Scheme != "udp" && u.Scheme != "tcp" && u.Scheme != "tls") {
+		return fmt.Errorf("target must look like udp://host:514, tcp://host:514 or tls://host:6514")
+	}
+	if _, port, err := net.SplitHostPort(u.Host); err != nil || port == "" {
+		return fmt.Errorf("target %q needs a host and a port", c.Target)
+	}
+	return nil
+}
+
+// LoadSIEMConfig reads the saved forwarding settings; ok is false when none were saved.
+func LoadSIEMConfig(path string) (cfg SIEMConfig, ok bool, err error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return SIEMConfig{}, false, nil
+	}
+	if err != nil {
+		return SIEMConfig{}, false, err
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return SIEMConfig{}, false, fmt.Errorf("%s: %w", path, err)
+	}
+	return cfg, true, nil
+}
+
+// SaveSIEMConfig writes the settings so forwarding survives a restart.
+func SaveSIEMConfig(path string, cfg SIEMConfig) error {
+	cfg.LastError = ""
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // Forwarder streams audit logs to a remote syslog / SIEM receiver.
 type Forwarder struct {
-	mu     sync.RWMutex
-	cfg    SIEMConfig
-	queue  chan Entry
-	closed chan struct{}
+	mu      sync.RWMutex
+	cfg     SIEMConfig
+	lastErr string
+	queue   chan Entry
+	closed  chan struct{}
 }
 
 // NewForwarder initializes a background SIEM forwarder.
 func NewForwarder(cfg SIEMConfig) *Forwarder {
-	if cfg.Facility == 0 {
-		cfg.Facility = 1 // default: user-level
-	}
-	if cfg.Tag == "" {
-		cfg.Tag = "virtomir"
-	}
-	if cfg.Hostname == "" {
-		if h, err := os.Hostname(); err == nil {
-			cfg.Hostname = h
-		} else {
-			cfg.Hostname = "localhost"
-		}
-	}
-
 	f := &Forwarder{
-		cfg:    cfg,
+		cfg:    cfg.withDefaults(),
 		queue:  make(chan Entry, 1000),
 		closed: make(chan struct{}),
 	}
@@ -81,7 +138,7 @@ func (f *Forwarder) SetConfig(cfg SIEMConfig) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.cfg = cfg
+	f.cfg, f.lastErr = cfg.withDefaults(), ""
 }
 
 // Config returns a copy of current SIEM configuration.
@@ -91,7 +148,9 @@ func (f *Forwarder) Config() SIEMConfig {
 	}
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	return f.cfg
+	c := f.cfg
+	c.LastError = f.lastErr
+	return c
 }
 
 // Close terminates the background forwarder worker.
@@ -161,7 +220,13 @@ func (f *Forwarder) worker() {
 			}
 
 			msg := FormatRFC5424(e, cfg)
-			_ = sendToTarget(cfg.Target, []byte(msg), cfg.TLSInsecure)
+			err := sendToTarget(cfg.Target, []byte(msg), cfg.TLSInsecure)
+			f.mu.Lock()
+			f.lastErr = ""
+			if err != nil {
+				f.lastErr = err.Error()
+			}
+			f.mu.Unlock()
 		}
 	}
 }

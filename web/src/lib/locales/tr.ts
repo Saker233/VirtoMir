@@ -1631,6 +1631,7 @@ export const tr: Record<string, string> = {
   "Skip TLS certificate verification (insecure/self-signed)": "TLS sertifika doğrulamasını atla (güvensiz / kendinden imzalı)",
   "Save Configuration": "Yapılandırmayı Kaydet",
   "SIEM / Syslog forwarding updated": "SIEM / Syslog yönlendirmesi güncellendi",
+  "The last entry could not be delivered: {error}": "Son kayıt iletilemedi: {error}",
   "Audit entries are now streamed via RFC 5424 to {target}": "Denetim kayıtları artık RFC 5424 standardında {target} hedefine aktarılıyor",
   "Syslog forwarding disabled.": "Syslog yönlendirmesi devre dışı bırakıldı.",
   "Confidential Computing": "Gizli Hesaplama (Confidential Computing)",

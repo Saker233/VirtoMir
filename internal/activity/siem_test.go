@@ -2,6 +2,7 @@ package activity
 
 import (
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -96,5 +97,28 @@ func TestForwarderUDPDelivery(t *testing.T) {
 	got := string(buf[:n])
 	if !strings.Contains(got, "node-test virtomir") || !strings.Contains(got, `method="PUT"`) {
 		t.Errorf("received payload does not match expected syslog frame: %q", got)
+	}
+}
+
+func TestSIEMConfigSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "siem.json")
+	if _, ok, err := LoadSIEMConfig(path); ok || err != nil {
+		t.Fatalf("missing file: ok = %v, err = %v", ok, err)
+	}
+	want := SIEMConfig{Enabled: true, Target: "tcp://siem.example:514", Facility: 16}
+	if err := want.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveSIEMConfig(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := LoadSIEMConfig(path)
+	if !ok || err != nil || got.Target != want.Target || got.Facility != 16 || !got.Enabled {
+		t.Errorf("loaded = %+v, ok = %v, err = %v", got, ok, err)
+	}
+	for _, bad := range []string{"siem.example:514", "http://siem.example:514", "udp://siem.example"} {
+		if (SIEMConfig{Enabled: true, Target: bad}).Validate() == nil {
+			t.Errorf("%q accepted", bad)
+		}
 	}
 }

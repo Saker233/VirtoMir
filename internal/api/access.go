@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -251,7 +252,6 @@ func (s *Server) accessRoutes(mux *routeMux) {
 	mux.HandleFunc("PUT /api/v1/activity/siem", s.saveSIEMConfig)
 }
 
-
 // listTokens: your own tokens; admins add ?all=true to see everyone's.
 func (s *Server) listTokens(w http.ResponseWriter, r *http.Request) {
 	if s.tokens == nil {
@@ -353,6 +353,16 @@ func (s *Server) saveSIEMConfig(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "activity log disabled"})
 		return
 	}
+	if err := cfg.Validate(); err != nil {
+		s.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	if s.stateDir != "" {
+		if err := activity.SaveSIEMConfig(filepath.Join(s.stateDir, SIEMConfigFile), cfg); err != nil {
+			s.writeError(w, err)
+			return
+		}
+	}
 	f := s.activity.SIEM()
 	if f == nil {
 		f = activity.NewForwarder(cfg)
@@ -363,3 +373,5 @@ func (s *Server) saveSIEMConfig(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, f.Config())
 }
 
+// SIEMConfigFile holds the audit forwarding settings in -state-dir.
+const SIEMConfigFile = "siem.json"

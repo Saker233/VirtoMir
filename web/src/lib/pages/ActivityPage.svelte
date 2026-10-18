@@ -36,6 +36,7 @@
   let siemTag = $state('virtomir')
   let siemHostname = $state('')
   let siemTLSInsecure = $state(false)
+  let siemLastError = $state('')
 
   async function openSIEM() {
     siemError = ''
@@ -47,6 +48,7 @@
       siemTag = cfg.tag || 'virtomir'
       siemHostname = cfg.hostname || ''
       siemTLSInsecure = !!cfg.tlsInsecure
+      siemLastError = cfg.lastError ?? ''
       siemOpen = true
     } catch (e) {
       siemError = errorText(e)
@@ -268,6 +270,7 @@
       </label>
     {/if}
 
+    {#if siemLastError && siemEnabled}<div class="ui-error-box">{t('The last entry could not be delivered: {error}', { error: siemLastError })}</div>{/if}
     {#if siemError}<div class="ui-error-box">{siemError}</div>{/if}
   </form>
   {#snippet footer()}

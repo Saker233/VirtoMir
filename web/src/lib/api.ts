@@ -458,6 +458,8 @@ export interface SIEMConfig {
   tag: string
   hostname: string
   tlsInsecure?: boolean
+  /** Outcome of the latest delivery; absent when it worked. */
+  lastError?: string
 }
 
 
