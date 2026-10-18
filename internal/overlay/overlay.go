@@ -23,6 +23,10 @@ import (
 // Port is the IANA VXLAN port; the hosts' firewalls must let UDP to it through.
 const Port = 4789
 
+// MTU leaves room for the 50-byte VXLAN header on a 1500-byte underlay; the networks'
+// bridges use the same.
+const MTU = 1450
+
 // Prefix names VirtoMir's tunnel devices; others are left alone.
 const Prefix = "vmvx"
 
@@ -57,6 +61,7 @@ func New(r Runner, log *slog.Logger) *Reconciler {
 type link struct {
 	Name     string   `json:"ifname"`
 	Master   string   `json:"master"`
+	MTU      int      `json:"mtu"`
 	Flags    []string `json:"flags"`
 	LinkInfo struct {
 		Data struct {
@@ -120,11 +125,16 @@ func (r *Reconciler) apply(ctx context.Context, t Tunnel, have map[string]link) 
 	dev := Device(t.VNI)
 	l, exists := have[dev]
 	if !exists {
-		if _, err := r.run.Run(ctx, "ip", "link", "add", dev, "type", "vxlan", "id", strconv.FormatUint(uint64(t.VNI), 10),
-			"dstport", strconv.Itoa(Port)); err != nil {
+		if _, err := r.run.Run(ctx, "ip", "link", "add", dev, "mtu", strconv.Itoa(MTU), "type", "vxlan",
+			"id", strconv.FormatUint(uint64(t.VNI), 10), "dstport", strconv.Itoa(Port)); err != nil {
 			return fmt.Errorf("create %s: %w", dev, err)
 		}
 		r.log.Info("vxlan tunnel created", "device", dev, "bridge", t.Bridge, "peers", len(t.Peers))
+	}
+	if exists && l.MTU != MTU {
+		if _, err := r.run.Run(ctx, "ip", "link", "set", dev, "mtu", strconv.Itoa(MTU)); err != nil {
+			return fmt.Errorf("set the MTU of %s: %w", dev, err)
+		}
 	}
 	if l.Master != t.Bridge {
 		if _, err := r.run.Run(ctx, "ip", "link", "set", dev, "master", t.Bridge); err != nil {

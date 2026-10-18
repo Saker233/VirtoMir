@@ -55,14 +55,21 @@ func (h *fakeHost) Run(_ context.Context, name string, args ...string) ([]byte, 
 	switch {
 	case strings.HasPrefix(cmd, "link add "):
 		l := &link{Name: args[2]}
-		fmt.Sscan(args[6], &l.LinkInfo.Data.ID)
-		fmt.Sscan(args[8], &l.LinkInfo.Data.Port)
+		// link add DEV mtu N type vxlan id VNI dstport PORT: the order ip insists on
+		if args[3] != "mtu" || args[5] != "type" || args[7] != "id" || args[9] != "dstport" {
+			return nil, fmt.Errorf("ip: bad syntax %q", cmd)
+		}
+		fmt.Sscan(args[4], &l.MTU)
+		fmt.Sscan(args[8], &l.LinkInfo.Data.ID)
+		fmt.Sscan(args[10], &l.LinkInfo.Data.Port)
 		h.links[args[2]] = l
 	case strings.HasPrefix(cmd, "link del "):
 		delete(h.links, args[2])
 		delete(h.fdb, args[2])
 	case strings.Contains(cmd, " master "):
 		h.links[args[2]].Master = args[4]
+	case strings.Contains(cmd, " mtu "):
+		fmt.Sscan(args[4], &h.links[args[2]].MTU)
 	case strings.HasSuffix(cmd, " up"):
 		h.links[args[2]].Flags = []string{"BROADCAST", "UP"}
 	}
@@ -87,7 +94,7 @@ func TestReconcileCreatesUpdatesAndRemovesTunnels(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := h.links["vmvx100"]
-	if l == nil || l.Master != "vxbr100" || l.LinkInfo.Data.ID != 100 || l.LinkInfo.Data.Port != Port || !slices.Contains(l.Flags, "UP") {
+	if l == nil || l.Master != "vxbr100" || l.MTU != MTU || l.LinkInfo.Data.ID != 100 || l.LinkInfo.Data.Port != Port || !slices.Contains(l.Flags, "UP") {
 		t.Fatalf("device = %+v", l)
 	}
 	if got := h.fdb["vmvx100"]; !slices.Equal(got, []string{"192.168.77.11", "192.168.77.12"}) {
