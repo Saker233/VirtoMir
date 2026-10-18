@@ -72,7 +72,7 @@
     open: { label: t('Open'), hint: t('Routed without any firewall rules from libvirt.') },
     isolated: { label: t('Isolated'), hint: t('Machines only talk to each other and to the host.') },
     bridge: { label: t('Bridged'), hint: t('Machines join the physical LAN through a host bridge, like real computers.') },
-    vxlan: { label: t('VXLAN Overlay'), hint: t('Cross-host SDN layer-2 tunnel across nodes in the cluster without physical switch changes.') },
+    vxlan: { label: t('VXLAN overlay'), hint: t('One layer-2 network spanning several hosts, tunnelled over their existing network (UDP 4789).') },
   }
 
   const modeLabel = (m: string) => MODE[m]?.label ?? m
@@ -81,6 +81,8 @@
       n.subnet,
       n.subnet6,
       n.bridge && `bridge ${n.bridge}`,
+      n.mode === 'vxlan' && `VNI ${n.vni}`,
+      n.mode === 'vxlan' && (n.peers?.length ? t('peers {list}', { list: n.peers.join(', ') }) : t('no peers')),
       n.dhcpStart && `DHCP ${n.dhcpStart} – ${n.dhcpEnd}`,
       n.subnet6 && (n.dhcp6Start ? 'DHCPv6' : 'SLAAC'),
     ]
@@ -94,6 +96,7 @@
   let formErr = $state('')
   let withV4 = $state(true)
   let withV6 = $state(false)
+  let peersText = $state('')
   // A random unique local /64 (RFC 4193): fdXX:XXXX:XXXX:1::/64.
   function randomULA() {
     const b = crypto.getRandomValues(new Uint8Array(5))
@@ -105,7 +108,8 @@
     const used = new Set((nets ?? []).map((n) => n.subnet?.split('.').slice(0, 3).join('.')))
     let x = 100
     while (used.has(`192.168.${x}`) && x < 250) x++
-    spec = { name: '', mode: 'nat', subnet: `192.168.${x}.0/24`, dhcp: true, bridge: '', subnet6: randomULA(), dhcp6: false }
+    spec = { name: '', mode: 'nat', subnet: `192.168.${x}.0/24`, dhcp: true, bridge: '', subnet6: randomULA(), dhcp6: false, vni: 100 }
+    peersText = ''
     withV4 = true
     withV6 = false
     formErr = ''
@@ -124,8 +128,8 @@
             ? {
                 name: spec.name,
                 mode: 'vxlan',
-                vni: spec.vni ? Number(spec.vni) : 100,
-                bridge: spec.bridge || undefined,
+                vni: Number(spec.vni),
+                peers: peersText.split(/[\s,]+/).filter(Boolean),
                 subnet: withV4 ? spec.subnet : undefined,
                 dhcp: withV4 && spec.dhcp,
                 subnet6: withV6 ? spec.subnet6?.trim() : undefined,
@@ -426,19 +430,25 @@
       {/if}
     {:else if spec.mode === 'vxlan'}
       <label class="ui-field">
-        <span class="label">{t('VXLAN Network Identifier (VNI)')}</span>
+        <span class="label">{t('VXLAN network identifier (VNI)')}</span>
         <input class="ui-input mono" type="number" min="1" max="16777215" bind:value={spec.vni} placeholder="100" required />
-        <span class="hint">{t('Shared overlay VNI across all hypervisor nodes in the cluster.')}</span>
+        <span class="hint">{t('The same number on every host of this overlay. Its bridge is vxbr{vni}, with an MTU of 1450 to leave room for the tunnel header.', { vni: spec.vni || 'N' })}</span>
       </label>
-      <label class="ui-field">
-        <span class="label">{t('Bridge interface name')} <span class="opt">{t('(optional)')}</span></span>
-        <input class="ui-input mono" bind:value={spec.bridge} placeholder="vxbr100" />
-      </label>
-      <label class="ui-switch"><input type="checkbox" bind:checked={withV4} /> {t('IPv4 Overlay Subnet')}</label>
+      {#if cluster.clustered && everywhere}
+        <span class="hint">{t('Every cluster member joins: each gets the others as peers, and this host ({host}) is the gateway if you give a subnet.', { host: cluster.current?.name ?? '' })}</span>
+      {:else}
+        <label class="ui-field">
+          <span class="label">{t('Peers')}</span>
+          <textarea class="ui-input mono" rows="2" bind:value={peersText} placeholder="192.168.1.11, 192.168.1.12"></textarea>
+          <span class="hint">{t('The IP addresses of the other hosts on this overlay. Their firewalls must let UDP port 4789 through.')}</span>
+        </label>
+      {/if}
+      <label class="ui-switch"><input type="checkbox" bind:checked={withV4} /> {t('This host is the gateway (NAT and DHCP for the overlay)')}</label>
       {#if withV4}
         <label class="ui-field">
           <span class="label">{t('Subnet')}</span>
           <input class="ui-input mono" bind:value={spec.subnet} placeholder="10.100.0.0/24" required />
+          <span class="hint">{t('Give the subnet on one host only; on the others leave this off, so the overlay has a single gateway and DHCP server.')}</span>
         </label>
         <label class="ui-switch"><input type="checkbox" bind:checked={spec.dhcp} /> {t('Hand out addresses with DHCP')}</label>
       {/if}

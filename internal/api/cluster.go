@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -175,13 +178,72 @@ func (s *Server) createClusterNetwork(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &spec) {
 		return
 	}
+	if spec.Mode == "vxlan" {
+		s.createClusterVXLAN(w, r, spec)
+		return
+	}
 	results := s.everyHost(r, time.Minute, func() error { return s.backend.CreateNetwork(spec) }, "/api/v1/networks", spec)
 	s.writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+// createClusterVXLAN joins every member to one overlay (ADR-0053): each gets the others'
+// addresses as peers, and only this host gets the subnet, so the overlay has one gateway
+// and one DHCP server instead of one per host.
+func (s *Server) createClusterVXLAN(w http.ResponseWriter, r *http.Request, spec virt.NetworkSpec) {
+	members, _ := s.cluster.Members()
+	addr := map[string]string{}
+	for _, n := range members {
+		a, err := memberIP(r.Context(), n.Address)
+		if err != nil {
+			s.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": n.Name + ": " + err.Error()})
+			return
+		}
+		addr[n.ID] = a
+	}
+	specFor := func(n cluster.Node) virt.NetworkSpec {
+		sp := spec
+		sp.Peers = nil
+		for _, o := range members {
+			if o.ID != n.ID {
+				sp.Peers = append(sp.Peers, addr[o.ID])
+			}
+		}
+		if n.ID != s.cluster.SelfID() {
+			sp.Subnet, sp.DHCP, sp.Subnet6, sp.DHCP6 = "", false, "", false
+		}
+		return sp
+	}
+	results := s.everyHostEach(r, time.Minute, func(n cluster.Node) (func() error, any) {
+		sp := specFor(n)
+		return func() error { return s.backend.CreateNetwork(sp) }, sp
+	}, "/api/v1/networks")
+	s.writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+// memberIP is the IP address in a member's https://host:port, looked up when it is a name.
+func memberIP(ctx context.Context, address string) (string, error) {
+	u, err := url.Parse(address)
+	if err != nil || u.Hostname() == "" {
+		return "", fmt.Errorf("cannot read the address %q", address)
+	}
+	if a, err := netip.ParseAddr(u.Hostname()); err == nil {
+		return a.Unmap().String(), nil
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", u.Hostname())
+	if err != nil || len(ips) == 0 {
+		return "", fmt.Errorf("cannot resolve %s: %v", u.Hostname(), err)
+	}
+	return ips[0].Unmap().String(), nil
 }
 
 // everyHost runs a create on every member in parallel: local runs here, the others get
 // POST path with body on behalf of the user. Each host reports its own result.
 func (s *Server) everyHost(r *http.Request, timeout time.Duration, local func() error, path string, body any) []HostResult {
+	return s.everyHostEach(r, timeout, func(cluster.Node) (func() error, any) { return local, body }, path)
+}
+
+// everyHostEach is everyHost with a call (here) and body (elsewhere) per member.
+func (s *Server) everyHostEach(r *http.Request, timeout time.Duration, each func(cluster.Node) (func() error, any), path string) []HostResult {
 	id := identity(r)
 	members, _ := s.cluster.Members()
 	if len(members) == 0 {
@@ -195,6 +257,7 @@ func (s *Server) everyHost(r *http.Request, timeout time.Duration, local func() 
 		go func(res *HostResult, n cluster.Node) {
 			defer wg.Done()
 			var err error
+			local, body := each(n)
 			if n.ID == s.cluster.SelfID() {
 				err = local()
 			} else {

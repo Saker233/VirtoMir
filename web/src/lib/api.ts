@@ -643,6 +643,8 @@ export interface VNetwork {
   usedBy: string[]
   dhcpHosts: DHCPHost[]
   vni?: number
+  /** VXLAN: the other hosts' addresses. */
+  peers?: string[]
 }
 
 export interface NetworkSpec {

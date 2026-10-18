@@ -219,6 +219,7 @@ func run(c config, log *slog.Logger) error {
 	go syncCluster(ctx, apiServer)
 	go apiServer.RunReportSchedules(ctx)
 	go apiServer.RunDRS(ctx)
+	go keepTunnels(ctx, client, log)
 	if opts.Updater != nil {
 		opts.Updater.InitConfig(c.stateDir)
 		go opts.Updater.StartAutoUpdater(ctx, c.stateDir, func(action, details string) {

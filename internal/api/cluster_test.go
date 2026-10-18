@@ -305,3 +305,26 @@ func TestClusterSummaryThroughPeer(t *testing.T) {
 		t.Errorf("summary: %d %s", resp.StatusCode, body)
 	}
 }
+
+// A cluster-wide VXLAN network gets one gateway (the host asked) and every member the
+// others as peers.
+func TestClusterVXLANHasOneGateway(t *testing.T) {
+	a := newTestNode(t, "alpha", nil)
+	b := newTestNode(t, "beta", nil)
+	joinNodes(t, a, b)
+	resp, body := a.signIn(t, "onur").req("POST", "/api/v1/cluster/networks",
+		`{"name":"overlay","mode":"vxlan","vni":42,"subnet":"10.42.0.0/24","dhcp":true}`, "Origin", a.url)
+	if resp.StatusCode != http.StatusOK || strings.Count(body, `"ok":true`) != 2 {
+		t.Fatalf("%d %s", resp.StatusCode, body)
+	}
+	if len(a.backend.networks) != 1 || len(b.backend.networks) != 1 {
+		t.Fatalf("created %d on alpha, %d on beta", len(a.backend.networks), len(b.backend.networks))
+	}
+	ga, gb := a.backend.networks[0], b.backend.networks[0]
+	if ga.Subnet != "10.42.0.0/24" || !ga.DHCP || gb.Subnet != "" || gb.DHCP {
+		t.Errorf("gateway: alpha %+v, beta %+v", ga, gb)
+	}
+	if len(ga.Peers) != 1 || ga.Peers[0] != "127.0.0.1" || len(gb.Peers) != 1 || gb.VNI != 42 {
+		t.Errorf("peers: alpha %v, beta %v", ga.Peers, gb.Peers)
+	}
+}

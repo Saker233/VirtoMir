@@ -29,9 +29,15 @@ type fakeBackend struct {
 	lastAction   virt.Action
 	lastInactive bool
 	calls        []string
+	networks     []virt.NetworkSpec
 }
 
 func (f *fakeBackend) call(s string) { f.calls = append(f.calls, s) }
+
+func (f *fakeBackend) CreateNetwork(spec virt.NetworkSpec) error {
+	f.networks = append(f.networks, spec)
+	return f.err
+}
 
 func (f *fakeBackend) HostInfo() (virt.HostInfo, error)    { return f.host, f.err }
 func (f *fakeBackend) ListDomains() ([]virt.Domain, error) { return f.domains, f.err }
