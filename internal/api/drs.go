@@ -366,14 +366,112 @@ func (s *Server) drsPlacement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mib, _ := strconv.ParseUint(r.URL.Query().Get("memoryMiB"), 10, 64)
-	hosts, _ := s.collectClusterPlacements(r.Context(), identity(r))
-	best, ok := drs.Placement(hosts, mib<<20)
-	if !ok {
+	uuid := r.URL.Query().Get("uuid")
+	hosts, domains := s.collectClusterPlacements(r.Context(), identity(r))
+
+	// An empty uuid represents a brand-new machine, which no rule references yet —
+	// only vm_host groups and labels could apply, so behaviour is unchanged.
+	if uuid == "" || s.placement == nil {
+		best, ok := drs.Placement(hosts, mib<<20)
+		if !ok {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, map[string]any{
+			"hostId":     best.ID,
+			"hostName":   best.Name,
+			"cpuPct":     best.CPUPct,
+			"memPct":     best.MemPct,
+			"softMissed": []string{},
+		})
+		return
+	}
+
+	// Build candidates from reachable hosts.
+	var candidateIDs []string
+	hostMap := make(map[string]drs.HostMetrics)
+	for _, h := range hosts {
+		if h.Reachable {
+			candidateIDs = append(candidateIDs, h.ID)
+			hostMap[h.ID] = h
+		}
+	}
+
+	rules := s.placement.Rules()
+	vms := make([]placement.VMRef, len(domains))
+	for i, d := range domains {
+		vms[i] = placement.VMRef{
+			UUID:    d.UUID,
+			Name:    d.Name,
+			HostID:  d.HostID,
+			Running: d.State == "running",
+		}
+	}
+
+	okHosts, _ := placement.Rank(rules, vms, uuid, candidateIDs)
+	if len(okHosts) == 0 {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+
+	// Group ok candidates by soft violations count (score tier) so that should-satisfying
+	// hosts are preferred over higher-loaded ones, while preserving load-based tie-breaking
+	// and memory fit check via drs.Placement within each tier.
+	type tier struct {
+		metrics []drs.HostMetrics
+		soft    map[string][]string
+	}
+	tierByCount := make(map[int]*tier)
+	var counts []int
+
+	for _, hID := range okHosts {
+		h, ok := hostMap[hID]
+		if !ok {
+			continue
+		}
+		_, soft := placement.Check(rules, vms, uuid, hID)
+		cnt := len(soft)
+		t, exists := tierByCount[cnt]
+		if !exists {
+			counts = append(counts, cnt)
+			t = &tier{soft: make(map[string][]string)}
+			tierByCount[cnt] = t
+		}
+		t.metrics = append(t.metrics, h)
+		t.soft[hID] = soft
+	}
+	slices.Sort(counts) // fewest soft violations (best score) first
+
+	var best drs.HostMetrics
+	var found bool
+	var softMissed []string
+
+	for _, cnt := range counts {
+		t := tierByCount[cnt]
+		candidate, ok := drs.Placement(t.metrics, mib<<20)
+		if ok {
+			best = candidate
+			found = true
+			softMissed = t.soft[candidate.ID]
+			break
+		}
+	}
+
+	if !found {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if softMissed == nil {
+		softMissed = []string{}
+	}
+
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"hostId": best.ID, "hostName": best.Name, "cpuPct": best.CPUPct, "memPct": best.MemPct,
+		"hostId":     best.ID,
+		"hostName":   best.Name,
+		"cpuPct":     best.CPUPct,
+		"memPct":     best.MemPct,
+		"softMissed": softMissed,
 	})
 }
 

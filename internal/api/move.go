@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/onurbaydas/virtomir/internal/cluster"
+	"github.com/onurbaydas/virtomir/internal/placement"
 	"github.com/onurbaydas/virtomir/internal/virt"
 )
 
@@ -66,8 +67,9 @@ func (s *Server) moveDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var b struct {
-		Host string `json:"host"`
-		Pool string `json:"pool"`
+		Host  string `json:"host"`
+		Pool  string `json:"pool"`
+		Force bool   `json:"force"`
 	}
 	if !s.decode(w, r, &b) {
 		return
@@ -78,12 +80,47 @@ func (s *Server) moveDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := identity(r)
+	uuid := r.PathValue("uuid")
+
+	if s.placement != nil {
+		rules := s.placement.Rules()
+		_, domains := s.collectClusterPlacements(r.Context(), id)
+		vms := make([]placement.VMRef, len(domains))
+		for i, d := range domains {
+			vms[i] = placement.VMRef{
+				UUID:    d.UUID,
+				Name:    d.Name,
+				HostID:  d.HostID,
+				Running: d.State == "running",
+			}
+		}
+		hard, soft := placement.Check(rules, vms, uuid, b.Host)
+		if len(hard) > 0 {
+			s.writeJSON(w, http.StatusConflict, map[string]any{
+				"error":      hard[0],
+				"violations": hard,
+			})
+			return
+		}
+		if len(soft) > 0 {
+			if !b.Force {
+				s.writeJSON(w, http.StatusConflict, map[string]any{
+					"error":      soft[0],
+					"soft":       true,
+					"violations": soft,
+				})
+				return
+			}
+			s.log.Info("move overrides placement rules", "domain", uuid, "to", b.Host, "violations", soft)
+		}
+	}
+
 	peer := s.peer(node).As(id.Name, id.Role.String(), id.Token)
-	if s.running(r.PathValue("uuid")) {
+	if s.running(uuid) {
 		s.migrateLive(w, r, peer)
 		return
 	}
-	plan, err := m.PlanMove(r.PathValue("uuid"))
+	plan, err := m.PlanMove(uuid)
 	if err != nil {
 		s.writeError(w, err)
 		return
