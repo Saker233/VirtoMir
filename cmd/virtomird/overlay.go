@@ -10,7 +10,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/virt"
 )
 
-// keepTunnels gives the active VXLAN networks their tunnel devices (ADR-0053), after
+// keepTunnels gives the active VXLAN networks their tunnel devices (ADR-0054), after
 // network changes and reboots alike, by checking every few seconds.
 func keepTunnels(ctx context.Context, c *virt.Client, log *slog.Logger) {
 	if runtime.GOOS != "linux" {

@@ -201,7 +201,7 @@ const (
 	drsCooldown = 30 * time.Minute
 )
 
-// RunDRS carries out recommendations by itself while DRS is fully automated. Each member
+// RunDRS carries out recommendations by itself while DRS is fully automated (ADR-0057). Each member
 // acts only for the machines it runs, one live migration at a time, so members never move
 // the same machine twice; the overloaded host sheds its own load.
 func (s *Server) RunDRS(ctx context.Context) {

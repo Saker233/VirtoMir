@@ -32,7 +32,7 @@ type VNetwork struct {
 	UsedBy     []string `json:"usedBy"`
 	// Fixed address reservations (static DHCP).
 	DHCPHosts []DHCPHost `json:"dhcpHosts"`
-	// VXLAN overlay: its VNI and the other hosts' addresses (ADR-0053).
+	// VXLAN overlay: its VNI and the other hosts' addresses (ADR-0054).
 	VNI   uint     `json:"vni,omitempty"`
 	Peers []string `json:"peers,omitempty"`
 }

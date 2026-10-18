@@ -1,5 +1,5 @@
 // Package overlay keeps the host's VXLAN tunnel devices in line with VirtoMir's VXLAN
-// networks (ADR-0053). libvirt creates each network's bridge; for every active one this
+// networks (ADR-0054). libvirt creates each network's bridge; for every active one this
 // package makes sure a vmvx<VNI> device exists, is attached to that bridge and floods
 // broadcast and unknown traffic to each peer host (head-end replication through all-zero
 // forwarding entries). Devices whose network is gone or stopped are removed. Tunnels only

@@ -1,4 +1,4 @@
-// Package zfsrep replicates ZFS datasets and zvols to another host: on a schedule it takes
+// Package zfsrep replicates ZFS datasets and zvols to another host (ADR-0056): on a schedule it takes
 // a snapshot and sends what changed since the last one both sides have
 // (zfs send -i @base | ssh target zfs receive -F), then prunes old replication snapshots on
 // both sides. Commands run without a shell; names are validated because ssh hands the remote

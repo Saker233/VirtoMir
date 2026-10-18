@@ -186,7 +186,7 @@ func (s *Server) createClusterNetwork(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
-// createClusterVXLAN joins every member to one overlay (ADR-0053): each gets the others'
+// createClusterVXLAN joins every member to one overlay (ADR-0054): each gets the others'
 // addresses as peers, and only this host gets the subnet, so the overlay has one gateway
 // and one DHCP server instead of one per host.
 func (s *Server) createClusterVXLAN(w http.ResponseWriter, r *http.Request, spec virt.NetworkSpec) {

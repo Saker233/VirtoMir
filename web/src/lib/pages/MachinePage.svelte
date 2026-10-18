@@ -83,7 +83,7 @@
 
   type Tab = 'overview' | 'console' | 'firewall' | 'settings' | 'hardware' | 'snapshots' | 'backups' | 'changes' | 'xml'
   const TABS: Tab[] = ['overview', 'console', 'firewall', 'settings', 'hardware', 'snapshots', 'backups', 'changes', 'xml']
-  // A system container (ADR-0054) has no VM settings, firewall, snapshots or backups.
+  // A system container (ADR-0055) has no VM settings, firewall, snapshots or backups.
   const VM_ONLY: Tab[] = ['firewall', 'settings', 'snapshots', 'backups']
   let container = $derived(detail?.kind === 'container')
   let tab = $derived.by<Tab>(() => {

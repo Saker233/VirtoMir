@@ -9,7 +9,7 @@ import (
 	"github.com/digitalocean/go-libvirt/socket/dialers"
 )
 
-// System containers (ADR-0054) live in libvirt's LXC driver, reached on the same socket as
+// System containers (ADR-0055) live in libvirt's LXC driver, reached on the same socket as
 // QEMU under lxc:///system. Everything that finds a machine by UUID (lookup) falls back to
 // it, so lifecycle actions, the XML, the machine page and deleting work for containers as
 // for machines. Hosts without the driver simply have no containers.

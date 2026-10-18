@@ -79,7 +79,7 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request) {
 	s.done(w, http.StatusCreated, res)
 }
 
-// Containers (ADR-0054) are created in the background: the image may have to be downloaded.
+// Containers (ADR-0055) are created in the background: the image may have to be downloaded.
 type containerBackend interface {
 	CreateContainer(ctx context.Context, spec virt.CreateSpec, report func(string)) (virt.CreateResult, error)
 	ContainerSupport() error

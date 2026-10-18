@@ -10,7 +10,7 @@ import (
 	"libvirt.org/go/libvirtxml"
 )
 
-// VXLAN networks (ADR-0053): libvirt creates the bridge (vxbr<VNI>, MTU 1450 to leave room
+// VXLAN networks (ADR-0054): libvirt creates the bridge (vxbr<VNI>, MTU 1450 to leave room
 // for the 50-byte VXLAN header); virtomird adds the tunnel device and the peers to it
 // (internal/overlay). The VNI and peers are kept in the network's <metadata>.
 

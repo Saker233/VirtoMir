@@ -159,7 +159,7 @@
     void api.confidentialKinds().then((k) => (ccKinds = k)).catch(() => (ccKinds = []))
   })
 
-  // System containers (ADR-0054): an image from the Linux Containers project and root's password.
+  // System containers (ADR-0055): an image from the Linux Containers project and root's password.
   let ctImages = $state<ContainerImage[]>([])
   let ctAvailable = $state(true)
   let ctReason = $state('')
