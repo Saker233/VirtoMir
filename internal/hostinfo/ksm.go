@@ -70,13 +70,17 @@ func (r *Reader) SetKSM(active bool) error {
 	return os.WriteFile(runPath, []byte(val+"\n"), 0644)
 }
 
-// SetKSMTune configures scan speed parameters.
+// SetKSMTune configures scan speed parameters; zero leaves a value as it is.
 func (r *Reader) SetKSMTune(sleepMs, pagesToScan uint64) error {
 	if sleepMs > 0 {
-		_ = os.WriteFile(r.path("sys/kernel/mm/ksm/sleep_millisecs"), []byte(strconv.FormatUint(sleepMs, 10)+"\n"), 0644)
+		if err := os.WriteFile(r.path("sys/kernel/mm/ksm/sleep_millisecs"), []byte(strconv.FormatUint(sleepMs, 10)+"\n"), 0644); err != nil {
+			return err
+		}
 	}
 	if pagesToScan > 0 {
-		_ = os.WriteFile(r.path("sys/kernel/mm/ksm/pages_to_scan"), []byte(strconv.FormatUint(pagesToScan, 10)+"\n"), 0644)
+		if err := os.WriteFile(r.path("sys/kernel/mm/ksm/pages_to_scan"), []byte(strconv.FormatUint(pagesToScan, 10)+"\n"), 0644); err != nil {
+			return err
+		}
 	}
 	return nil
 }

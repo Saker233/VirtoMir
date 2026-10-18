@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -72,5 +73,19 @@ func TestRateLimiter_Middleware(t *testing.T) {
 	}
 	if rec3.Header().Get("Retry-After") == "" {
 		t.Fatal("expected Retry-After header to be set")
+	}
+}
+
+func TestRateLimiterForgetsOldAddresses(t *testing.T) {
+	now := time.Now()
+	rl := NewRateLimiter(10000, time.Minute)
+	rl.now = func() time.Time { return now }
+	for i := 0; i <= sweepAbove; i++ {
+		rl.Allow(fmt.Sprintf("10.%d.%d.%d:1", i>>16&255, i>>8&255, i&255))
+	}
+	now = now.Add(2 * time.Minute)
+	rl.Allow("192.168.1.1:1")
+	if len(rl.clients) != 1 || len(rl.subnets) != 1 {
+		t.Errorf("tracked %d addresses and %d subnets after the window passed", len(rl.clients), len(rl.subnets))
 	}
 }

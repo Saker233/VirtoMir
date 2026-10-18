@@ -27,7 +27,6 @@ func (s *Server) hostInfoRoutes(mux *routeMux) {
 	mux.HandleFunc("PUT /api/v1/host/ksm", s.setHostKSM)
 }
 
-
 // Placer reports where running machines' vCPUs sit (for the topology view).
 type Placer interface {
 	Placements() ([]virt.Placement, error)
@@ -266,9 +265,9 @@ func (s *Server) setHostKSM(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, err)
 		return
 	}
-	if b.SleepMillisecs > 0 || b.PagesToScan > 0 {
-		_ = h.SetKSMTune(b.SleepMillisecs, b.PagesToScan)
+	if err := h.SetKSMTune(b.SleepMillisecs, b.PagesToScan); err != nil {
+		s.writeError(w, err)
+		return
 	}
 	s.writeJSON(w, http.StatusOK, h.KSM())
 }
-

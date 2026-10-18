@@ -10,12 +10,12 @@ import (
 
 // RateLimiter implements a token-bucket rate limiter per client IP and /24 subnet.
 type RateLimiter struct {
-	mu          sync.Mutex
-	limit       int           // allowed requests per window
-	window      time.Duration // sliding window duration
-	clients     map[string][]time.Time
-	subnets     map[string][]time.Time
-	now         func() time.Time
+	mu      sync.Mutex
+	limit   int           // allowed requests per window
+	window  time.Duration // sliding window duration
+	clients map[string][]time.Time
+	subnets map[string][]time.Time
+	now     func() time.Time
 }
 
 // NewRateLimiter returns a rate limiter allowing up to limit requests per window per IP.
@@ -39,6 +39,10 @@ func (rl *RateLimiter) Allow(remote string) (bool, int) {
 	ip := remoteIP(remote)
 	now := rl.now()
 	cutoff := now.Add(-rl.window)
+	if len(rl.clients) > sweepAbove {
+		sweep(rl.clients, cutoff)
+		sweep(rl.subnets, cutoff)
+	}
 
 	// Clean up and check IP
 	times := rl.clients[ip]
@@ -83,6 +87,18 @@ func (rl *RateLimiter) Allow(remote string) (bool, int) {
 	rl.clients[ip] = append(valid, now)
 	rl.subnets[subnet] = append(subValid, now)
 	return true, 0
+}
+
+// sweepAbove is how many tracked addresses make Allow drop the ones whose window has passed,
+// so a scan from many addresses cannot grow the maps without bound.
+const sweepAbove = 4096
+
+func sweep(m map[string][]time.Time, cutoff time.Time) {
+	for k, times := range m {
+		if len(times) == 0 || !times[len(times)-1].After(cutoff) {
+			delete(m, k)
+		}
+	}
 }
 
 // Middleware wraps an http.Handler with rate limiting. If rate limited,
