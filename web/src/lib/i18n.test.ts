@@ -39,4 +39,13 @@ describe('i18n', () => {
     expect(Object.entries(tr).filter(([k, v]) => !k.trim() || !v.trim())).toEqual([])
     expect(Object.keys(tr).length).toBeGreaterThan(1000)
   })
+
+  it('Turkish translations are sorted by key with no duplicates', () => {
+    const keys = Object.keys(tr)
+    expect(keys.length).toBeGreaterThan(1900)
+    for (let i = 1; i < keys.length; i++) {
+      expect(keys[i].localeCompare(keys[i - 1])).toBeGreaterThanOrEqual(0)
+    }
+  })
 })
+
