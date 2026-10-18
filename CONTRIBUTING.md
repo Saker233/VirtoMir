@@ -3,17 +3,20 @@
 Thank you for helping! Testing on your hardware, reporting bugs, translating and code are all
 equally welcome. You do not need to know Go or Svelte to make a difference.
 
-## The most useful things right now
+## Finding something to work on
 
-1. **Test it and tell us.** [Try VirtoMir](docs/try-in-a-vm.md) (the online demo, or a throwaway
+1. **Pick a [good first issue](https://github.com/onurbaydas/VirtoMir/labels/good%20first%20issue).**
+   Small, well-scoped tasks (docs, translation, frontend badges, small CLI flags) that explain which files to touch and how to verify your changes.
+2. **Tackle a [help wanted](https://github.com/onurbaydas/VirtoMir/labels/help%20wanted) feature.**
+   Architectural enhancements, hardware integrations (Redfish/IPMI, SR-IOV), storage backends, and IaC modules tracked under [Milestone v0.7.0](https://github.com/onurbaydas/VirtoMir/milestone/1).
+3. **Claim an issue:** Before writing code, drop a short comment on the issue saying you would like to work on it. This avoids duplicate efforts and lets us align early on design.
+4. **Test it and tell us.** [Try VirtoMir](docs/try-in-a-vm.md) (the online demo, or a throwaway
    VM in one command) and open a
    [test report](https://github.com/onurbaydas/VirtoMir/issues/new?template=test_report.yml) (or join
    [pinned issue #1](https://github.com/onurbaydas/VirtoMir/issues/1)).
    Reports from setups we cannot reach — other distributions, real BMCs for HA fencing, Ceph,
    iSCSI, GPUs — are gold.
-2. **Pick a [good first issue](https://github.com/onurbaydas/VirtoMir/labels/good%20first%20issue).**
-   Each one says where to look and how to know it works.
-3. **Translate.** The UI is English and Turkish; see [Translations](#translations).
+5. **Translate.** The UI is English and Turkish; see [Translations](#translations).
 
 Questions and ideas: [Discussions](https://github.com/onurbaydas/VirtoMir/discussions).
 Security problems: report them privately (repository → Security → Report a vulnerability),

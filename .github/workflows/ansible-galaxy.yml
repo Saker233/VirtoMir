@@ -1,0 +1,42 @@
+name: Ansible Galaxy
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    name: Build & Publish Collection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install ansible-core
+        run: pip install ansible-core
+
+      - name: Build collection artifact
+        run: |
+          mkdir -p dist
+          ansible-galaxy collection build integrations/ansible --output-path dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ansible-collection
+          path: dist/*.tar.gz
+
+      - name: Publish to Ansible Galaxy
+        env:
+          GALAXY_API_KEY: ${{ secrets.GALAXY_API_KEY }}
+        run: |
+          if [ -z "${GALAXY_API_KEY}" ]; then
+            echo "::error::GALAXY_API_KEY secret is not set. Add it in Repository Settings -> Secrets -> Actions."
+            exit 1
+          fi
+          ansible-galaxy collection publish dist/*.tar.gz --api-key "${GALAXY_API_KEY}"

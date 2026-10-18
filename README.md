@@ -5,6 +5,13 @@
 <p align="center"><strong>A Detailed Control Deck for Virtual Environments.</strong></p>
 
 <p align="center">
+  <a href="https://github.com/onurbaydas/VirtoMir/actions/workflows/ci.yml"><img src="https://github.com/onurbaydas/VirtoMir/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
+  <a href="https://github.com/onurbaydas/VirtoMir/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22"><img src="https://img.shields.io/github/issues/onurbaydas/VirtoMir/good%20first%20issue?style=flat&color=7057ff&label=good%20first%20issues" alt="Good First Issues"></a>
+  <a href="https://goreportcard.com/report/github.com/onurbaydas/VirtoMir"><img src="https://goreportcard.com/badge/github.com/onurbaydas/VirtoMir" alt="Go Report Card"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL_3.0-blue.svg" alt="License: AGPL-3.0"></a>
+</p>
+
+<p align="center">
   <a href="https://onurbaydas.github.io/VirtoMir/demo/">Live demo</a> ·
   <a href="docs/try-in-a-vm.md">Try it in a VM</a> ·
   <a href="#install">Install</a> ·

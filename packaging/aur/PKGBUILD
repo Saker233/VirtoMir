@@ -1,0 +1,30 @@
+# Maintainer: Onur Baydas <onurbaydas1@gmail.com>
+pkgname=virtomir-bin
+pkgver=0.6.0
+pkgrel=1
+pkgdesc="A Detailed Control Deck for Virtual Environments (KVM / QEMU / libvirt)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/onurbaydas/VirtoMir"
+license=('AGPL-3.0-or-later')
+depends=('libvirt' 'qemu-base' 'pam')
+optdepends=(
+    'ipmitool: for IPMI BMC host fencing'
+    'restic: for encrypted off-site backups'
+)
+provides=('virtomir')
+conflicts=('virtomir')
+backup=('etc/pam.d/virtomir')
+
+source_x86_64=("${pkgname}-${pkgver}-x86_64.tar.gz::https://github.com/onurbaydas/VirtoMir/releases/download/v${pkgver}/virtomir-v${pkgver}-linux-amd64.tar.gz")
+source_aarch64=("${pkgname}-${pkgver}-aarch64.tar.gz::https://github.com/onurbaydas/VirtoMir/releases/download/v${pkgver}/virtomir-v${pkgver}-linux-arm64.tar.gz")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    cd "${srcdir}"
+
+    install -Dm755 virtomird "${pkgdir}/usr/bin/virtomird"
+    install -Dm644 virtomird.service "${pkgdir}/usr/lib/systemd/system/virtomird.service"
+    install -Dm644 virtomir.pam "${pkgdir}/etc/pam.d/virtomir"
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
