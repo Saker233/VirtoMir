@@ -3,6 +3,7 @@
 // delete, schedules, alerts) are applied to it, everything else answers "done" without effect.
 
 import type { CreateSpec, DeploySpec, DomainState, Job, Project, ScheduleInfo, SnapshotInfo, VMwareConnection, VMwareInventory, VMwareWave } from '../api'
+import type { PlacementRule, PlacementViolation } from '../enterprise'
 import * as w from './world'
 
 export interface Reply {
@@ -33,6 +34,191 @@ function job(kind: string, title: string, ms: number, done?: () => string | void
     Object.assign(j, { state: 'succeeded', message: 'Done', finished: new Date().toISOString(), result: result || undefined })
   }, ms)
   return j
+}
+
+// ---- Placement rules & fault domains (ADR-0062) ---------------------------------------------
+
+export let demoPlacementRules: PlacementRule[] = [
+  {
+    id: 'a1b2c3d4e5f60001',
+    name: 'Separate web frontends',
+    kind: 'vm_anti_affinity',
+    enabled: true,
+    strength: 'must',
+    domains: ['4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e01', '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e02'],
+  },
+  {
+    id: 'a1b2c3d4e5f60002',
+    name: 'Keep ERP off hv-01',
+    kind: 'vm_host',
+    enabled: true,
+    strength: 'must',
+    exclude: true,
+    hosts: [w.HOSTS[0].id],
+    domains: ['9c8d7e6f-5a4b-4c3d-8e2f-9a8b7c6d5e03'],
+  },
+  {
+    id: 'a1b2c3d4e5f60003',
+    name: 'Prefer databases on hv-02',
+    kind: 'vm_host',
+    enabled: true,
+    strength: 'should',
+    exclude: false,
+    hosts: [w.HOSTS[1].id],
+    domains: ['4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e03'],
+  },
+]
+
+export let demoHostLabels: Record<string, Record<string, string>> = {
+  [w.HOSTS[0].id]: { rack: 'r1', zone: 'zone-a' },
+  [w.HOSTS[1].id]: { rack: 'r1', zone: 'zone-a' },
+  [w.HOSTS[2].id]: { rack: 'r2', zone: 'zone-b' },
+}
+
+export function getDemoViolations(): PlacementViolation[] {
+  const violations: PlacementViolation[] = []
+  const runningVMs = w.machines.filter((m) => m.state === 'running' || m.state === 'blocked' || m.state === 'shutting-down')
+  const vmsByUUID = new Map(runningVMs.map((m) => [m.uuid, m]))
+
+  for (const r of demoPlacementRules) {
+    if (!r.enabled) continue
+    const hard = r.strength === 'must'
+
+    switch (r.kind) {
+      case 'vm_anti_affinity': {
+        const hostVMs = new Map<string, string[]>()
+        for (const u of r.domains) {
+          const m = vmsByUUID.get(u)
+          if (m) {
+            const list = hostVMs.get(m.host) || []
+            list.push(u)
+            hostVMs.set(m.host, list)
+          }
+        }
+        for (const [hostId, vms] of hostVMs.entries()) {
+          if (vms.length > 1) {
+            violations.push({
+              ruleId: r.id,
+              ruleName: r.name,
+              kind: r.kind,
+              hard,
+              domainUuids: vms,
+              hostId,
+              message: `anti-affinity rule "${r.name}" violated: multiple VMs (${vms.join(', ')}) are running on host ${hostId}`,
+            })
+          }
+        }
+        break
+      }
+      case 'vm_affinity': {
+        const running = r.domains.filter((u) => vmsByUUID.has(u))
+        const hosts = new Set(running.map((u) => vmsByUUID.get(u)!.host))
+        if (hosts.size > 1) {
+          violations.push({
+            ruleId: r.id,
+            ruleName: r.name,
+            kind: r.kind,
+            hard,
+            domainUuids: running,
+            hostId: '',
+            message: `affinity rule "${r.name}" violated: VMs (${running.join(', ')}) are spread across multiple hosts (${[...hosts].join(', ')})`,
+          })
+        }
+        break
+      }
+      case 'vm_host': {
+        for (const u of r.domains) {
+          const m = vmsByUUID.get(u)
+          if (!m) continue
+          if (r.exclude) {
+            if (r.hosts?.includes(m.host)) {
+              violations.push({
+                ruleId: r.id,
+                ruleName: r.name,
+                kind: r.kind,
+                hard,
+                domainUuids: [u],
+                hostId: m.host,
+                message: `vm-host rule "${r.name}" violated: VM ${u} is running on excluded host ${m.host}`,
+              })
+            }
+          } else {
+            if (r.hosts && !r.hosts.includes(m.host)) {
+              violations.push({
+                ruleId: r.id,
+                ruleName: r.name,
+                kind: r.kind,
+                hard,
+                domainUuids: [u],
+                hostId: m.host,
+                message: `vm-host rule "${r.name}" violated: VM ${u} is on host ${m.host}, which is not in allowed hosts (${r.hosts.join(', ')})`,
+              })
+            }
+          }
+        }
+        break
+      }
+    }
+  }
+
+  return violations
+}
+
+export function demoPlacementCheck(domainUuid: string, targetHost: string): { ok: boolean; hard: string[]; soft: string[] } {
+  const hard: string[] = []
+  const soft: string[] = []
+  const runningVMs = w.machines.filter((m) => m.state === 'running' || m.state === 'blocked' || m.state === 'shutting-down')
+  const vmsByUUID = new Map(runningVMs.map((m) => [m.uuid, m]))
+
+  for (const r of demoPlacementRules) {
+    if (!r.enabled || !r.domains.includes(domainUuid)) continue
+    const isHard = r.strength === 'must'
+
+    switch (r.kind) {
+      case 'vm_anti_affinity': {
+        const conflicting: string[] = []
+        for (const u of r.domains) {
+          if (u !== domainUuid && vmsByUUID.get(u)?.host === targetHost) {
+            conflicting.push(u)
+          }
+        }
+        if (conflicting.length > 0) {
+          const msg = `anti-affinity rule "${r.name}": placing ${domainUuid} on host ${targetHost} conflicts with ${conflicting.join(', ')} already on that host`
+          if (isHard) hard.push(msg)
+          else soft.push(msg)
+        }
+        break
+      }
+      case 'vm_affinity': {
+        const others = r.domains.filter((u) => u !== domainUuid && vmsByUUID.has(u))
+        const otherHosts = new Set(others.map((u) => vmsByUUID.get(u)!.host).filter((h) => h !== targetHost))
+        if (otherHosts.size > 0) {
+          const msg = `affinity rule "${r.name}": placing ${domainUuid} on host ${targetHost} separates it from other hosts (${[...otherHosts].join(', ')})`
+          if (isHard) hard.push(msg)
+          else soft.push(msg)
+        }
+        break
+      }
+      case 'vm_host': {
+        if (r.exclude) {
+          if (r.hosts?.includes(targetHost)) {
+            const msg = `vm-host rule "${r.name}": host ${targetHost} is excluded for VM ${domainUuid}`
+            if (isHard) hard.push(msg)
+            else soft.push(msg)
+          }
+        } else {
+          if (r.hosts && !r.hosts.includes(targetHost)) {
+            const msg = `vm-host rule "${r.name}": host ${targetHost} is not in allowed hosts (${r.hosts?.join(', ')}) for VM ${domainUuid}`
+            if (isHard) hard.push(msg)
+            else soft.push(msg)
+          }
+        }
+        break
+      }
+    }
+  }
+
+  return { ok: hard.length === 0, hard, soft }
 }
 
 // ---- VMware demo state ----------------------------------------------------------------------
@@ -536,21 +722,32 @@ export function handle(method: string, url: URL, body: any): Reply {
             createdAt: new Date().toISOString(),
           },
         ],
-        rules: [
-          {
-            id: 'rule-app-anti',
-            name: 'Separate Web Frontends',
-            kind: 'vm_anti_affinity',
-            enabled: true,
-            mandatory: true,
-            domains: ['4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e01', '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e02'],
-          },
-        ],
+        rules: demoPlacementRules.map((r) => ({
+          id: r.id,
+          name: r.name,
+          kind: r.kind === 'vm_host' ? 'vm_host_affinity' : r.kind,
+          enabled: r.enabled,
+          mandatory: r.strength === 'must',
+          domains: r.domains,
+          targetHost: r.hosts?.[0],
+        })),
       })
     case 'PUT /api/v1/cluster/drs/config':
       return json({ status: 'ok' })
-    case 'POST /api/v1/cluster/drs/rules':
-      return json({ status: 'created', id: `rule-${Date.now()}` })
+    case 'POST /api/v1/cluster/drs/rules': {
+      const id = newUUID().replace(/-/g, '').slice(0, 16)
+      const r: PlacementRule = {
+        id,
+        name: body?.name || 'Rule',
+        kind: body?.kind === 'vm_host_affinity' ? 'vm_host' : body?.kind || 'vm_anti_affinity',
+        enabled: body?.enabled !== false,
+        strength: body?.mandatory ? 'must' : 'should',
+        domains: body?.domains || [],
+        hosts: body?.targetHost ? [body.targetHost] : undefined,
+      }
+      demoPlacementRules.push(r)
+      return json({ status: 'created', id: r.id })
+    }
     case 'GET /api/v1/cluster/inventory/machines': {
       const all = w.HOSTS.flatMap((h) =>
         w.onHost(h.id).map((m, i) => ({
@@ -561,6 +758,35 @@ export function handle(method: string, url: URL, body: any): Reply {
       )
       return json({ domains: all })
     }
+
+    // Placement (ADR-0062)
+    case 'GET /api/v1/placement':
+      return json({ rules: demoPlacementRules, hostLabels: demoHostLabels, violations: getDemoViolations() })
+    case 'POST /api/v1/placement/rules': {
+      if (!body?.name?.trim()) return json({ error: 'rule name is required' }, 422)
+      if (body.kind === 'vm_anti_affinity' && (!body.domains || body.domains.length < 2)) return json({ error: 'anti-affinity rule requires at least two VMs' }, 422)
+      if (body.kind === 'vm_host' && (!body.hosts || body.hosts.length < 1)) return json({ error: 'vm-host rule requires at least one host' }, 422)
+      if (!body.domains || body.domains.length < 1) return json({ error: 'at least one VM must be assigned to the rule' }, 422)
+      const id = body.id || newUUID().replace(/-/g, '').slice(0, 16)
+      const rule: PlacementRule = {
+        id,
+        name: body.name.trim(),
+        kind: body.kind,
+        enabled: body.enabled !== false,
+        strength: body.strength || 'must',
+        domains: body.domains || [],
+        hosts: body.hosts,
+        exclude: !!body.exclude,
+      }
+      const existing = demoPlacementRules.findIndex((r) => r.id === id)
+      if (existing >= 0) demoPlacementRules[existing] = rule
+      else demoPlacementRules.push(rule)
+      return json(rule, 201)
+    }
+    case 'GET /api/v1/placement/violations':
+      return json(getDemoViolations())
+    case 'POST /api/v1/placement/check':
+      return json(demoPlacementCheck(body?.domainUuid ?? '', body?.hostId ?? ''))
 
     // Live data
     case 'GET /api/v1/summary':
@@ -844,8 +1070,36 @@ export function handle(method: string, url: URL, body: any): Reply {
         .map((m, i) => ({ order: i + 1, uuid: m.uuid, name: m.name, priority: m.priority, delaySec: m.restartDelaySec, target: m.targetNode ? w.HOSTS.find((h) => h.id === m.targetNode)?.name : w.HOSTS.find((h) => h.id !== node.id)?.name })),
     })
   }
-  if (parts[0] === 'ha' && parts[1] === 'nodes' && parts[3] === 'fence')
-    return json({ nodeId: parts[2], driver: 'redfish', action: body?.action ?? 'status', power: 'on', message: 'Demo: the BMC was not contacted.', time: new Date().toISOString() })
+  if (parts[0] === 'placement') {
+    if (parts[1] === 'rules' && parts.length === 3) {
+      const id = parts[2]
+      const idx = demoPlacementRules.findIndex((r) => r.id === id)
+      if (idx < 0) return notFound(`rule "${id}" not found`)
+      if (method === 'PUT') {
+        if (!body?.name?.trim()) return json({ error: 'rule name is required' }, 422)
+        demoPlacementRules[idx] = { ...demoPlacementRules[idx], ...body, id }
+        return json(demoPlacementRules[idx])
+      }
+      if (method === 'DELETE') {
+        demoPlacementRules.splice(idx, 1)
+        return none()
+      }
+    }
+    if (parts[1] === 'hosts' && parts.length === 4 && parts[3] === 'labels' && method === 'PUT') {
+      const id = parts[2]
+      const host = w.HOSTS.find((h) => h.id === id)
+      if (!host) return notFound(`host "${id}" not found`)
+      demoHostLabels[id] = body?.labels || {}
+      host.labels = demoHostLabels[id]
+      return json({ labels: demoHostLabels[id] })
+    }
+  }
+  if (parts[0] === 'cluster' && parts[1] === 'drs' && parts[2] === 'rules' && parts.length === 4 && method === 'DELETE') {
+    const id = parts[3]
+    const idx = demoPlacementRules.findIndex((r) => r.id === id)
+    if (idx >= 0) demoPlacementRules.splice(idx, 1)
+    return none()
+  }
 
   if (parts[0] === 'vmware' && parts[1] === 'waves' && parts.length === 3 && method === 'GET') {
     const wave = demoWaves.find((w) => w.id === parts[2])

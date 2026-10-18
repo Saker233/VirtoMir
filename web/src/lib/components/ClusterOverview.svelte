@@ -12,6 +12,7 @@
   import HistoryChart from './HistoryChart.svelte'
   import RangeTabs, { type Range } from './RangeTabs.svelte'
   import type { HistoryRange } from '../api'
+  import { ent, violationsByDomain, type PlacementViolation } from '../enterprise'
 
   // History of every host side by side (each host keeps its own, ADR-0013).
   const COLORS = ['--accent', '--accent-2', '--info', '--warn', '--ok', '--danger']
@@ -23,8 +24,20 @@
   )
 
   let snaps = $state<Record<string, Snapshot | null>>({})
+  let violations = $state<Record<string, PlacementViolation>>({})
+
+  async function pollViolations() {
+    if (!cluster.clustered) return
+    try {
+      const list = await ent.placementViolations()
+      violations = violationsByDomain(list)
+    } catch {
+      // placement not available
+    }
+  }
 
   async function poll() {
+    await pollViolations()
     await Promise.all(
       cluster.members.map(async (m) => {
         if (!m.reachable) {
@@ -129,6 +142,17 @@
             <td>
               <a href={router.hostHref(hostID(r.host), `/machines/${r.uuid}`)} onclick={(e) => { e.preventDefault(); router.go(hostID(r.host), `/machines/${r.uuid}`) }}>{r.name}</a>
               {#if r.template}<span class="pill">{t('template')}</span>{/if}
+              {#if violations[r.uuid]}
+                {@const v = violations[r.uuid]}
+                <span
+                  class="viol-badge"
+                  class:hard={v.hard}
+                  class:soft={!v.hard}
+                  title="{v.ruleName}: {v.message}"
+                >
+                  {v.hard ? t('violation') : t('warning')}
+                </span>
+              {/if}
             </td>
             <td>{r.host.name}</td>
             <td><StatePill state={r.state} /></td>
@@ -311,5 +335,27 @@
   .empty {
     padding: 18px 16px;
     margin: 0;
+  }
+  .viol-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-radius: var(--radius-sm);
+    margin-left: 6px;
+    cursor: help;
+  }
+  .viol-badge.hard {
+    background: var(--danger-soft);
+    color: var(--danger);
+    border: 1px solid var(--danger);
+  }
+  .viol-badge.soft {
+    background: color-mix(in srgb, var(--warn) 18%, transparent);
+    color: var(--warn);
+    border: 1px solid var(--warn);
   }
 </style>
