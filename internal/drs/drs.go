@@ -8,6 +8,7 @@ package drs
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -52,8 +53,8 @@ type AffinityRule struct {
 	Name       string   `json:"name"`
 	Kind       RuleKind `json:"kind"`
 	Enabled    bool     `json:"enabled"`
-	Mandatory  bool     `json:"mandatory"` // hard constraint vs soft preference
-	Domains    []string `json:"domains"`   // VM UUIDs
+	Mandatory  bool     `json:"mandatory"`            // hard constraint vs soft preference
+	Domains    []string `json:"domains"`              // VM UUIDs
 	TargetHost string   `json:"targetHost,omitempty"` // for vm_host_affinity
 }
 
@@ -62,8 +63,8 @@ type HostMetrics struct {
 	ID        string  `json:"id"`
 	Name      string  `json:"name"`
 	Reachable bool    `json:"reachable"`
-	CPUPct    float64 `json:"cpuPct"`    // 0.0 to 100.0
-	MemPct    float64 `json:"memPct"`    // 0.0 to 100.0
+	CPUPct    float64 `json:"cpuPct"` // 0.0 to 100.0
+	MemPct    float64 `json:"memPct"` // 0.0 to 100.0
 	MemUsedB  uint64  `json:"memUsedB"`
 	MemTotalB uint64  `json:"memTotalB"`
 	VMCount   int     `json:"vmCount"`
@@ -96,16 +97,16 @@ type Recommendation struct {
 
 // Status represents the complete DRS state exposed to the UI and API.
 type Status struct {
-	Enabled             bool             `json:"enabled"`
-	Mode                DRSMode          `json:"mode"`
-	BalanceScore        float64          `json:"balanceScore"` // 0.0 to 100.0 (100% = perfectly balanced)
-	CPUStdDev           float64          `json:"cpuStdDev"`
-	MemStdDev           float64          `json:"memStdDev"`
-	ThresholdStdDev     float64          `json:"thresholdStdDev"` // default 15.0%
-	Hosts               []HostMetrics    `json:"hosts"`
-	Recommendations     []Recommendation `json:"recommendations"`
-	Rules               []AffinityRule   `json:"rules"`
-	LastEvaluationTime  time.Time        `json:"lastEvaluationTime"`
+	Enabled            bool             `json:"enabled"`
+	Mode               DRSMode          `json:"mode"`
+	BalanceScore       float64          `json:"balanceScore"` // 0.0 to 100.0 (100% = perfectly balanced)
+	CPUStdDev          float64          `json:"cpuStdDev"`
+	MemStdDev          float64          `json:"memStdDev"`
+	ThresholdStdDev    float64          `json:"thresholdStdDev"` // default 15.0%
+	Hosts              []HostMetrics    `json:"hosts"`
+	Recommendations    []Recommendation `json:"recommendations"`
+	Rules              []AffinityRule   `json:"rules"`
+	LastEvaluationTime time.Time        `json:"lastEvaluationTime"`
 }
 
 // Config stores persisted DRS configuration.
@@ -344,7 +345,7 @@ func (e *Engine) Evaluate(ctx context.Context, hosts []HostMetrics, domains []Do
 					target := findOptimalHost(reachableHosts, hID, rule, domains, culprit)
 					if target.ID != "" {
 						status.Recommendations = append(status.Recommendations, Recommendation{
-							ID:           randomHex(8),
+							ID:           recommendationID(culprit.UUID, hID, target.ID),
 							Priority:     5, // Highest priority: Rule violation
 							DomainUUID:   culprit.UUID,
 							DomainName:   culprit.Name,
@@ -393,7 +394,7 @@ func (e *Engine) Evaluate(ctx context.Context, hosts []HostMetrics, domains []Do
 					gain := math.Min(25.0, maxDev*0.7)
 
 					status.Recommendations = append(status.Recommendations, Recommendation{
-						ID:           randomHex(8),
+						ID:           recommendationID(candidate.UUID, mostLoaded.ID, leastLoaded.ID),
 						Priority:     priority,
 						DomainUUID:   candidate.UUID,
 						DomainName:   candidate.Name,
@@ -463,6 +464,13 @@ func canMigrate(vm DomainPlacement, fromHost, toHost string, rules []AffinityRul
 		}
 	}
 	return true
+}
+
+// recommendationID is stable for the same move, so a recommendation shown in one evaluation
+// can be found again when it is applied in the next.
+func recommendationID(domainUUID, from, to string) string {
+	sum := sha256.Sum256([]byte(domainUUID + "|" + from + "|" + to))
+	return hex.EncodeToString(sum[:8])
 }
 
 func randomHex(bytes int) string {

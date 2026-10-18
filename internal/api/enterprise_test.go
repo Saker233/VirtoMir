@@ -11,6 +11,7 @@ import (
 
 	"github.com/onurbaydas/virtomir/internal/ha"
 	"github.com/onurbaydas/virtomir/internal/hostinfo"
+	"github.com/onurbaydas/virtomir/internal/live"
 	"github.com/onurbaydas/virtomir/internal/reports"
 	"github.com/onurbaydas/virtomir/internal/respool"
 	"github.com/onurbaydas/virtomir/internal/virt"
@@ -196,5 +197,23 @@ func TestZFSReplicationAPI(t *testing.T) {
 	rec = do(h, "DELETE", "/api/v1/storage/zfs/replications/rep1", "", nil)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("expected 204 on delete, got %d: %s", rec.Code, rec.Body)
+	}
+}
+
+// DRS reads the same snapshot the live stream sends; field names guessed wrong once
+// made every host look idle.
+func TestDRSPlacementsFromLiveSnapshot(t *testing.T) {
+	raw := []byte(`{"host":{"cpuPercent":42.5,"memTotalKiB":1000,"memUsedKiB":250},
+		"domains":[{"uuid":"u1","name":"web","state":"running","memoryKiB":512,"cpuPercent":80}]}`)
+	var snap live.Snapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		t.Fatal(err)
+	}
+	h, doms := placements("h1", "hv-01", snap)
+	if h.CPUPct != 42.5 || h.MemPct != 25 || h.MemTotalB != 1000<<10 || h.VMCount != 1 {
+		t.Errorf("host = %+v", h)
+	}
+	if len(doms) != 1 || doms[0].State != "running" || doms[0].CPUPct != 80 || doms[0].MemUsedB != 512<<10 || doms[0].HostID != "h1" {
+		t.Errorf("domains = %+v", doms)
 	}
 }

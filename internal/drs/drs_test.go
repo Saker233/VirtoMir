@@ -58,6 +58,10 @@ func TestDRS_UnbalancedClusterGeneratesRecommendation(t *testing.T) {
 	if rec.DomainUUID != "vm-1" {
 		t.Errorf("expected heavy-app (vm-1) migration, got %s", rec.DomainUUID)
 	}
+	// Applying re-evaluates and looks the recommendation up by ID.
+	if again := eng.Evaluate(context.Background(), hosts, domains); again.Recommendations[0].ID != rec.ID {
+		t.Errorf("recommendation ID changed between evaluations: %s, then %s", rec.ID, again.Recommendations[0].ID)
+	}
 }
 
 func TestDRS_AntiAffinityRuleViolation(t *testing.T) {

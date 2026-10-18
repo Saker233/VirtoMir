@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/onurbaydas/virtomir/internal/cluster"
 	"github.com/onurbaydas/virtomir/internal/drs"
+	"github.com/onurbaydas/virtomir/internal/live"
 	"github.com/onurbaydas/virtomir/internal/virt"
 )
 
@@ -89,9 +92,14 @@ func (s *Server) deleteDRSRule(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// applyDRSRecommendation carries a recommendation out: the machine's host live-migrates it
+// to the target through the same path as the Move button (checks, job, activity).
 func (s *Server) applyDRSRecommendation(w http.ResponseWriter, r *http.Request) {
 	if s.drs == nil {
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "DRS is not available"})
+		return
+	}
+	if s.noCluster(w) {
 		return
 	}
 
@@ -99,27 +107,49 @@ func (s *Server) applyDRSRecommendation(w http.ResponseWriter, r *http.Request) 
 	status := s.drs.Evaluate(r.Context(), hosts, domains)
 
 	recID := r.PathValue("id")
-	var targetRec *drs.Recommendation
+	var rec *drs.Recommendation
 	for i := range status.Recommendations {
 		if status.Recommendations[i].ID == recID {
-			targetRec = &status.Recommendations[i]
+			rec = &status.Recommendations[i]
 			break
 		}
 	}
-
-	if targetRec == nil {
+	if rec == nil {
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "recommendation not found or already applied"})
 		return
 	}
+	s.log.Info("applying DRS recommendation", "vm", rec.DomainName, "from", rec.SourceName, "to", rec.TargetName)
 
-	// Trigger live migration from source host to target host
-	go func(rec drs.Recommendation) {
-		s.log.Info("applying DRS recommendation", "vm", rec.DomainName, "from", rec.SourceName, "to", rec.TargetName)
-	}(*targetRec)
-
+	movePath := "/api/v1/domains/" + rec.DomainUUID + "/move"
+	body := map[string]string{"host": rec.TargetHostID}
+	if rec.SourceHostID == s.cluster.SelfID() {
+		raw, _ := json.Marshal(body)
+		inner := r.Clone(r.Context())
+		inner.URL.Path, inner.URL.RawPath = movePath, ""
+		inner.Body, inner.ContentLength = io.NopCloser(bytes.NewReader(raw)), int64(len(raw))
+		inner.SetPathValue("uuid", rec.DomainUUID)
+		s.moveDomain(w, inner)
+		return
+	}
+	src, ok := s.cluster.Member(rec.SourceHostID)
+	if !ok {
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "the machine's host is no longer a cluster member"})
+		return
+	}
+	id := identity(r)
+	var job json.RawMessage
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := s.peer(src).As(id.Name, id.Role.String(), id.Token).Call(ctx, http.MethodPost, movePath, body, &job); err != nil {
+		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": src.Name + ": " + err.Error()})
+		return
+	}
+	// The job runs on the machine's host; the UI follows it at /api/v1/hosts/<id>/jobs/<job>.
 	s.writeJSON(w, http.StatusAccepted, map[string]any{
-		"message":        "DRS live migration initiated",
-		"recommendation": targetRec,
+		"message":        "Live migration of " + rec.DomainName + " to " + rec.TargetName + " started on " + src.Name,
+		"recommendation": rec,
+		"job":            job,
+		"jobHost":        src.ID,
 	})
 }
 
@@ -138,18 +168,13 @@ func (s *Server) getClusterInventoryMachines(w http.ResponseWriter, r *http.Requ
 
 	out := make([]ClusterDomainSummary, 0, len(localVMs))
 	for _, vm := range localVMs {
-		out = append(out, ClusterDomainSummary{
-			Domain:   vm,
-			HostID:   selfID,
-			HostName: s.hostName,
-		})
+		out = append(out, ClusterDomainSummary{Domain: vm, HostID: selfID, HostName: s.hostName})
 	}
 
 	if s.cluster != nil && s.cluster.Clustered() {
 		members, _ := s.cluster.Members()
 		var mu sync.Mutex
 		var wg sync.WaitGroup
-
 		for _, node := range members {
 			if node.ID == selfID {
 				continue
@@ -159,18 +184,17 @@ func (s *Server) getClusterInventoryMachines(w http.ResponseWriter, r *http.Requ
 				defer wg.Done()
 				ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
 				defer cancel()
-				var remoteVMs []virt.Domain
-				if err := s.peer(n).Call(ctx, http.MethodGet, "/api/v1/domains", nil, &remoteVMs); err == nil {
-					mu.Lock()
-					for _, rvm := range remoteVMs {
-						out = append(out, ClusterDomainSummary{
-							Domain:   rvm,
-							HostID:   n.ID,
-							HostName: n.Name,
-						})
-					}
-					mu.Unlock()
+				var remote struct {
+					Domains []virt.Domain `json:"domains"`
 				}
+				if err := s.peer(n).Call(ctx, http.MethodGet, "/api/v1/domains", nil, &remote); err != nil {
+					return
+				}
+				mu.Lock()
+				for _, rvm := range remote.Domains {
+					out = append(out, ClusterDomainSummary{Domain: rvm, HostID: n.ID, HostName: n.Name})
+				}
+				mu.Unlock()
 			}(node)
 		}
 		wg.Wait()
@@ -179,64 +203,49 @@ func (s *Server) getClusterInventoryMachines(w http.ResponseWriter, r *http.Requ
 	s.writeJSON(w, http.StatusOK, out)
 }
 
+// placements turns one host's live snapshot into DRS input.
+func placements(id, name string, snap live.Snapshot) (drs.HostMetrics, []drs.DomainPlacement) {
+	h := drs.HostMetrics{
+		ID: id, Name: name, Reachable: true,
+		CPUPct:    snap.Host.CPUPercent,
+		MemUsedB:  snap.Host.MemUsedKiB << 10,
+		MemTotalB: snap.Host.MemTotalKiB << 10,
+		VMCount:   len(snap.Domains),
+	}
+	if snap.Host.MemTotalKiB > 0 {
+		h.MemPct = float64(snap.Host.MemUsedKiB) * 100 / float64(snap.Host.MemTotalKiB)
+	}
+	doms := make([]drs.DomainPlacement, 0, len(snap.Domains))
+	for _, d := range snap.Domains {
+		doms = append(doms, drs.DomainPlacement{
+			UUID: d.UUID, Name: d.Name, HostID: id,
+			State:    strings.ToLower(string(d.State)),
+			CPUPct:   d.CPUPercent,
+			MemUsedB: d.MemoryKiB << 10,
+		})
+	}
+	return h, doms
+}
+
 func (s *Server) collectClusterPlacements(ctx context.Context) ([]drs.HostMetrics, []drs.DomainPlacement) {
 	selfID := ""
 	if s.cluster != nil {
 		selfID = s.cluster.SelfID()
 	}
 
-	// 1. Local host metrics
+	var local live.Snapshot
 	backlog, _, unsubscribe := s.live.Subscribe()
 	unsubscribe()
-
-	var localLive struct {
-		Host struct {
-			CPU    float64 `json:"cpu"`
-			Memory float64 `json:"memory"`
-		} `json:"host"`
-		Domains []struct {
-			UUID        string `json:"uuid"`
-			Name        string `json:"name"`
-			State       string `json:"state"`
-			MemoryBytes uint64 `json:"memoryBytes"`
-			Rates       struct {
-				CPU float64 `json:"cpu"`
-			} `json:"rates"`
-		} `json:"domains"`
-	}
 	if len(backlog) > 0 {
-		_ = json.Unmarshal(backlog[len(backlog)-1], &localLive)
+		_ = json.Unmarshal(backlog[len(backlog)-1], &local)
 	}
+	self, domains := placements(selfID, s.hostName, local)
+	hosts := []drs.HostMetrics{self}
 
-	hosts := []drs.HostMetrics{
-		{
-			ID:        selfID,
-			Name:      s.hostName,
-			Reachable: true,
-			CPUPct:    localLive.Host.CPU,
-			MemPct:    localLive.Host.Memory,
-			VMCount:   len(localLive.Domains),
-		},
-	}
-
-	domains := make([]drs.DomainPlacement, 0, len(localLive.Domains))
-	for _, d := range localLive.Domains {
-		domains = append(domains, drs.DomainPlacement{
-			UUID:     d.UUID,
-			Name:     d.Name,
-			HostID:   selfID,
-			State:    strings.ToLower(d.State),
-			CPUPct:   d.Rates.CPU,
-			MemUsedB: d.MemoryBytes,
-		})
-	}
-
-	// 2. Peer metrics if clustered
 	if s.cluster != nil && s.cluster.Clustered() {
 		members, _ := s.cluster.Members()
 		var mu sync.Mutex
 		var wg sync.WaitGroup
-
 		for _, node := range members {
 			if node.ID == selfID {
 				continue
@@ -246,58 +255,20 @@ func (s *Server) collectClusterPlacements(ctx context.Context) ([]drs.HostMetric
 				defer wg.Done()
 				c, cancel := context.WithTimeout(ctx, 3*time.Second)
 				defer cancel()
-
-				var peerLive struct {
-					Host struct {
-						CPU    float64 `json:"cpu"`
-						Memory float64 `json:"memory"`
-					} `json:"host"`
-					Domains []struct {
-						UUID        string  `json:"uuid"`
-						Name        string  `json:"name"`
-						State       string  `json:"state"`
-						MemoryBytes uint64  `json:"memoryBytes"`
-						Rates       struct {
-							CPU float64 `json:"cpu"`
-						} `json:"rates"`
-					} `json:"domains"`
-				}
-
-				err := s.peer(n).Call(c, http.MethodGet, "/api/v1/summary", nil, &peerLive)
+				var snap live.Snapshot
+				err := s.peer(n).Call(c, http.MethodGet, "/api/v1/summary", nil, &snap)
 				mu.Lock()
 				defer mu.Unlock()
 				if err != nil {
-					hosts = append(hosts, drs.HostMetrics{
-						ID:        n.ID,
-						Name:      n.Name,
-						Reachable: false,
-					})
+					hosts = append(hosts, drs.HostMetrics{ID: n.ID, Name: n.Name})
 					return
 				}
-
-				hosts = append(hosts, drs.HostMetrics{
-					ID:        n.ID,
-					Name:      n.Name,
-					Reachable: true,
-					CPUPct:    peerLive.Host.CPU,
-					MemPct:    peerLive.Host.Memory,
-					VMCount:   len(peerLive.Domains),
-				})
-
-				for _, d := range peerLive.Domains {
-					domains = append(domains, drs.DomainPlacement{
-						UUID:     d.UUID,
-						Name:     d.Name,
-						HostID:   n.ID,
-						State:    strings.ToLower(d.State),
-						CPUPct:   d.Rates.CPU,
-						MemUsedB: d.MemoryBytes,
-					})
-				}
+				h, d := placements(n.ID, n.Name, snap)
+				hosts = append(hosts, h)
+				domains = append(domains, d...)
 			}(node)
 		}
 		wg.Wait()
 	}
-
 	return hosts, domains
 }
