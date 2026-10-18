@@ -255,6 +255,36 @@ func run(c config, log *slog.Logger) error {
 		if alertEngine != nil {
 			mgr.Notify = alertEngine.Notice // failovers and fencing reach the alert channels
 		}
+		if opts.Placement != nil {
+			mgr.FilterTargets = func(r ha.Replica, candidates []ha.Node, runningOn map[string]string) []ha.Node {
+				candIDs := make([]string, len(candidates))
+				nodeByID := make(map[string]ha.Node, len(candidates))
+				for i, n := range candidates {
+					candIDs[i] = n.ID
+					nodeByID[n.ID] = n
+				}
+				rules := opts.Placement.Rules()
+				allowed, preferred := placement.FilterHATargets(rules, r.UUID, candIDs, runningOn)
+				isPref := make(map[string]bool, len(preferred))
+				for _, id := range preferred {
+					isPref[id] = true
+				}
+				var out []ha.Node
+				for _, id := range preferred {
+					if n, ok := nodeByID[id]; ok {
+						out = append(out, n)
+					}
+				}
+				for _, id := range allowed {
+					if !isPref[id] {
+						if n, ok := nodeByID[id]; ok {
+							out = append(out, n)
+						}
+					}
+				}
+				return out
+			}
+		}
 		apiServer.SetHA(mgr)
 		haDone := make(chan struct{})
 		go func() { mgr.Run(ctx); close(haDone) }()

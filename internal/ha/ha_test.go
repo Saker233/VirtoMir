@@ -665,3 +665,112 @@ func TestWatchdogIsNoProofWhenTheOtherSideMayHaveQuorum(t *testing.T) {
 		t.Errorf("db not running here after the confirmation; actions %v", hv.actions)
 	}
 }
+
+func TestFilterTargets(t *testing.T) {
+	m, _, _, st := newTestManager(t, "a", &fakeHV{})
+	cfg := st.Config()
+	m.Tick(context.Background()) // exchange heartbeats so b is seen
+	// Members are a (self, 48 MiB free), b (32 MiB free), c (dead).
+	r := Replica{UUID: "v1", Name: "db", Owner: "c", MemoryKiB: 4 << 20}
+	p := VMPolicy{UUID: "v1", Name: "db", Enabled: true}
+
+	// 1. nil hook keeps the legacy order exactly
+	legacy := m.targets(cfg, "c", r, p)
+	if len(legacy) != 2 || legacy[0].ID != "a" || legacy[1].ID != "b" {
+		t.Fatalf("legacy targets = %+v, want [a, b]", legacy)
+	}
+
+	// 2. with a FilterTargets that bans one member, targets() orders the banned member out
+	m.Accept([]Replica{
+		{UUID: "v2", Name: "cache", Owner: "b", Running: true},
+		{UUID: "v3", Name: "stopped", Owner: "b", Running: false},
+	})
+	var capturedRunningOn map[string]string
+	m.FilterTargets = func(rep Replica, candidates []Node, runningOn map[string]string) []Node {
+		capturedRunningOn = runningOn
+		var out []Node
+		for _, c := range candidates {
+			if c.ID != "b" { // ban member b
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	filtered := m.targets(cfg, "c", r, p)
+	if len(filtered) != 1 || filtered[0].ID != "a" {
+		t.Fatalf("filtered targets = %+v, want [a]", filtered)
+	}
+	if capturedRunningOn["v2"] != "b" {
+		t.Errorf("runningOn[v2] = %q, want 'b'", capturedRunningOn["v2"])
+	}
+	if _, ok := capturedRunningOn["v3"]; ok {
+		t.Errorf("stopped machine v3 should not be in runningOn, got %q", capturedRunningOn["v3"])
+	}
+
+	// Assert that an info event was recorded naming the skipped member
+	stReport := m.Status()
+	foundSkipped := false
+	for _, e := range stReport.Events {
+		if e.Level == "info" && strings.Contains(e.Message, "placement rules skipped") && strings.Contains(e.Message, "bravo") {
+			foundSkipped = true
+			break
+		}
+	}
+	if !foundSkipped {
+		t.Errorf("expected info event naming skipped member bravo; events = %+v", stReport.Events)
+	}
+
+	// 3. an empty filter result falls back to the full list and appends the warning event
+	m.FilterTargets = func(rep Replica, candidates []Node, runningOn map[string]string) []Node {
+		return []Node{}
+	}
+	fallback := m.targets(cfg, "c", r, p)
+	if len(fallback) != 2 || fallback[0].ID != "a" || fallback[1].ID != "b" {
+		t.Fatalf("fallback targets = %+v, want full list [a, b]", fallback)
+	}
+	stReport = m.Status()
+	foundWarn := false
+	for _, e := range stReport.Events {
+		if (e.Level == "warn" || e.Level == "warning") &&
+			strings.Contains(e.Message, "placement rules cannot be honoured for db; restarting anyway") {
+			foundWarn = true
+			break
+		}
+	}
+	if !foundWarn {
+		t.Errorf("expected warning event for empty filter result; events = %+v", stReport.Events)
+	}
+}
+
+func TestFailoverHonoursFilterTargets(t *testing.T) {
+	hv := &fakeHV{adopt: true}
+	m, fc, clk, st := newTestManager(t, "a", hv)
+	st.UpdateSettings(Settings{AutoFailover: true, FailoverTimeoutSec: 10,
+		FenceAgents: map[string]FenceAgent{"c": {Driver: "ipmi", Endpoint: "bmc-c"}}})
+	st.SetPolicy(VMPolicy{UUID: "v1", Name: "db", Enabled: true, TargetNode: "b"})
+	m.Accept([]Replica{
+		{UUID: "v1", Name: "db", Owner: "c", OwnerName: "charlie", Running: true, XML: "<domain/>", MemoryKiB: 4 << 20},
+	})
+	m.fencer = &Fencer{Poll: time.Millisecond, Run: func(_ context.Context, _ []string, _ string, args ...string) ([]byte, error) {
+		return []byte("Chassis Power is off"), nil
+	}}
+	// FilterTargets bans b:
+	m.FilterTargets = func(r Replica, candidates []Node, runningOn map[string]string) []Node {
+		var out []Node
+		for _, c := range candidates {
+			if c.ID != "b" {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	m.Tick(context.Background())
+	fc.down["c"] = true
+	clk.add(15 * time.Second)
+	m.Tick(context.Background())
+	m.waitRecovery(t, "c", "done")
+	// Since b was banned by FilterTargets, it was recovered locally on a:
+	if len(hv.doms) == 0 || hv.doms[0].State != virt.StateRunning {
+		t.Fatalf("machine was not restarted on a: doms = %+v", hv.doms)
+	}
+}

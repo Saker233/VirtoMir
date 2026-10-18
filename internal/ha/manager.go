@@ -155,6 +155,11 @@ type Manager struct {
 	watchdog  Watchdog
 	// Notify, if set, receives warnings and errors (to send them through alert channels).
 	Notify func(subject, message string)
+	// FilterTargets, if set, filters and orders candidate nodes for restarting a protected
+	// machine according to placement rules (ADR-0062). nil preserves legacy behaviour.
+	// runningOn maps machine UUID → member ID of every protected machine believed running
+	// (built from m.replicas where Running is true → Replica.Owner).
+	FilterTargets func(r Replica, candidates []Node, runningOn map[string]string) []Node
 
 	mu         sync.Mutex
 	seen       map[string]time.Time // member ID → last heartbeat answer
@@ -258,7 +263,7 @@ func (m *Manager) event(level, node, machine, format string, args ...any) {
 	switch level {
 	case "error":
 		m.log.Error("ha: "+e.Message, "node", node, "machine", machine)
-	case "warn":
+	case "warn", "warning":
 		m.log.Warn("ha: "+e.Message, "node", node, "machine", machine)
 	default:
 		m.log.Info("ha: "+e.Message, "node", node, "machine", machine)

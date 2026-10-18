@@ -421,6 +421,62 @@ func TestFilterHATargets(t *testing.T) {
 	}
 }
 
+func TestFilterHATargets_MustAntiAffinityAndShouldVMHost(t *testing.T) {
+	// Candidate hosts: A, B, C
+	// Partner VM running on candidate B
+	runningOn := map[string]string{
+		"vm-partner": "B",
+	}
+
+	rules := []Rule{
+		// Must vm_anti_affinity with partner running on candidate B -> B is disallowed
+		{
+			ID:       "r-anti-b",
+			Name:     "Separate from partner on B",
+			Kind:     VMAntiAffinity,
+			Enabled:  true,
+			Strength: Must,
+			Domains:  []string{"vm-self", "vm-partner"},
+		},
+		// Should vm_host preferring A -> C is deprioritized (allowed, but not preferred)
+		{
+			ID:       "r-should-host-a",
+			Name:     "Prefer host A",
+			Kind:     VMHost,
+			Enabled:  true,
+			Strength: Should,
+			Domains:  []string{"vm-self"},
+			Hosts:    []string{"A"},
+		},
+	}
+
+	candidates := []string{"A", "B", "C"}
+	allowed, preferred := FilterHATargets(rules, "vm-self", candidates, runningOn)
+
+	// Candidate B is disallowed by hard must anti-affinity rule
+	if slices.Contains(allowed, "B") {
+		t.Errorf("expected candidate B to be disallowed, got allowed: %v", allowed)
+	}
+	// Candidate C is allowed (should rules are soft)
+	if !slices.Contains(allowed, "C") {
+		t.Errorf("expected candidate C to be allowed, got allowed: %v", allowed)
+	}
+	// Final allowed set should be [A, C]
+	expectedAllowed := []string{"A", "C"}
+	if !slices.Equal(allowed, expectedAllowed) {
+		t.Errorf("allowed = %v, want %v", allowed, expectedAllowed)
+	}
+
+	// Should rule deprioritizes candidate C: only A satisfies all should rules
+	expectedPreferred := []string{"A"}
+	if !slices.Equal(preferred, expectedPreferred) {
+		t.Errorf("preferred = %v, want %v", preferred, expectedPreferred)
+	}
+	if slices.Contains(preferred, "C") {
+		t.Errorf("expected candidate C to be deprioritized (not in preferred), got preferred: %v", preferred)
+	}
+}
+
 func TestEmptyStrengthTreatedAsMust(t *testing.T) {
 	vms := []VMRef{
 		{UUID: "vm-1", HostID: "host-1", Running: true},
