@@ -1,11 +1,15 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/onurbaydas/virtomir/internal/auth"
+	"github.com/onurbaydas/virtomir/internal/cluster"
 	"github.com/onurbaydas/virtomir/internal/project"
 	"github.com/onurbaydas/virtomir/internal/virt"
 )
@@ -193,7 +197,43 @@ func projectErrStatus(err error) int {
 	return http.StatusUnprocessableEntity
 }
 
-// createProject is admin-only (the guard sees to that).
+// projectToMembers repeats a project change on the other members, so every host of the
+// cluster has the same projects (ADR-0060: one set per cluster, like the alert settings
+// saved on every host). ?local=1 marks the copies, which are not passed on again, the
+// same way the DRS rules mark theirs. The answer says per member whether the change
+// arrived, so callers can name the members that need a retry.
+func (s *Server) projectToMembers(r *http.Request, method, path string, body any) []HostResult {
+	if r.URL.Query().Get("local") != "" || s.cluster == nil || !s.cluster.Clustered() {
+		return nil
+	}
+	id := identity(r)
+	members, _ := s.cluster.Members()
+	results := make([]HostResult, 0, len(members))
+	var wg sync.WaitGroup
+	for _, n := range members {
+		if n.ID == s.cluster.SelfID() {
+			continue
+		}
+		results = append(results, HostResult{Host: n.Name})
+		res := &results[len(results)-1]
+		wg.Add(1)
+		go func(n cluster.Node) {
+			defer wg.Done()
+			res.OK = true
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			if err := s.peer(n).As(id.Name, id.Role.String(), id.Token).Call(ctx, method, path+"?local=1", body, nil); err != nil {
+				res.OK, res.Error = false, err.Error()
+				s.log.Warn("project change not copied to a member", "member", n.Name, "err", err)
+			}
+		}(n)
+	}
+	wg.Wait()
+	return results
+}
+
+// createProject is admin-only (the guard sees to that). In a cluster the change is copied
+// to every member, and the answer names the members that did not take it.
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	if s.projects == nil {
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "projects are not available on this host"})
@@ -208,7 +248,12 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, projectErrStatus(err), map[string]string{"error": err.Error()})
 		return
 	}
-	s.done(w, http.StatusCreated, map[string]any{"project": created})
+	results := s.projectToMembers(r, http.MethodPost, "/api/v1/projects", created)
+	answer := map[string]any{"project": created}
+	if results != nil {
+		answer["results"] = results
+	}
+	s.done(w, http.StatusCreated, answer)
 }
 
 func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
@@ -226,7 +271,12 @@ func (s *Server) updateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	next, _ := s.projects.Get(p.ID)
-	s.done(w, http.StatusOK, map[string]any{"project": next})
+	results := s.projectToMembers(r, http.MethodPut, "/api/v1/projects/"+p.ID, next)
+	answer := map[string]any{"project": next}
+	if results != nil {
+		answer["results"] = results
+	}
+	s.done(w, http.StatusOK, answer)
 }
 
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
@@ -236,6 +286,14 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.projects.Delete(r.PathValue("id")); err != nil {
 		s.writeJSON(w, projectErrStatus(err), map[string]string{"error": err.Error()})
+		return
+	}
+	results := s.projectToMembers(r, http.MethodDelete, "/api/v1/projects/"+r.PathValue("id"), nil)
+	// The project is gone here whatever the members did; a full sweep stays the silent
+	// 204 it always was, and a member that could not be reached is named in the answer
+	// instead (it keeps the project until the change is made there again).
+	if slices.ContainsFunc(results, func(h HostResult) bool { return !h.OK }) {
+		s.done(w, http.StatusOK, map[string]any{"results": results})
 		return
 	}
 	s.done(w, http.StatusNoContent, nil)
