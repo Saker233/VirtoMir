@@ -78,6 +78,7 @@ type Backend interface {
 	PreviewSettings(uuid string, s virt.Settings) (virt.Preview, error)
 	SaveSettings(uuid string, s virt.Settings) (virt.SaveResult, error)
 	ResizeDisk(uuid, target string, sizeGiB uint64) error
+	SetDiskQoS(uuid, target string, qos virt.DiskIoTune) error
 	ResizeVolume(pool, name string, sizeGiB uint64) error
 	AddDHCPHost(network string, h virt.DHCPHost) error
 	DeleteDHCPHost(network, mac string) error
@@ -175,6 +176,7 @@ type Server struct {
 	offsite     *offsite.Store
 	drs         *drs.Engine
 	rateLimiter *auth.RateLimiter
+	zfsRep      *virt.ZFSReplicationManager
 }
 
 func NewServer(o Options) *Server {
@@ -196,7 +198,7 @@ func NewServer(o Options) *Server {
 		cluster: o.Cluster, fingerprint: o.Fingerprint, hostName: o.HostName, listenPort: o.ListenPort,
 		confighist: o.ConfigHistory, quotas: o.Quotas, groupsOf: o.GroupsOf,
 		ha: o.HA, reports: o.Reports, respools: o.Respools, hostinfo: o.HostInfo, updater: o.Updater, stateDir: o.StateDir, hostnet: o.HostNet, offsite: o.Offsite,
-		drs: o.DRS, rateLimiter: rl}
+		drs: o.DRS, rateLimiter: rl, zfsRep: virt.NewZFSReplicationManager()}
 }
 
 func (s *Server) Handler() http.Handler {

@@ -28,6 +28,7 @@
   import ConsolePanel from '../components/ConsolePanel.svelte'
   import BackupsPanel from '../components/BackupsPanel.svelte'
   import Maximize2 from '@lucide/svelte/icons/maximize-2'
+  import Gauge from '@lucide/svelte/icons/gauge'
   import ConfirmButton from '../components/ConfirmButton.svelte'
   import ManageDialogs, { type ManageDialog } from '../components/ManageDialogs.svelte'
   import ChangesPanel from '../components/ChangesPanel.svelte'
@@ -495,7 +496,9 @@
                     {/if}
                     {#if d.kind === 'disk' && d.target}
                       <button class="ui-btn sm" disabled={!session.can('admin')} title={session.why('admin')} onclick={() => ((mediaDrive = d), (dlg = 'resize'))}><Maximize2 size={14} /> {t('Grow…')}</button>
+                      <button class="ui-btn sm" disabled={!session.can('admin')} title={session.why('admin')} onclick={() => ((mediaDrive = d), (dlg = 'qos'))}><Gauge size={14} /> {t('QoS Limits…')}</button>
                     {/if}
+
                     {#if d.kind === 'video'}
                       <button class="ui-btn sm" disabled={!session.can('admin')} title={session.why('admin')} onclick={() => ((addKind = 'video'), (addOpen = true))}><Pencil size={14} /> {t('Change…')}</button>
                     {/if}

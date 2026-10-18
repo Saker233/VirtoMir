@@ -72,7 +72,9 @@
     open: { label: t('Open'), hint: t('Routed without any firewall rules from libvirt.') },
     isolated: { label: t('Isolated'), hint: t('Machines only talk to each other and to the host.') },
     bridge: { label: t('Bridged'), hint: t('Machines join the physical LAN through a host bridge, like real computers.') },
+    vxlan: { label: t('VXLAN Overlay'), hint: t('Cross-host SDN layer-2 tunnel across nodes in the cluster without physical switch changes.') },
   }
+
   const modeLabel = (m: string) => MODE[m]?.label ?? m
   const netLine = (n: VNetwork) =>
     [
@@ -118,16 +120,28 @@
       const body: NetworkSpec =
         spec.mode === 'bridge'
           ? { name: spec.name, mode: 'bridge', bridge: spec.bridge, dhcp: false, ovs: spec.ovs, vlan: spec.ovs && spec.vlan ? Number(spec.vlan) : undefined }
-          : {
-              ...spec,
-              bridge: undefined,
-              ovs: undefined,
-              vlan: undefined,
-              subnet: withV4 ? spec.subnet : undefined,
-              dhcp: withV4 && spec.dhcp,
-              subnet6: withV6 ? spec.subnet6?.trim() : undefined,
-              dhcp6: withV6 && spec.dhcp6,
-            }
+          : spec.mode === 'vxlan'
+            ? {
+                name: spec.name,
+                mode: 'vxlan',
+                vni: spec.vni ? Number(spec.vni) : 100,
+                bridge: spec.bridge || undefined,
+                subnet: withV4 ? spec.subnet : undefined,
+                dhcp: withV4 && spec.dhcp,
+                subnet6: withV6 ? spec.subnet6?.trim() : undefined,
+                dhcp6: withV6 && spec.dhcp6,
+              }
+            : {
+                ...spec,
+                bridge: undefined,
+                ovs: undefined,
+                vlan: undefined,
+                subnet: withV4 ? spec.subnet : undefined,
+                dhcp: withV4 && spec.dhcp,
+                subnet6: withV6 ? spec.subnet6?.trim() : undefined,
+                dhcp6: withV6 && spec.dhcp6,
+              }
+
       if (cluster.clustered && everywhere) {
         const res = await api.createClusterNetwork(body)
         const failed = res.filter((r) => !r.ok)
@@ -386,7 +400,7 @@
       <input class="ui-input" bind:value={spec.name} placeholder={t('lab')} required pattern="[A-Za-z0-9][A-Za-z0-9._+-]*" />
     </label>
     <div class="modes" role="radiogroup" aria-label={t('Network type')}>
-      {#each ['nat', 'isolated', 'route', 'bridge'] as m (m)}
+      {#each ['nat', 'isolated', 'route', 'bridge', 'vxlan'] as m (m)}
         <label class="mode-opt" class:on={spec.mode === m}>
           <input type="radio" name="mode" value={m} bind:group={spec.mode} />
           <strong>{MODE[m].label}</strong>
@@ -410,9 +424,28 @@
       {:else}
         <span class="hint">{t('VLANs on a plain Linux bridge: create a bridge on the VLAN interface (e.g. br0.10) and use that.')}</span>
       {/if}
+    {:else if spec.mode === 'vxlan'}
+      <label class="ui-field">
+        <span class="label">{t('VXLAN Network Identifier (VNI)')}</span>
+        <input class="ui-input mono" type="number" min="1" max="16777215" bind:value={spec.vni} placeholder="100" required />
+        <span class="hint">{t('Shared overlay VNI across all hypervisor nodes in the cluster.')}</span>
+      </label>
+      <label class="ui-field">
+        <span class="label">{t('Bridge interface name')} <span class="opt">{t('(optional)')}</span></span>
+        <input class="ui-input mono" bind:value={spec.bridge} placeholder="vxbr100" />
+      </label>
+      <label class="ui-switch"><input type="checkbox" bind:checked={withV4} /> {t('IPv4 Overlay Subnet')}</label>
+      {#if withV4}
+        <label class="ui-field">
+          <span class="label">{t('Subnet')}</span>
+          <input class="ui-input mono" bind:value={spec.subnet} placeholder="10.100.0.0/24" required />
+        </label>
+        <label class="ui-switch"><input type="checkbox" bind:checked={spec.dhcp} /> {t('Hand out addresses with DHCP')}</label>
+      {/if}
     {:else}
       <label class="ui-switch"><input type="checkbox" bind:checked={withV4} /> {t('IPv4')}</label>
       {#if withV4}
+
         <label class="ui-field">
           <span class="label">{t('Subnet')}</span>
           <input class="ui-input mono" bind:value={spec.subnet} placeholder="192.168.100.0/24" required />

@@ -73,8 +73,9 @@ type DiskSpec struct {
 	Path    string `json:"path,omitempty"`
 	Pool    string `json:"pool,omitempty"`
 	Volume  string `json:"volume,omitempty"`
-	SizeGiB uint64 `json:"sizeGiB,omitempty"`
-	Format  string `json:"format,omitempty"` // qcow2 (default) or raw, for new volumes
+	SizeGiB uint64      `json:"sizeGiB,omitempty"`
+	Format  string      `json:"format,omitempty"` // qcow2 (default) or raw, for new volumes
+	IoTune  *DiskIoTune `json:"iotune,omitempty"`
 }
 
 // AttachDisk adds a disk or CD/DVD drive, creating a new volume if requested.
@@ -109,6 +110,18 @@ func (c *Client) AttachDisk(uuid string, spec DiskSpec) (string, error) {
 		Device: spec.Device,
 		Driver: &libvirtxml.DomainDiskDriver{Name: "qemu", Type: "raw"},
 		Target: &libvirtxml.DomainDiskTarget{Dev: target, Bus: spec.Bus},
+	}
+	if t := spec.IoTune; t != nil {
+		disk.IOTune = &libvirtxml.DomainDiskIOTune{
+			TotalBytesSec:    t.TotalBytesSec,
+			ReadBytesSec:     t.ReadBytesSec,
+			WriteBytesSec:    t.WriteBytesSec,
+			TotalIopsSec:     t.TotalIopsSec,
+			ReadIopsSec:      t.ReadIopsSec,
+			WriteIopsSec:     t.WriteIopsSec,
+			TotalBytesSecMax: t.TotalBytesSecMax,
+			TotalIopsSecMax:  t.TotalIopsSecMax,
+		}
 	}
 	var created *libvirt.StorageVol
 	switch {
@@ -423,3 +436,40 @@ func orDefault(s, def string) string {
 	}
 	return s
 }
+
+// SetDiskQoS updates the I/O limits of a VM disk (QEMU iotune) both live and in the configuration.
+func (c *Client) SetDiskQoS(uuid, target string, qos DiskIoTune) error {
+	l, d, err := c.lookup(uuid)
+	if err != nil {
+		return err
+	}
+	flags, on, err := c.deviceFlags(l, d)
+	if err != nil {
+		return err
+	}
+
+	qosParam := func(field string, val uint64) libvirt.TypedParam {
+		return libvirt.TypedParam{
+			Field: field,
+			Value: *libvirt.NewTypedParamValueUllong(val),
+		}
+	}
+
+	params := []libvirt.TypedParam{
+		qosParam("total_bytes_sec", qos.TotalBytesSec),
+		qosParam("read_bytes_sec", qos.ReadBytesSec),
+		qosParam("write_bytes_sec", qos.WriteBytesSec),
+		qosParam("total_iops_sec", qos.TotalIopsSec),
+		qosParam("read_iops_sec", qos.ReadIopsSec),
+		qosParam("write_iops_sec", qos.WriteIopsSec),
+		qosParam("total_bytes_sec_max", qos.TotalBytesSecMax),
+		qosParam("total_iops_sec_max", qos.TotalIopsSecMax),
+	}
+
+	if err := l.DomainSetBlockIOTune(d, target, params, flags); err != nil {
+		return classify(err)
+	}
+	c.log.Info("disk qos updated", "domain", d.Name, "target", target, "totalIops", qos.TotalIopsSec, "totalBytes", qos.TotalBytesSec, "live", on)
+	return nil
+}
+

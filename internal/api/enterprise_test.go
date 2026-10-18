@@ -169,3 +169,32 @@ func TestDownloadValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestZFSReplicationAPI(t *testing.T) {
+	_, h := enterpriseServer(t, &fakeBackend{})
+
+	// 1. Initially empty
+	rec := do(h, "GET", "/api/v1/storage/zfs/replications", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
+	}
+
+	// 2. Create replication task
+	body := `{"id":"rep1","sourcePool":"tank","sourceVolume":"vm100-disk0","targetHost":"10.0.0.2","targetPool":"backup","intervalMinutes":5,"enabled":true}`
+	rec = do(h, "POST", "/api/v1/storage/zfs/replications", body, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body)
+	}
+
+	// 3. Sync now
+	rec = do(h, "POST", "/api/v1/storage/zfs/replications/rep1/sync", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on sync, got %d: %s", rec.Code, rec.Body)
+	}
+
+	// 4. Delete task
+	rec = do(h, "DELETE", "/api/v1/storage/zfs/replications/rep1", "", nil)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 on delete, got %d: %s", rec.Code, rec.Body)
+	}
+}

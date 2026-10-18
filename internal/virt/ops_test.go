@@ -115,6 +115,14 @@ func TestBuildNetwork(t *testing.T) {
 	if br.Forward.Mode != "bridge" || br.Bridge.Name != "br0" || br.IPs != nil {
 		t.Errorf("bridge = %+v", br)
 	}
+	vx, err := buildNetwork(NetworkSpec{Name: "overlay100", Mode: "vxlan", VNI: 100, Subnet: "10.100.0.0/24", DHCP: true})
+	if err != nil {
+		t.Fatalf("build vxlan network: %v", err)
+	}
+	if vx.Forward.Mode != "open" || vx.Bridge.Name != "vxbr100" {
+		t.Errorf("vxlan network: forward=%+v bridge=%+v", vx.Forward, vx.Bridge)
+	}
+
 	for _, bad := range []NetworkSpec{
 		{Name: "x", Mode: "nat", Subnet: "nonsense"},
 		{Name: "x", Mode: "nat", Subnet: "10.0.0.0/8"},

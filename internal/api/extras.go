@@ -21,6 +21,7 @@ func (s *Server) extraRoutes(mux *routeMux) {
 	mux.HandleFunc("POST /api/v1/domains/{uuid}/settings/preview", s.previewSettings)
 	mux.HandleFunc("PUT /api/v1/domains/{uuid}/settings", s.saveSettings)
 	mux.HandleFunc("POST /api/v1/domains/{uuid}/disks/{target}/resize", s.resizeDisk)
+	mux.HandleFunc("PUT /api/v1/domains/{uuid}/disks/{target}/qos", s.setDiskQoS)
 	mux.HandleFunc("POST /api/v1/storage/pools/{pool}/volumes/{vol}/resize", s.resizeVolume)
 	mux.HandleFunc("POST /api/v1/networks/{name}/dhcp-hosts", s.addDHCPHost)
 	mux.HandleFunc("DELETE /api/v1/networks/{name}/dhcp-hosts/{mac}", s.deleteDHCPHost)
@@ -141,6 +142,19 @@ func (s *Server) resizeDisk(w http.ResponseWriter, r *http.Request) {
 	}
 	s.done(w, http.StatusNoContent, nil)
 }
+
+func (s *Server) setDiskQoS(w http.ResponseWriter, r *http.Request) {
+	var qos virt.DiskIoTune
+	if !s.decode(w, r, &qos) {
+		return
+	}
+	if err := s.backend.SetDiskQoS(r.PathValue("uuid"), r.PathValue("target"), qos); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.done(w, http.StatusNoContent, nil)
+}
+
 
 func (s *Server) resizeVolume(w http.ResponseWriter, r *http.Request) {
 	var b sizeBody

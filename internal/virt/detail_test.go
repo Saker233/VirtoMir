@@ -3,6 +3,7 @@ package virt
 import (
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"libvirt.org/go/libvirtxml"
@@ -167,6 +168,70 @@ func TestToKiB(t *testing.T) {
 	}
 }
 
+func TestDiskIoTuneParsing(t *testing.T) {
+	xml := `<domain type='kvm'>
+  <name>iotune-vm</name>
+  <uuid>00000000-0000-0000-0000-000000000001</uuid>
+  <memory unit='KiB'>1048576</memory>
+  <vcpu>1</vcpu>
+  <os><type>hvm</type></os>
+  <devices>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='/tmp/test.qcow2'/>
+      <target dev='vda' bus='virtio'/>
+      <iotune>
+        <total_bytes_sec>104857600</total_bytes_sec>
+        <total_iops_sec>2500</total_iops_sec>
+        <read_iops_sec>1000</read_iops_sec>
+        <write_iops_sec>1500</write_iops_sec>
+      </iotune>
+    </disk>
+  </devices>
+</domain>`
+	var x libvirtxml.Domain
+	if err := x.Unmarshal(xml); err != nil {
+		t.Fatal(err)
+	}
+	d := buildDetail(Domain{Name: x.Name, State: StateRunning}, &x)
+	dev := findDevice(t, d, "Disk vda")
+	if dev.IoTune == nil {
+		t.Fatal("expected dev.IoTune to be non-nil")
+	}
+	if dev.IoTune.TotalBytesSec != 104857600 || dev.IoTune.TotalIopsSec != 2500 || dev.IoTune.ReadIopsSec != 1000 || dev.IoTune.WriteIopsSec != 1500 {
+		t.Errorf("unexpected IoTune: %+v", dev.IoTune)
+	}
+	if p := prop(dev, "I/O limit (ceiling)"); p != "2500 IOPS" {
+		t.Errorf("expected ceiling prop 2500 IOPS, got %q", p)
+	}
+}
+
+func TestConfidentialComputing(t *testing.T) {
+	xml := `<domain type='kvm'>
+  <name>sev-vm</name>
+  <uuid>00000000-0000-0000-0000-000000000002</uuid>
+  <memory unit='KiB'>1048576</memory>
+  <vcpu>2</vcpu>
+  <os><type>hvm</type></os>
+  <launchSecurity type='sev'>
+    <cbitpos>47</cbitpos>
+    <reducedPhysBits>1</reducedPhysBits>
+    <policy>0x0003</policy>
+  </launchSecurity>
+</domain>`
+	var x libvirtxml.Domain
+	if err := x.Unmarshal(xml); err != nil {
+		t.Fatal(err)
+	}
+	d := buildDetail(Domain{Name: x.Name, State: StateRunning}, &x)
+	if d.System.LaunchSecurity != "sev" {
+		t.Errorf("expected LaunchSecurity sev, got %q", d.System.LaunchSecurity)
+	}
+	if !slices.Contains(d.System.Features, "confidential (sev)") {
+		t.Errorf("expected feature 'confidential (sev)', got %v", d.System.Features)
+	}
+}
+
 func mustRead(t *testing.T, file string) string {
 	t.Helper()
 	b, err := os.ReadFile(file)
@@ -175,3 +240,37 @@ func mustRead(t *testing.T, file string) string {
 	}
 	return string(b)
 }
+
+func TestContainerDomain(t *testing.T) {
+	spec := CreateSpec{
+		Name:      "c-alpine",
+		Kind:      "container",
+		VCPUs:     2,
+		MemoryMiB: 512,
+		Network:   &NICSpec{Network: "default"},
+	}
+	if err := spec.normalize(); err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	dom := buildDomain(spec, "/var/lib/virtomir/containers/c-alpine/rootfs", "", "")
+	xml, err := dom.Marshal()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(xml, `type="lxc"`) && !strings.Contains(xml, `type='lxc'`) {
+		t.Errorf("expected lxc domain, got: %s", xml)
+	}
+	if !strings.Contains(xml, "<type>exe</type>") || !strings.Contains(xml, "<init>/sbin/init</init>") {
+		t.Errorf("expected container OS, got: %s", xml)
+	}
+	var parsed libvirtxml.Domain
+	if err := parsed.Unmarshal(xml); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	d := buildDetail(Domain{Name: "c-alpine"}, &parsed)
+	if d.Domain.Kind != "container" {
+		t.Errorf("expected Kind container, got %q", d.Domain.Kind)
+	}
+}
+
+

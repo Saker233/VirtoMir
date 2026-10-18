@@ -32,7 +32,9 @@ type VNetwork struct {
 	UsedBy     []string `json:"usedBy"`
 	// Fixed address reservations (static DHCP).
 	DHCPHosts []DHCPHost `json:"dhcpHosts"`
+	VNI       uint       `json:"vni,omitempty"`
 }
+
 
 func (c *Client) ListNetworks() ([]VNetwork, error) {
 	l, err := c.conn()
@@ -85,7 +87,15 @@ func parseNetwork(raw string) (VNetwork, error) {
 	}
 	if x.Bridge != nil {
 		v.Bridge = x.Bridge.Name
+		if strings.HasPrefix(x.Bridge.Name, "vxbr") {
+			v.Mode = "vxlan"
+			var vni uint
+			if _, err := fmt.Sscanf(x.Bridge.Name, "vxbr%d", &vni); err == nil {
+				v.VNI = vni
+			}
+		}
 	}
+
 	if x.Domain != nil {
 		v.Domain = x.Domain.Name
 	}
@@ -230,9 +240,12 @@ type NetworkSpec struct {
 	// host takes ::1 and sends router advertisements, so guests configure themselves
 	// (SLAAC). DHCP6 also hands out addresses ::100 – ::ffff. Either Subnet or Subnet6 (or
 	// both) is needed. In nat mode IPv6 is translated too (NAT66, libvirt ≥ 6.5).
-	Subnet6 string `json:"subnet6,omitempty"`
-	DHCP6   bool   `json:"dhcp6,omitempty"`
+	Subnet6 string   `json:"subnet6,omitempty"`
+	DHCP6   bool     `json:"dhcp6,omitempty"`
+	VNI     uint     `json:"vni,omitempty"`   // VXLAN Network Identifier (1..16777215)
+	Peers   []string `json:"peers,omitempty"` // VXLAN remote peer endpoints or multicast group
 }
+
 
 // buildNetwork turns a spec into network XML: gateway .1, DHCP .2 to the last usable address.
 func buildNetwork(spec NetworkSpec) (*libvirtxml.Network, error) {
@@ -260,7 +273,7 @@ func buildNetwork(spec NetworkSpec) (*libvirtxml.Network, error) {
 			x.VLAN = &libvirtxml.NetworkVLAN{Tags: []libvirtxml.NetworkVLANTag{{ID: spec.VLAN}}}
 		}
 		return x, nil
-	case "nat", "route", "isolated", "open":
+	case "nat", "route", "isolated", "open", "vxlan":
 		if spec.VLAN != 0 || spec.OVS {
 			return nil, invalidf("VLAN tags and Open vSwitch apply to bridge networks only.")
 		}
@@ -268,10 +281,24 @@ func buildNetwork(spec NetworkSpec) (*libvirtxml.Network, error) {
 	switch spec.Mode {
 	case "nat", "route":
 		x.Forward = &libvirtxml.NetworkForward{Mode: spec.Mode}
+	case "vxlan", "open":
+		x.Forward = &libvirtxml.NetworkForward{Mode: "open"}
+		if spec.Mode == "vxlan" {
+			vni := spec.VNI
+			if vni == 0 {
+				vni = 100
+			}
+			brName := spec.Bridge
+			if brName == "" {
+				brName = fmt.Sprintf("vxbr%d", vni)
+			}
+			x.Bridge = &libvirtxml.NetworkBridge{Name: brName, STP: "on", Delay: "0"}
+		}
 	case "isolated":
 	default:
 		return nil, invalidf("Unknown network mode %q.", spec.Mode)
 	}
+
 	if spec.Subnet == "" && spec.Subnet6 == "" {
 		return nil, invalidf("Give the network an IPv4 subnet, an IPv6 subnet, or both.")
 	}

@@ -23,7 +23,10 @@ func (s *Server) hostInfoRoutes(mux *routeMux) {
 	mux.HandleFunc("GET /api/v1/host/interfaces", s.hostInterfaces)
 	mux.HandleFunc("GET /api/v1/host/capture", s.hostCapture)
 	mux.HandleFunc("GET /api/v1/host/topology", s.hostTopology)
+	mux.HandleFunc("GET /api/v1/host/ksm", s.getHostKSM)
+	mux.HandleFunc("PUT /api/v1/host/ksm", s.setHostKSM)
 }
+
 
 // Placer reports where running machines' vCPUs sit (for the topology view).
 type Placer interface {
@@ -235,3 +238,37 @@ func tcpdumpError(stderr string) string {
 	}
 	return ""
 }
+
+type ksmBody struct {
+	Active         bool   `json:"active"`
+	SleepMillisecs uint64 `json:"sleepMillisecs,omitempty"`
+	PagesToScan    uint64 `json:"pagesToScan,omitempty"`
+}
+
+func (s *Server) getHostKSM(w http.ResponseWriter, r *http.Request) {
+	h, ok := s.hostReader(w)
+	if !ok {
+		return
+	}
+	s.writeJSON(w, http.StatusOK, h.KSM())
+}
+
+func (s *Server) setHostKSM(w http.ResponseWriter, r *http.Request) {
+	h, ok := s.hostReader(w)
+	if !ok {
+		return
+	}
+	var b ksmBody
+	if !s.decode(w, r, &b) {
+		return
+	}
+	if err := h.SetKSM(b.Active); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	if b.SleepMillisecs > 0 || b.PagesToScan > 0 {
+		_ = h.SetKSMTune(b.SleepMillisecs, b.PagesToScan)
+	}
+	s.writeJSON(w, http.StatusOK, h.KSM())
+}
+

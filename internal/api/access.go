@@ -36,7 +36,7 @@ func requiredRole(method, path string) auth.Role {
 		return auth.NoAccess // host-to-host protocol; the handlers check the peer or the join secret
 	case strings.HasPrefix(path, "/api/v1/tokens"), strings.HasPrefix(path, "/api/v1/account/"):
 		return auth.Viewer // everyone manages their own tokens and second factor (handlers check ownership)
-	case path == "/api/v1/activity", path == "/api/v1/signin-config", path == "/api/v1/quotas",
+	case strings.HasPrefix(path, "/api/v1/activity"), path == "/api/v1/signin-config", path == "/api/v1/quotas",
 		strings.HasPrefix(path, "/api/v1/twofactor/"),
 		path == "/api/v1/host/capture": // other people's network traffic
 		return auth.Admin // who may sign in and who may create what is the admins' business
@@ -247,7 +247,10 @@ func (s *Server) accessRoutes(mux *routeMux) {
 	mux.HandleFunc("POST /api/v1/tokens", s.createToken)
 	mux.HandleFunc("DELETE /api/v1/tokens/{id}", s.revokeToken)
 	mux.HandleFunc("GET /api/v1/activity", s.listActivity)
+	mux.HandleFunc("GET /api/v1/activity/siem", s.getSIEMConfig)
+	mux.HandleFunc("PUT /api/v1/activity/siem", s.saveSIEMConfig)
 }
+
 
 // listTokens: your own tokens; admins add ?all=true to see everyone's.
 func (s *Server) listTokens(w http.ResponseWriter, r *http.Request) {
@@ -332,3 +335,31 @@ func writeActivityCSV(w http.ResponseWriter, entries []activity.Entry) {
 	}
 	cw.Flush()
 }
+
+func (s *Server) getSIEMConfig(w http.ResponseWriter, r *http.Request) {
+	if s.activity == nil || s.activity.SIEM() == nil {
+		s.writeJSON(w, http.StatusOK, activity.SIEMConfig{})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, s.activity.SIEM().Config())
+}
+
+func (s *Server) saveSIEMConfig(w http.ResponseWriter, r *http.Request) {
+	var cfg activity.SIEMConfig
+	if !s.decode(w, r, &cfg) {
+		return
+	}
+	if s.activity == nil {
+		s.writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "activity log disabled"})
+		return
+	}
+	f := s.activity.SIEM()
+	if f == nil {
+		f = activity.NewForwarder(cfg)
+		s.activity.AttachSIEM(f)
+	} else {
+		f.SetConfig(cfg)
+	}
+	s.writeJSON(w, http.StatusOK, f.Config())
+}
+

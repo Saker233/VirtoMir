@@ -47,6 +47,8 @@ export interface Domain {
   linkedFrom?: string
   /** Who created it through VirtoMir (counts against their quota). */
   owner?: string
+  /** Machine kind: 'vm' (default) or 'container' (LXC). */
+  kind?: 'vm' | 'container'
   /** Share of the domain's own vCPUs in use (0–100). */
   cpuPercent: number
   /** Running machines, from libvirt bulk stats (absent on the first sample). */
@@ -102,7 +104,20 @@ export interface Device {
   /** Disk: guest device name (vda); adapter: MAC. Used to act on the device. */
   target?: string
   mac?: string
+  iotune?: DiskIoTune
 }
+
+export interface DiskIoTune {
+  totalBytesSec?: number
+  readBytesSec?: number
+  writeBytesSec?: number
+  totalIopsSec?: number
+  readIopsSec?: number
+  writeIopsSec?: number
+  totalIopsSecMax?: number
+  totalBytesSecMax?: number
+}
+
 
 /** GET /api/v1/domains/{uuid}: the machine page model. Mirrors virt.DomainDetail. */
 export interface DomainDetail extends Omit<Domain, 'cpuPercent'> {
@@ -115,6 +130,8 @@ export interface DomainDetail extends Omit<Domain, 'cpuPercent'> {
     machine: string
     firmware: 'bios' | 'uefi'
     secureBoot: boolean
+    launchSecurity?: string
+
     loader?: string
     nvram?: string
     kernel?: string
@@ -434,6 +451,16 @@ export interface ActivityEntry {
   error?: string
 }
 
+export interface SIEMConfig {
+  enabled: boolean
+  target: string
+  facility: number
+  tag: string
+  hostname: string
+  tlsInsecure?: boolean
+}
+
+
 export interface Job {
   id: string
   kind: string
@@ -475,12 +502,14 @@ export interface NICSpec {
 
 export interface CreateSpec {
   name: string
+  kind?: 'vm' | 'container'
   os: 'linux' | 'windows' | 'other'
   vcpus: number
   memoryMiB: number
   firmware: 'uefi' | 'bios'
   secureBoot: boolean
   tpm: boolean
+  confidential?: 'sev' | 'sev-snp' | 'tdx'
   pool: string
   diskGiB: number
   provisioning?: 'thin' | 'thick'
@@ -611,14 +640,17 @@ export interface VNetwork {
   dhcp6End?: string
   usedBy: string[]
   dhcpHosts: DHCPHost[]
+  vni?: number
 }
 
 export interface NetworkSpec {
   name: string
-  mode: 'nat' | 'route' | 'isolated' | 'bridge'
+  mode: 'nat' | 'route' | 'isolated' | 'bridge' | 'vxlan'
   subnet?: string
   dhcp: boolean
   bridge?: string
+  vni?: number
+  peers?: string[]
   /** Bridge mode: the host bridge is Open vSwitch; vlan tags every machine on it. */
   ovs?: boolean
   vlan?: number
@@ -626,6 +658,7 @@ export interface NetworkSpec {
   subnet6?: string
   dhcp6?: boolean
 }
+
 
 export interface Lease {
   mac: string
@@ -902,6 +935,9 @@ export const api = {
     p.set('limit', String(q.limit ?? 300))
     return (await request<{ entries: ActivityEntry[] }>('GET', at(host, `/api/v1/activity?${p}`))).entries
   },
+  siemConfig: () => request<SIEMConfig>('GET', '/api/v1/activity/siem'),
+  saveSiemConfig: (cfg: SIEMConfig) => request<SIEMConfig>('PUT', '/api/v1/activity/siem', cfg),
+
 
   alerts: async (host?: string) => (await request<{ alerts: Alert[] }>('GET', at(host, '/api/v1/alerts'))).alerts,
   ackAlert: (id: string, host?: string) => request<void>('POST', at(host, `/api/v1/alerts/${enc(id)}/ack`)),
@@ -998,6 +1034,9 @@ export const api = {
   saveSettings: (uuid: string, s: Settings) => request<SaveResult>('PUT', `${domainPath(uuid)}/settings`, s),
   resizeDisk: (uuid: string, target: string, sizeGiB: number) =>
     request<void>('POST', `${domainPath(uuid)}/disks/${enc(target)}/resize`, { sizeGiB }),
+  setDiskQoS: (uuid: string, target: string, qos: DiskIoTune) =>
+    request<void>('PUT', `${domainPath(uuid)}/disks/${enc(target)}/qos`, qos),
+
 
   history: (series: string[], range: HistoryRange, host?: string) =>
     request<HistoryResult>('GET', at(host, `/api/v1/history?range=${range}&series=${series.map(enc).join(',')}`)),

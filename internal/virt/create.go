@@ -12,13 +12,15 @@ import (
 // modern default (q35, VirtIO where the guest supports it, UEFI), and can be changed later.
 type CreateSpec struct {
 	Name      string `json:"name"`
-	OS        string `json:"os"` // linux (default), windows, other
+	Kind      string `json:"kind,omitempty"` // vm (default) or container
+	OS        string `json:"os"`   // linux (default), windows, other
 	VCPUs     int    `json:"vcpus"`
 	MemoryMiB uint64 `json:"memoryMiB"`
 	// Firmware: uefi (default) or bios. Secure Boot and TPM default on for Windows.
 	Firmware   string `json:"firmware"`
-	SecureBoot bool   `json:"secureBoot"`
-	TPM        bool   `json:"tpm"`
+	SecureBoot   bool   `json:"secureBoot"`
+	TPM          bool   `json:"tpm"`
+	Confidential string `json:"confidential,omitempty"` // sev, sev-snp, tdx
 	// Disk: a new empty volume (Pool + DiskGiB), a copy of a cloud image grown to DiskGiB
 	// (BaseImage), an existing image used as is (DiskPath), or none.
 	Pool         string `json:"pool"`
@@ -56,6 +58,16 @@ var profiles = map[string]osProfile{
 func (s *CreateSpec) normalize() error {
 	if err := checkName("Machine", s.Name); err != nil {
 		return err
+	}
+	s.Kind = orDefault(s.Kind, "vm")
+	if s.Kind == "container" {
+		if s.VCPUs < 1 || s.VCPUs > 512 {
+			return invalidf("Choose between 1 and 512 virtual CPUs.")
+		}
+		if s.MemoryMiB < 64 || s.MemoryMiB > 16<<20 {
+			return invalidf("Memory must be between 64 MiB and 16 TiB.")
+		}
+		return nil
 	}
 	s.OS = orDefault(s.OS, "linux")
 	if _, ok := profiles[s.OS]; !ok {
@@ -97,6 +109,52 @@ func (s *CreateSpec) normalize() error {
 // buildDomain returns the domain XML for a normalized spec. diskPath/diskFormat describe the
 // prepared system disk ("" for none). Optional diskVolume handles block storage pools (LVM, ZFS).
 func buildDomain(s CreateSpec, diskPath, diskFormat, seedPath string, diskVolume ...*libvirtxml.DomainDiskSourceVolume) *libvirtxml.Domain {
+	if s.Kind == "container" {
+		rootfs := diskPath
+		if rootfs == "" {
+			rootfs = fmt.Sprintf("/var/lib/virtomir/containers/%s/rootfs", s.Name)
+		}
+		x := &libvirtxml.Domain{
+			Type:          "lxc",
+			Name:          s.Name,
+			Memory:        &libvirtxml.DomainMemory{Value: uint(s.MemoryMiB), Unit: "MiB"},
+			CurrentMemory: &libvirtxml.DomainCurrentMemory{Value: uint(s.MemoryMiB), Unit: "MiB"},
+			VCPU:          &libvirtxml.DomainVCPU{Placement: "static", Value: uint(s.VCPUs)},
+			OS: &libvirtxml.DomainOS{
+				Type: &libvirtxml.DomainOSType{Type: "exe"},
+				Init: "/sbin/init",
+			},
+			Clock:      &libvirtxml.DomainClock{Offset: "utc"},
+			OnPoweroff: "destroy", OnReboot: "restart", OnCrash: "destroy",
+			Devices: &libvirtxml.DomainDeviceList{
+				Filesystems: []libvirtxml.DomainFilesystem{
+					{
+						AccessMode: "passthrough",
+						Source:     &libvirtxml.DomainFilesystemSource{Mount: &libvirtxml.DomainFilesystemSourceMount{Dir: rootfs}},
+						Target:     &libvirtxml.DomainFilesystemTarget{Dir: "/"},
+					},
+				},
+				Consoles: []libvirtxml.DomainConsole{
+					{
+						Source: &libvirtxml.DomainChardevSource{
+							Pty: &libvirtxml.DomainChardevSourcePty{},
+						},
+						Target: &libvirtxml.DomainConsoleTarget{Type: "lxc"},
+					},
+				},
+			},
+		}
+		if s.Network != nil {
+			x.Devices.Interfaces = []libvirtxml.DomainInterface{
+				{
+					Source: &libvirtxml.DomainInterfaceSource{
+						Network: &libvirtxml.DomainInterfaceSourceNetwork{Network: s.Network.Network},
+					},
+				},
+			}
+		}
+		return x
+	}
 	var diskVol *libvirtxml.DomainDiskSourceVolume
 	if len(diskVolume) > 0 {
 		diskVol = diskVolume[0]
@@ -132,6 +190,22 @@ func buildDomain(s CreateSpec, diskPath, diskFormat, seedPath string, diskVolume
 			x.Features.SMM = &libvirtxml.DomainFeatureSMM{State: "on"}
 		}
 		x.OS.FirmwareInfo = &libvirtxml.DomainOSFirmwareInfo{Features: feats}
+	}
+	if s.Confidential != "" {
+		switch s.Confidential {
+		case "sev":
+			x.LaunchSecurity = &libvirtxml.DomainLaunchSecurity{
+				SEV: &libvirtxml.DomainLaunchSecuritySEV{},
+			}
+		case "sev-snp":
+			x.LaunchSecurity = &libvirtxml.DomainLaunchSecurity{
+				SEVSNP: &libvirtxml.DomainLaunchSecuritySEVSNP{},
+			}
+		case "tdx":
+			x.LaunchSecurity = &libvirtxml.DomainLaunchSecurity{
+				TDX: &libvirtxml.DomainLaunchSecurityTDX{},
+			}
+		}
 	}
 	if p.localClock {
 		x.Clock.Offset = "localtime"
@@ -312,7 +386,11 @@ func (c *Client) CreateDomain(spec CreateSpec) (CreateResult, error) {
 		return CreateResult{}, classify(err)
 	}
 	res := CreateResult{UUID: formatUUID(d.UUID)}
-	c.log.Info("domain created", "domain", spec.Name, "os", spec.OS)
+	c.log.Info("domain created", "domain", spec.Name, "os", spec.OS, "kind", spec.Kind)
+	if spec.Kind == "container" {
+		_ = c.writeMeta(l, d, vmMeta{Kind: "container"})
+		c.remember(res.UUID, vmMeta{Kind: "container"})
+	}
 	if spec.Start {
 		if err := l.DomainCreate(d); err != nil {
 			res.StartError = classify(err).Error()

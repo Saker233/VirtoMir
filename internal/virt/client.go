@@ -139,6 +139,8 @@ type Domain struct {
 	LinkedFrom string `json:"linkedFrom,omitempty"`
 	// Owner created the machine through VirtoMir; it counts against their quota.
 	Owner string `json:"owner,omitempty"`
+	// Kind: "vm" (default) or "container" (LXC).
+	Kind string `json:"kind,omitempty"`
 }
 
 func (c *Client) ListDomains() ([]Domain, error) {

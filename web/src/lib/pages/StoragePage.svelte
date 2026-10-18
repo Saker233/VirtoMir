@@ -24,6 +24,7 @@
   import Download from '@lucide/svelte/icons/download'
   import OrphanedDisksModal from '../components/OrphanedDisksModal.svelte'
   import IsoDownloadModal from '../components/IsoDownloadModal.svelte'
+  import ZfsReplicationModal from '../components/ZfsReplicationModal.svelte'
 
   let { pool: selected }: { pool: string } = $props()
 
@@ -32,6 +33,7 @@
   let volumes = $state<Volume[] | null>(null)
   let orphanedOpen = $state(false)
   let isoOpen = $state(false)
+  let zfsOpen = $state(false)
   let volError = $state('')
 
   let current = $derived(pools?.find((p) => p.name === selected) ?? pools?.find((p) => p.name === 'default') ?? pools?.[0])
@@ -258,6 +260,9 @@
   <div class="head-right">
     <button class="ui-btn" onclick={() => (orphanedOpen = true)} title={t('Find disks not attached to any VM')}>
       <HardDrive size={15} /> {t('Unused disks')}
+    </button>
+    <button class="ui-btn" onclick={() => (zfsOpen = true)} title={t('Automated differential block-level storage replication between nodes')}>
+      <RefreshCw size={15} /> {t('ZFS Replication')}
     </button>
     <button class="ui-btn" onclick={() => (isoOpen = true)} title={t('The host downloads an image from a URL into a pool')}>
       <Download size={15} /> {t('Download from URL')}
@@ -570,6 +575,7 @@
 </Dialog>
 
 <OrphanedDisksModal open={orphanedOpen} onclose={() => (orphanedOpen = false)} />
+<ZfsReplicationModal open={zfsOpen} onclose={() => (zfsOpen = false)} />
 <IsoDownloadModal
   open={isoOpen}
   poolName={current?.name ?? 'default'}

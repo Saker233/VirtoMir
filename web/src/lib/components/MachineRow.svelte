@@ -2,6 +2,7 @@
   import { t } from '../i18n.svelte'
   import Monitor from '@lucide/svelte/icons/monitor'
   import LayoutTemplate from '@lucide/svelte/icons/layout-template'
+  import Box from '@lucide/svelte/icons/box'
   import type { Domain } from '../api'
   import { ACTIONS, isActive, live } from '../live.svelte'
   import { formatKiB, formatPercent, plural } from '../format'
@@ -27,10 +28,21 @@
     {#if onselect}
       <input class="sel" type="checkbox" checked={selected} aria-label={t('Select {name}', { name: d.name })} onchange={(e) => onselect(e.currentTarget.checked)} />
     {/if}
-    <span class="avatar" class:on={active} title={d.template ? 'Template' : undefined}>{#if d.template}<LayoutTemplate size={16} />{:else}<Monitor size={16} />{/if}</span>
+    <span class="avatar" class:on={active} title={d.template ? 'Template' : d.kind === 'container' ? 'Container' : undefined}>
+      {#if d.template}
+        <LayoutTemplate size={16} />
+      {:else if d.kind === 'container'}
+        <Box size={16} />
+      {:else}
+        <Monitor size={16} />
+      {/if}
+    </span>
     <div class="titles">
       <div class="title-line">
         <a class="title" href={machineHref(d.uuid)} onclick={router.link}>{d.name}</a>
+        {#if d.kind === 'container'}
+          <span class="kind-badge lxc" title={t('System Container (LXC)')}>LXC</span>
+        {/if}
         {#if hostName}
           <span class="host-badge" title={t('Running on {host}', { host: hostName })}>
             <span class="host-dot"></span>{hostName}
@@ -142,6 +154,22 @@
     padding: 1px 6px;
     letter-spacing: 0.05em;
     flex-shrink: 0;
+  }
+  .kind-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 5px;
+    border-radius: var(--radius-xs);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+  }
+  .kind-badge.lxc {
+    background: rgba(14, 165, 233, 0.15);
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.3);
   }
   .host-dot {
     width: 6px;

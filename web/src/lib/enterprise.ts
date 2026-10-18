@@ -234,6 +234,37 @@ export interface Chassis {
   bmc?: { driver: string; url: string }
 }
 
+export interface KSMInfo {
+  supported: boolean
+  active: boolean
+  pagesShared: number
+  pagesSharing: number
+  pagesUnshared: number
+  pagesVolatile: number
+  savedBytes: number
+  sleepMillisecs: number
+  pagesToScan: number
+}
+
+export interface ZFSReplicationSpec {
+  id?: string
+  sourcePool: string
+  sourceVolume: string
+  targetHost: string
+  targetPool: string
+  intervalMinutes: number
+  enabled: boolean
+}
+
+export interface ZFSReplicationStatus {
+  spec: ZFSReplicationSpec
+  state: 'idle' | 'syncing' | 'failed'
+  lastSync?: string
+  lastSnapshot?: string
+  bytesTransferred?: number
+  error?: string
+}
+
 /** Host CPUs and memory nodes, with the running machines' vCPUs on top (P5). */
 export interface Topology {
   nodes: { id: number; cpus: number[]; memTotalKiB: number; memFreeKiB: number }[]
@@ -353,6 +384,9 @@ export const ent = {
   deleteReportSchedule: (id: string) => api.delete<void>(`/api/v1/report-schedules/${enc(id)}`),
 
   chassis: () => api.get<Chassis>('/api/v1/host/chassis'),
+  ksm: () => api.get<KSMInfo>('/api/v1/host/ksm'),
+  setKsm: (active: boolean, sleepMillisecs?: number, pagesToScan?: number) =>
+    api.put<KSMInfo>('/api/v1/host/ksm', { active, sleepMillisecs, pagesToScan }),
   topology: () => api.get<Topology>('/api/v1/host/topology'),
   gpus: async () => (await api.get<{ gpus: GPU[] }>('/api/v1/host/gpus')).gpus,
   interfaces: async () => (await api.get<{ interfaces: HostInterface[] }>('/api/v1/host/interfaces')).interfaces,
@@ -371,6 +405,12 @@ export const ent = {
   /** Fetches an image from a URL into a pool (background job). */
   download: (pool: string, url: string, name: string, sha256: string) =>
     api.post<Job>(`/api/v1/storage/pools/${enc(pool)}/download`, { url, name, sha256 }),
+
+  // ZFS Asynchronous Storage Replication
+  zfsReplications: async () => (await api.get<{ replications: ZFSReplicationStatus[] }>('/api/v1/storage/zfs/replications')).replications,
+  createZFSReplication: (spec: ZFSReplicationSpec) => api.post<ZFSReplicationStatus>('/api/v1/storage/zfs/replications', spec),
+  deleteZFSReplication: (id: string) => api.delete<void>(`/api/v1/storage/zfs/replications/${enc(id)}`),
+  syncZFSReplication: (id: string) => api.post<ZFSReplicationStatus>(`/api/v1/storage/zfs/replications/${enc(id)}/sync`),
 
   // DRS (Distributed Resource Scheduler) & Unified Inventory
   drsStatus: () => api.get<DRSStatus>('/api/v1/cluster/drs'),

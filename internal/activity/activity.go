@@ -40,7 +40,9 @@ type Log struct {
 	path string
 	mu   sync.Mutex
 	ring []Entry // oldest first
+	siem *Forwarder
 }
+
 
 // Open loads the newest entries of path. A missing file is fine.
 func Open(path string) (*Log, error) {
@@ -80,9 +82,13 @@ func (l *Log) Add(e Entry) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.push(e)
+	if l.siem != nil {
+		l.siem.Send(e)
+	}
 	if l.path == "" {
 		return nil
 	}
+
 	if st, err := os.Stat(l.path); err == nil && st.Size() > MaxFileSize {
 		_ = os.Rename(l.path, l.path+".1")
 	}
@@ -129,3 +135,18 @@ func (l *Log) List(limit int, f Filter) []Entry {
 	}
 	return out
 }
+
+// AttachSIEM connects an asynchronous RFC 5424 forwarder to the activity log.
+func (l *Log) AttachSIEM(f *Forwarder) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.siem = f
+}
+
+// SIEM returns the current forwarder, if any.
+func (l *Log) SIEM() *Forwarder {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.siem
+}
+

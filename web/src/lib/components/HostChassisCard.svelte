@@ -8,14 +8,19 @@
   import Zap from '@lucide/svelte/icons/zap'
   import ExternalLink from '@lucide/svelte/icons/external-link'
   import Wrench from '@lucide/svelte/icons/wrench'
-  import { ent, type Chassis, type Sensor } from '../enterprise'
+  import Layers from '@lucide/svelte/icons/layers'
+  import { ent, type Chassis, type Sensor, type KSMInfo } from '../enterprise'
+  import { formatBytes } from '../format'
   import { cluster } from '../cluster.svelte'
   import { session } from '../session.svelte'
+  import { toasts } from '../toast.svelte'
   import EvacuateDialog from './EvacuateDialog.svelte'
 
   let { hostname }: { hostname: string } = $props()
 
   let c = $state<Chassis | null>(null)
+  let ksm = $state<KSMInfo | null>(null)
+  let ksmBusy = $state(false)
   let unavailable = $state(false)
   let evacuating = $state(false)
   let showAll = $state(false)
@@ -26,7 +31,31 @@
     } catch {
       unavailable = true
     }
+    try {
+      ksm = await ent.ksm()
+    } catch {
+      // KSM unsupported on this host
+    }
   }
+
+  async function toggleKSM() {
+    if (!ksm || ksmBusy || !session.can('admin')) return
+    ksmBusy = true
+    try {
+      const next = !ksm.active
+      ksm = await ent.setKsm(next)
+      toasts.push({
+        kind: 'info',
+        title: next ? t('KSM Memory Deduplication enabled') : t('KSM Memory Deduplication stopped'),
+        detail: next ? t('Kernel is merging duplicate memory pages across virtual machines.') : t('Page merging suspended.'),
+      })
+    } catch (e: any) {
+      toasts.push({ kind: 'error', title: t('Failed to update KSM'), detail: e?.message })
+    } finally {
+      ksmBusy = false
+    }
+  }
+
   $effect(() => {
     void load()
     const t = setInterval(() => void load(), 10_000) // sensors change slowly
@@ -69,9 +98,22 @@
     </div>
     <div class="acts">
       {#if c?.bmc}<a class="ui-btn sm" href={c.bmc.url} target="_blank" rel="noopener noreferrer" title={t('Management controller (from the HA fence agent)')}><ExternalLink size={13} /> {t('BMC')}</a>{/if}
+      {#if ksm?.supported}
+        <button
+          class="ui-btn sm ghost"
+          class:active={ksm.active}
+          onclick={toggleKSM}
+          disabled={ksmBusy || !session.can('admin')}
+          title={session.can('admin') ? t('Toggle Kernel Samepage Merging memory deduplication') : session.why('admin')}
+        >
+          <Layers size={13} />
+          {ksm.active ? t('KSM: {saved} saved', { saved: formatBytes(ksm.savedBytes) }) : t('KSM: Off')}
+        </button>
+      {/if}
       {#if c?.sensors.length}<button class="ui-btn sm ghost" onclick={() => (showAll = !showAll)}>{showAll ? 'Hide sensors' : t('All sensors')}</button>{/if}
       {#if cluster.clustered && session.can('admin')}<button class="ui-btn sm" onclick={() => (evacuating = true)}><Wrench size={13} /> {t('Maintenance…')}</button>{/if}
     </div>
+
     {#if showAll && c}
       <div class="sensors mono">
         {#each c.sensors as s, i (i)}
@@ -94,6 +136,7 @@
   .r.warn, .sensors .warn { color: var(--warn); }
   .r.danger, .sensors .danger { color: var(--danger); }
   .acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .acts .active { color: var(--accent, #6366f1); border-color: var(--accent, #6366f1); }
   .sensors { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px 16px; font-size: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
   .muted { color: var(--text-2); }
   .small { font-size: 11px; }

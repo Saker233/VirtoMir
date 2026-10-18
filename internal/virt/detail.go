@@ -36,12 +36,14 @@ type SystemInfo struct {
 	BootOrder  []string `json:"bootOrder"`
 	BootMenu   bool     `json:"bootMenu"`
 	Emulator   string   `json:"emulator,omitempty"`
-	Clock      string   `json:"clock,omitempty"`
-	Features   []string `json:"features"`
-	OnPoweroff string   `json:"onPoweroff,omitempty"`
-	OnReboot   string   `json:"onReboot,omitempty"`
-	OnCrash    string   `json:"onCrash,omitempty"`
+	Clock          string   `json:"clock,omitempty"`
+	Features       []string `json:"features"`
+	LaunchSecurity string   `json:"launchSecurity,omitempty"` // sev, sev-snp, tdx, s390-pv
+	OnPoweroff     string   `json:"onPoweroff,omitempty"`
+	OnReboot       string   `json:"onReboot,omitempty"`
+	OnCrash        string   `json:"onCrash,omitempty"`
 }
+
 
 type CPUInfo struct {
 	Mode      string `json:"mode"` // host-passthrough, host-model, custom, maximum
@@ -97,8 +99,21 @@ type Device struct {
 	Addresses       []string `json:"addresses,omitempty"`
 
 	// Identify the device for actions: a disk's guest device name, an adapter's MAC.
-	Target string `json:"target,omitempty"`
-	MAC    string `json:"mac,omitempty"`
+	Target string      `json:"target,omitempty"`
+	MAC    string      `json:"mac,omitempty"`
+	IoTune *DiskIoTune `json:"iotune,omitempty"`
+}
+
+// DiskIoTune holds I/O QoS throughput and IOPS limits (QEMU iotune).
+type DiskIoTune struct {
+	TotalBytesSec    uint64 `json:"totalBytesSec,omitempty"`
+	ReadBytesSec     uint64 `json:"readBytesSec,omitempty"`
+	WriteBytesSec    uint64 `json:"writeBytesSec,omitempty"`
+	TotalIopsSec     uint64 `json:"totalIopsSec,omitempty"`
+	ReadIopsSec      uint64 `json:"readIopsSec,omitempty"`
+	WriteIopsSec     uint64 `json:"writeIopsSec,omitempty"`
+	TotalIopsSecMax  uint64 `json:"totalIopsSecMax,omitempty"`
+	TotalBytesSecMax uint64 `json:"totalBytesSecMax,omitempty"`
 }
 
 type Prop struct {
@@ -111,6 +126,11 @@ type Prop struct {
 // missing parts are left empty, the raw XML stays available for everything else.
 func buildDetail(sum Domain, x *libvirtxml.Domain) DomainDetail {
 	d := DomainDetail{Domain: sum, Title: x.Title, Description: x.Description, Devices: []Device{}}
+	if x.Type == "lxc" || (x.OS != nil && x.OS.Type != nil && x.OS.Type.Type == "exe") {
+		d.Domain.Kind = "container"
+	} else if d.Domain.Kind == "" {
+		d.Domain.Kind = "vm"
+	}
 	d.System = systemInfo(x)
 	d.CPU = cpuInfo(x)
 	d.Memory = memoryInfo(x)
@@ -268,8 +288,24 @@ func systemInfo(x *libvirtxml.Domain) SystemInfo {
 		on("pvspinlock", f.PVSpinlock != nil && f.PVSpinlock.State != "off")
 		on("pmu", f.PMU != nil && f.PMU.State != "off")
 	}
+	if sec := x.LaunchSecurity; sec != nil {
+		switch {
+		case sec.SEVSNP != nil:
+			s.LaunchSecurity = "sev-snp"
+		case sec.SEV != nil:
+			s.LaunchSecurity = "sev"
+		case sec.TDX != nil:
+			s.LaunchSecurity = "tdx"
+		case sec.S390PV != nil:
+			s.LaunchSecurity = "s390-pv"
+		}
+		if s.LaunchSecurity != "" {
+			s.Features = append(s.Features, "confidential ("+s.LaunchSecurity+")")
+		}
+	}
 	return s
 }
+
 
 func cpuInfo(x *libvirtxml.Domain) CPUInfo {
 	c := CPUInfo{Mode: "custom"}
@@ -419,6 +455,24 @@ func diskDevice(v libvirtxml.DomainDisk) Device {
 	}
 	if v.Boot != nil {
 		dev.Boot = v.Boot.Order
+	}
+	if t := v.IOTune; t != nil {
+		dev.IoTune = &DiskIoTune{
+			TotalBytesSec:    t.TotalBytesSec,
+			ReadBytesSec:     t.ReadBytesSec,
+			WriteBytesSec:    t.WriteBytesSec,
+			TotalIopsSec:     t.TotalIopsSec,
+			ReadIopsSec:      t.ReadIopsSec,
+			WriteIopsSec:     t.WriteIopsSec,
+			TotalBytesSecMax: t.TotalBytesSecMax,
+			TotalIopsSecMax:  t.TotalIopsSecMax,
+		}
+		if t.TotalIopsSec > 0 {
+			dev.Props = append(dev.Props, Prop{"I/O limit (ceiling)", fmt.Sprintf("%d IOPS", t.TotalIopsSec), "iotune/total_iops_sec"})
+		}
+		if t.TotalBytesSec > 0 {
+			dev.Props = append(dev.Props, Prop{"Throughput limit", fmt.Sprintf("%d B/s", t.TotalBytesSec), "iotune/total_bytes_sec"})
+		}
 	}
 	dev.Props = append(dev.Props, common(v.Alias, v.Address)...)
 	return dev

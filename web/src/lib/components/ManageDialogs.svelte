@@ -1,6 +1,7 @@
 <script lang="ts" module>
-  export type ManageDialog = 'rename' | 'clone' | 'delete' | 'disk' | 'nic' | 'media' | 'resize' | 'template' | 'move' | 'hostdev' | null
+  export type ManageDialog = 'rename' | 'clone' | 'delete' | 'disk' | 'nic' | 'media' | 'resize' | 'qos' | 'template' | 'move' | 'hostdev' | null
 </script>
+
 
 <script lang="ts">
   import { t } from '../i18n.svelte'
@@ -48,6 +49,12 @@
   let nicVlan = $state<number | null>(null)
   let bridge = $state('br0')
   let growGiB = $state(0)
+  let qosTotalIops = $state(0)
+  let qosReadIops = $state(0)
+  let qosWriteIops = $state(0)
+  let qosTotalMbps = $state(0)
+  let qosReadMbps = $state(0)
+  let qosWriteMbps = $state(0)
   let hw = $state<HostHardware | null>(null)
   let hdKind = $state<'pci' | 'usb'>('pci')
   let hdPick = $state('')
@@ -66,6 +73,14 @@
     existing = ''
     isoPath = ''
     growGiB = drive?.capacityBytes ? Math.ceil(drive.capacityBytes / 2 ** 30) + 10 : 20
+    if (which === 'qos') {
+      qosTotalIops = drive?.iotune?.totalIopsSec ?? 0
+      qosReadIops = drive?.iotune?.readIopsSec ?? 0
+      qosWriteIops = drive?.iotune?.writeIopsSec ?? 0
+      qosTotalMbps = drive?.iotune?.totalBytesSec ? Math.round(drive.iotune.totalBytesSec / (1024 * 1024)) : 0
+      qosReadMbps = drive?.iotune?.readBytesSec ? Math.round(drive.iotune.readBytesSec / (1024 * 1024)) : 0
+      qosWriteMbps = drive?.iotune?.writeBytesSec ? Math.round(drive.iotune.writeBytesSec / (1024 * 1024)) : 0
+    }
     if (which === 'disk' || which === 'media') {
       void (async () => {
         try {
@@ -249,6 +264,26 @@
         kind: 'info',
         title: t('{title} is now {growGiB} GiB', { title: drive.title, growGiB: growGiB }),
         detail: t('Grow the partition and file system inside the guest to use the space (e.g. growpart + resize2fs, or Disk Management on Windows).'),
+      })
+      onchange()
+      onclose()
+    })
+
+  const saveQoS = () =>
+    run(async () => {
+      if (!drive?.target) return
+      await api.setDiskQoS(detail.uuid, drive.target, {
+        totalIopsSec: qosTotalIops,
+        readIopsSec: qosReadIops,
+        writeIopsSec: qosWriteIops,
+        totalBytesSec: qosTotalMbps > 0 ? qosTotalMbps * 1024 * 1024 : 0,
+        readBytesSec: qosReadMbps > 0 ? qosReadMbps * 1024 * 1024 : 0,
+        writeBytesSec: qosWriteMbps > 0 ? qosWriteMbps * 1024 * 1024 : 0,
+      })
+      toasts.push({
+        kind: 'info',
+        title: t('Storage QoS updated for {title}', { title: drive.title }),
+        detail: t('Limits applied to QEMU block device and written to configuration.'),
       })
       onchange()
       onclose()
@@ -548,6 +583,47 @@
     <button class="ui-btn primary" form="grow" disabled={busy || growGiB <= currentGiB}>{busy ? 'Growing…' : t('Grow disk')}</button>
   {/snippet}
 </Dialog>
+
+<Dialog open={which === 'qos'} title={t('Storage QoS & SLA: {v}', { v: drive?.title ?? 'Disk' })} subtitle={t('Limit IOPS and throughput to prevent noisy-neighbor starvation.')} {onclose}>
+  <form id="qos" class="form" onsubmit={(e) => (e.preventDefault(), saveQoS())}>
+    <div class="row">
+      <label class="ui-field">
+        <span class="label">{t('Total IOPS Limit')} <span class="muted">{t('(0 = unlimited)')}</span></span>
+        <input class="ui-input" type="number" min="0" max="1000000" bind:value={qosTotalIops} placeholder="0" />
+      </label>
+      <label class="ui-field">
+        <span class="label">{t('Total Bandwidth (MB/s)')} <span class="muted">{t('(0 = unlimited)')}</span></span>
+        <input class="ui-input" type="number" min="0" max="100000" bind:value={qosTotalMbps} placeholder="0" />
+      </label>
+    </div>
+    <div class="row">
+      <label class="ui-field">
+        <span class="label">{t('Read IOPS')}</span>
+        <input class="ui-input" type="number" min="0" max="1000000" bind:value={qosReadIops} />
+      </label>
+      <label class="ui-field">
+        <span class="label">{t('Write IOPS')}</span>
+        <input class="ui-input" type="number" min="0" max="1000000" bind:value={qosWriteIops} />
+      </label>
+    </div>
+    <div class="row">
+      <label class="ui-field">
+        <span class="label">{t('Read Bandwidth (MB/s)')}</span>
+        <input class="ui-input" type="number" min="0" max="100000" bind:value={qosReadMbps} />
+      </label>
+      <label class="ui-field">
+        <span class="label">{t('Write Bandwidth (MB/s)')}</span>
+        <input class="ui-input" type="number" min="0" max="100000" bind:value={qosWriteMbps} />
+      </label>
+    </div>
+    {#if error}<div class="ui-error-box">{error}</div>{/if}
+  </form>
+  {#snippet footer()}
+    <button class="ui-btn ghost" onclick={onclose}>{t('Cancel')}</button>
+    <button class="ui-btn primary" form="qos" disabled={busy}>{busy ? t('Applying…') : t('Apply QoS Limits')}</button>
+  {/snippet}
+</Dialog>
+
 
 <Dialog open={which === 'media'} title={t('{v}: media', { v: drive?.title ?? 'Drive' })} subtitle={drive?.summary} {onclose}>
   <div class="form">

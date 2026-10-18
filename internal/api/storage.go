@@ -16,6 +16,11 @@ func (s *Server) storageRoutes(mux *routeMux) {
 	mux.HandleFunc("POST /api/v1/storage/pools/{pool}/volumes", s.createVolume)
 	mux.HandleFunc("DELETE /api/v1/storage/pools/{pool}/volumes/{vol}", s.deleteVolume)
 	mux.HandleFunc("POST /api/v1/storage/pools/{pool}/upload", s.upload)
+
+	mux.HandleFunc("GET /api/v1/storage/zfs/replications", s.listZFSReplications)
+	mux.HandleFunc("POST /api/v1/storage/zfs/replications", s.createZFSReplication)
+	mux.HandleFunc("DELETE /api/v1/storage/zfs/replications/{id}", s.deleteZFSReplication)
+	mux.HandleFunc("POST /api/v1/storage/zfs/replications/{id}/sync", s.syncZFSReplication)
 }
 
 func (s *Server) listPools(w http.ResponseWriter, _ *http.Request) {
@@ -110,4 +115,41 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusCreated, v)
+}
+
+func (s *Server) listZFSReplications(w http.ResponseWriter, _ *http.Request) {
+	tasks := s.zfsRep.List()
+	s.writeJSON(w, http.StatusOK, map[string]any{"replications": tasks})
+}
+
+func (s *Server) createZFSReplication(w http.ResponseWriter, r *http.Request) {
+	var spec virt.ZFSReplicationSpec
+	if !s.decode(w, r, &spec) {
+		return
+	}
+	st, err := s.zfsRep.Add(spec)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, st)
+}
+
+func (s *Server) deleteZFSReplication(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.zfsRep.Delete(id); err != nil {
+		s.writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) syncZFSReplication(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	st, err := s.zfsRep.SyncNow(id)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, st)
 }

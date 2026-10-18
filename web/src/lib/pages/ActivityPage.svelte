@@ -6,7 +6,10 @@
   import CircleX from '@lucide/svelte/icons/circle-x'
   import KeyRound from '@lucide/svelte/icons/key-round'
   import Download from '@lucide/svelte/icons/download'
-  import { api, errorText, type ActivityEntry } from '../api'
+  import Radio from '@lucide/svelte/icons/radio'
+  import Dialog from '../components/Dialog.svelte'
+  import { toasts } from '../toast.svelte'
+  import { api, errorText, type ActivityEntry, type SIEMConfig } from '../api'
   import { describe } from '../activity'
   import { live } from '../live.svelte'
   import { machineHref, router } from '../router.svelte'
@@ -23,6 +26,59 @@
   let error = $state('')
   let failedOnly = $state(false)
   let user = $state('')
+
+  let siemOpen = $state(false)
+  let siemBusy = $state(false)
+  let siemError = $state('')
+  let siemEnabled = $state(false)
+  let siemTarget = $state('udp://')
+  let siemFacility = $state(1)
+  let siemTag = $state('virtomir')
+  let siemHostname = $state('')
+  let siemTLSInsecure = $state(false)
+
+  async function openSIEM() {
+    siemError = ''
+    try {
+      const cfg = await api.siemConfig()
+      siemEnabled = cfg.enabled
+      siemTarget = cfg.target || 'udp://'
+      siemFacility = cfg.facility || 1
+      siemTag = cfg.tag || 'virtomir'
+      siemHostname = cfg.hostname || ''
+      siemTLSInsecure = !!cfg.tlsInsecure
+      siemOpen = true
+    } catch (e) {
+      siemError = errorText(e)
+      siemOpen = true
+    }
+  }
+
+  async function saveSIEM() {
+    siemBusy = true
+    siemError = ''
+    try {
+      await api.saveSiemConfig({
+        enabled: siemEnabled,
+        target: siemTarget.trim(),
+        facility: Number(siemFacility),
+        tag: siemTag.trim() || 'virtomir',
+        hostname: siemHostname.trim(),
+        tlsInsecure: siemTLSInsecure,
+      })
+      toasts.push({
+        kind: 'info',
+        title: t('SIEM / Syslog forwarding updated'),
+        detail: siemEnabled ? t('Audit entries are now streamed via RFC 5424 to {target}', { target: siemTarget }) : t('Syslog forwarding disabled.'),
+      })
+      siemOpen = false
+    } catch (e) {
+      siemError = errorText(e)
+    } finally {
+      siemBusy = false
+    }
+  }
+
 
   async function load() {
     try {
@@ -120,7 +176,11 @@
     <label class="ui-switch"><input type="checkbox" bind:checked={failedOnly} /> {t('Failed only')}</label>
     <button class="ui-btn ghost" onclick={load} title={t('Reload')}><RefreshCw size={15} /></button>
     <button class="ui-btn" disabled={!entries?.length} onclick={exportCSV} title={t('Download what is listed as a CSV file')}><Download size={15} /> {t('Export')}</button>
+    {#if session.can('admin')}
+      <button class="ui-btn" onclick={openSIEM} title={t('Configure remote SIEM / Syslog forwarding')}><Radio size={15} /> {t('SIEM / Syslog…')}</button>
+    {/if}
   </div>
+
 </header>
 
 {#if !session.can('admin')}
@@ -161,6 +221,61 @@
     </section>
   {/each}
 {/if}
+
+<Dialog open={siemOpen} title={t('Remote SIEM / Syslog Forwarding')} subtitle={t('Stream audit trail in RFC 5424 syslog format to enterprise SIEM (Splunk, Graylog, ELK).')} onclose={() => (siemOpen = false)}>
+  <form id="siem" class="form" onsubmit={(e) => (e.preventDefault(), saveSIEM())}>
+    <label class="ui-switch">
+      <input type="checkbox" bind:checked={siemEnabled} />
+      <span>{t('Enable live SIEM log streaming')}</span>
+    </label>
+
+    <label class="ui-field">
+      <span class="label">{t('Target Collector URI')}</span>
+      <input class="ui-input mono" bind:value={siemTarget} placeholder="udp://siem.corp.internal:514" />
+      <span class="hint">{t('Supported schemes: udp://, tcp://, tls://')}</span>
+    </label>
+
+    <div class="row">
+      <label class="ui-field">
+        <span class="label">{t('Syslog Facility')}</span>
+        <select class="ui-input" bind:value={siemFacility}>
+          <option value={1}>{t('1 — User-Level (default)')}</option>
+          <option value={16}>{t('16 — Local0')}</option>
+          <option value={17}>{t('17 — Local1')}</option>
+          <option value={18}>{t('18 — Local2')}</option>
+          <option value={19}>{t('19 — Local3')}</option>
+          <option value={20}>{t('20 — Local4')}</option>
+          <option value={21}>{t('21 — Local5')}</option>
+          <option value={22}>{t('22 — Local6')}</option>
+          <option value={23}>{t('23 — Local7')}</option>
+        </select>
+      </label>
+      <label class="ui-field">
+        <span class="label">{t('Syslog Tag (App-Name)')}</span>
+        <input class="ui-input mono" bind:value={siemTag} placeholder="virtomir" />
+      </label>
+    </div>
+
+    <label class="ui-field">
+      <span class="label">{t('Hostname identifier')} <span class="muted">{t('(optional)')}</span></span>
+      <input class="ui-input mono" bind:value={siemHostname} placeholder={t('default: host system name')} />
+    </label>
+
+    {#if siemTarget.startsWith('tls://')}
+      <label class="ui-switch">
+        <input type="checkbox" bind:checked={siemTLSInsecure} />
+        <span>{t('Skip TLS certificate verification (insecure/self-signed)')}</span>
+      </label>
+    {/if}
+
+    {#if siemError}<div class="ui-error-box">{siemError}</div>{/if}
+  </form>
+  {#snippet footer()}
+    <button class="ui-btn ghost" onclick={() => (siemOpen = false)}>{t('Cancel')}</button>
+    <button class="ui-btn primary" form="siem" disabled={siemBusy}>{siemBusy ? t('Saving…') : t('Save Configuration')}</button>
+  {/snippet}
+</Dialog>
+
 
 <style>
   .host-chip {

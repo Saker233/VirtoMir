@@ -33,6 +33,7 @@
 
   let name = $state('')
   let nameTouched = $state(false)
+  let kind = $state<'vm' | 'container'>('vm')
   let os = $state<OS>('linux')
   let vcpus = $state(2)
   let memGiB = $state(2)
@@ -53,6 +54,7 @@
   let firmware = $state<'uefi' | 'bios'>('uefi')
   let secureBoot = $state(false)
   let tpm = $state(false)
+  let confidential = $state<'' | 'sev' | 'sev-snp' | 'tdx'>('')
   let start = $state(true)
   let advanced = $state(false)
 
@@ -149,12 +151,14 @@
   // The request exactly as sent (also shown as code next to the form).
   let spec = $derived<CreateSpec>({
     name,
+    kind,
     os,
     vcpus,
     memoryMiB: Math.round(memGiB * 1024),
     firmware,
-    secureBoot: firmware === 'uefi' && secureBoot,
-    tpm,
+    secureBoot: kind === 'vm' && firmware === 'uefi' && secureBoot,
+    tpm: kind === 'vm' && tpm,
+    confidential: kind === 'vm' ? confidential || undefined : undefined,
     pool,
     diskGiB: source === 'cloud' ? Math.max(diskGiB, baseCapGiB) : source === 'iso' && withDisk ? diskGiB : 0,
     provisioning: (source === 'iso' && withDisk) || source === 'cloud' ? provisioning : undefined,
@@ -232,15 +236,25 @@
         {#if name && !nameValid}<span class="error">{t('Letters, digits, \'.\', \'_\', \'+\' and \'-\', starting with a letter or digit.')}</span>
         {:else if nameTaken}<span class="error">{t('A machine with this name already exists.')}</span>{/if}
       </label>
-      <div class="choices" role="radiogroup" aria-label={t('Operating system')}>
-        {#each OSES as o (o.key)}
-          <label class="choice" class:on={os === o.key}>
-            <input type="radio" name="os" checked={os === o.key} onchange={() => pickOS(o.key)} />
-            <strong>{o.label}</strong>
-            <span>{o.hint}</span>
-          </label>
-        {/each}
+      <div class="seg" role="radiogroup" aria-label={t('Instance type')}>
+        <label class:on={kind === 'vm'}><input type="radio" bind:group={kind} value="vm" /> {t('Virtual Machine (KVM)')}</label>
+        <label class:on={kind === 'container'}><input type="radio" bind:group={kind} value="container" /> {t('System Container (LXC)')}</label>
       </div>
+      {#if kind === 'container'}
+        <p class="hint-note">
+          {t('High-grade lightweight system container sharing the Linux kernel via libvirt-lxc, with instant boot and bare-metal density.')}
+        </p>
+      {:else}
+        <div class="choices" role="radiogroup" aria-label={t('Operating system')}>
+          {#each OSES as o (o.key)}
+            <label class="choice" class:on={os === o.key}>
+              <input type="radio" name="os" checked={os === o.key} onchange={() => pickOS(o.key)} />
+              <strong>{o.label}</strong>
+              <span>{o.hint}</span>
+            </label>
+          {/each}
+        </div>
+      {/if}
     </section>
 
     <section class="ui-panel step">
@@ -402,33 +416,45 @@
       {/if}
     </section>
 
-    <section class="ui-panel step">
-      <button type="button" class="adv" aria-expanded={advanced} onclick={() => (advanced = !advanced)}>
-        <ShieldCheck size={16} /> {t('Firmware and security')}
-        <span class="adv-sum">{firmware === 'uefi' ? 'UEFI' : 'BIOS'}{secureBoot && firmware === 'uefi' ? ' · Secure Boot' : ''}{tpm ? ' · TPM 2.0' : ''}</span>
-        <span class="chev" class:up={advanced}><ChevronDown size={16} /></span>
-      </button>
-      {#if advanced}
-        <div class="adv-body">
-          <div class="two">
-            <label class="ui-field">
-              <span class="label">{t('Firmware')}</span>
-              <select class="ui-input" bind:value={firmware}>
-                <option value="uefi">{t('UEFI (modern, recommended)')}</option>
-                <option value="bios">{t('BIOS (legacy)')}</option>
-              </select>
-            </label>
+    {#if kind === 'vm'}
+      <section class="ui-panel step">
+        <button type="button" class="adv" aria-expanded={advanced} onclick={() => (advanced = !advanced)}>
+          <ShieldCheck size={16} /> {t('Firmware and security')}
+          <span class="adv-sum">{firmware === 'uefi' ? 'UEFI' : 'BIOS'}{secureBoot && firmware === 'uefi' ? ' · Secure Boot' : ''}{tpm ? ' · TPM 2.0' : ''}{confidential ? ` · ${confidential.toUpperCase()}` : ''}</span>
+          <span class="chev" class:up={advanced}><ChevronDown size={16} /></span>
+        </button>
+        {#if advanced}
+          <div class="adv-body">
+            <div class="two">
+              <label class="ui-field">
+                <span class="label">{t('Firmware')}</span>
+                <select class="ui-input" bind:value={firmware}>
+                  <option value="uefi">{t('UEFI (modern, recommended)')}</option>
+                  <option value="bios">{t('BIOS (legacy)')}</option>
+                </select>
+              </label>
+              <label class="ui-field">
+                <span class="label">{t('Confidential Computing')}</span>
+                <select class="ui-input" bind:value={confidential}>
+                  <option value="">{t('None (standard VM)')}</option>
+                  <option value="sev">{t('AMD SEV (Secure Encrypted Virtualization)')}</option>
+                  <option value="sev-snp">{t('AMD SEV-SNP (Secure Nested Paging)')}</option>
+                  <option value="tdx">{t('Intel TDX (Trust Domain Extensions)')}</option>
+                </select>
+              </label>
+            </div>
+            <label class="ui-switch"><input type="checkbox" bind:checked={secureBoot} disabled={firmware === 'bios'} /> {t('Secure Boot')}</label>
+            <label class="ui-switch"><input type="checkbox" bind:checked={tpm} /> {t('TPM 2.0 (required by Windows 11)')}</label>
           </div>
-          <label class="ui-switch"><input type="checkbox" bind:checked={secureBoot} disabled={firmware === 'bios'} /> {t('Secure Boot')}</label>
-          <label class="ui-switch"><input type="checkbox" bind:checked={tpm} /> {t('TPM 2.0 (required by Windows 11)')}</label>
-        </div>
-      {/if}
-    </section>
+        {/if}
+      </section>
+    {/if}
   </div>
 
   <aside class="summary ui-panel">
     <h2>{t('Summary')}</h2>
     <dl>
+      <dt>{t('Type')}</dt><dd>{kind === 'container' ? t('System Container (LXC)') : t('Virtual Machine (KVM)')}</dd>
       <dt>{t('Name')}</dt><dd>{name || '—'}</dd>
       <dt>{t('System')}</dt><dd>{OSES.find((o) => o.key === os)?.label}</dd>
       <dt>{t('Source')}</dt><dd class="mono small">{(source === 'iso' ? iso : source === 'cloud' ? baseImage : existingDisk).split('/').pop() || (source === 'iso' && withDisk ? 'Empty disk' : '—')}</dd>
