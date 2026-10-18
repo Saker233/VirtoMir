@@ -20,6 +20,7 @@
   import NewMachine from './lib/pages/NewMachine.svelte'
   import StoragePage from './lib/pages/StoragePage.svelte'
   import NetworksPage from './lib/pages/NetworksPage.svelte'
+  import ProjectsPage from './lib/pages/ProjectsPage.svelte'
   import NotFound from './lib/pages/NotFound.svelte'
   import ActivityPage from './lib/pages/ActivityPage.svelte'
   import AccountPage from './lib/pages/AccountPage.svelte'
@@ -149,6 +150,8 @@
           <ReportsPage />
         {:else if route.name === 'cluster'}
           <ClusterPage />
+        {:else if route.name === 'projects'}
+          <ProjectsPage />
         {:else}
           <NotFound />
         {/if}
