@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/onurbaydas/virtomir/internal/drs"
@@ -481,4 +482,92 @@ func stringsContains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestApplyDRSRecommendation_StaleRecommendationBlocked(t *testing.T) {
+	a := newTestNode(t, "alpha", []virt.Domain{
+		{UUID: "vm-1", Name: "vm-1", State: virt.StateRunning},
+		{UUID: "vm-2", Name: "vm-2", State: virt.StateRunning},
+	})
+	b := newTestNode(t, "beta", []virt.Domain{})
+	joinNodes(t, a, b)
+
+	drsEng, err := drs.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.api.drs = drsEng
+
+	snapA := live.Snapshot{
+		Domains: []live.DomainLive{
+			{Domain: virt.Domain{UUID: "vm-1", Name: "vm-1", State: virt.StateRunning}},
+			{Domain: virt.Domain{UUID: "vm-2", Name: "vm-2", State: virt.StateRunning}},
+		},
+	}
+	rawA, _ := json.Marshal(snapA)
+	a.lv.backlog = [][]byte{rawA}
+
+	snapB := live.Snapshot{
+		Domains: []live.DomainLive{},
+	}
+	rawB, _ := json.Marshal(snapB)
+	b.lv.backlog = [][]byte{rawB}
+
+	admin := a.signIn(t, "onur")
+
+	// 1. Must anti-affinity rule between vm-1 and vm-2 created via API, replicating across nodes
+	rule1Body := `{"name":"Separate Web & DB","kind":"vm_anti_affinity","enabled":true,"strength":"must","domains":["vm-1","vm-2"]}`
+	resp, body := admin.req(http.MethodPost, "/api/v1/placement/rules", rule1Body, "Origin", a.url)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create anti-affinity rule: status %d, body: %s", resp.StatusCode, body)
+	}
+
+	// Verify rule replication to both nodes
+	if len(a.placement.Rules()) != 1 || len(b.placement.Rules()) != 1 {
+		t.Fatalf("expected rule replicated to both nodes, alpha has %d, beta has %d", len(a.placement.Rules()), len(b.placement.Rules()))
+	}
+
+	// Get recommendations: anti-affinity violation produces a valid recommendation to migrate vm-2 to beta
+	resp, body = admin.req(http.MethodGet, "/api/v1/cluster/drs", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get drs status: %d, body: %s", resp.StatusCode, body)
+	}
+
+	var status drs.Status
+	if err := json.Unmarshal([]byte(body), &status); err != nil {
+		t.Fatalf("unmarshal drs status: %v", err)
+	}
+
+	if len(status.Recommendations) == 0 {
+		t.Fatal("expected recommendation from drs")
+	}
+
+	rec := status.Recommendations[0]
+	if rec.DomainUUID != "vm-2" || rec.TargetHostID != b.store.SelfID() {
+		t.Fatalf("unexpected recommendation: %+v", rec)
+	}
+
+	// 2. Cluster state changes: new exclude rule for vm-2 on beta is created, replicating to both nodes
+	rule2Body := fmt.Sprintf(`{"name":"vm-2 excluded from beta","kind":"vm_host","enabled":true,"strength":"must","domains":["vm-2"],"hosts":["%s"],"exclude":true}`, b.store.SelfID())
+	resp, body = admin.req(http.MethodPost, "/api/v1/placement/rules", rule2Body, "Origin", a.url)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create exclude rule: status %d, body: %s", resp.StatusCode, body)
+	}
+
+	if len(a.placement.Rules()) != 2 || len(b.placement.Rules()) != 2 {
+		t.Fatalf("expected both rules replicated to both nodes, alpha has %d, beta has %d", len(a.placement.Rules()), len(b.placement.Rules()))
+	}
+
+	// Attempt to apply the earlier recommendation -> must fail with 409 Conflict because target host now violates hard constraint (stale recommendation)
+	applyResp, applyBody := admin.req(http.MethodPost, "/api/v1/cluster/drs/recommendations/"+rec.ID+"/apply", "", "Origin", a.url)
+	if applyResp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict, got %d: %s", applyResp.StatusCode, applyBody)
+	}
+
+	if !strings.Contains(applyBody, "recommendation is stale") {
+		t.Errorf("expected 'recommendation is stale' in error, got: %s", applyBody)
+	}
+	if len(a.api.jobs.List()) != 0 {
+		t.Errorf("expected no job started for stale recommendation, got %d", len(a.api.jobs.List()))
+	}
 }

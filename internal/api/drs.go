@@ -54,7 +54,7 @@ func (s *Server) getDRS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hosts, domains := s.collectClusterPlacements(r.Context(), identity(r))
-	status := s.drs.Evaluate(r.Context(), hosts, domains)
+	status := s.drs.Evaluate(r.Context(), hosts, domains, s.placementView())
 	if s.placement != nil {
 		status.Rules = placementRulesToDRS(s.placement.Rules())
 	} else {
@@ -234,7 +234,7 @@ func (s *Server) applyDRSRecommendation(w http.ResponseWriter, r *http.Request) 
 	}
 
 	hosts, domains := s.collectClusterPlacements(r.Context(), identity(r))
-	status := s.drs.Evaluate(r.Context(), hosts, domains)
+	status := s.drs.Evaluate(r.Context(), hosts, domains, s.placementView())
 
 	recID := r.PathValue("id")
 	var rec *drs.Recommendation
@@ -245,9 +245,43 @@ func (s *Server) applyDRSRecommendation(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	if rec == nil {
+		if s.placement != nil {
+			vms := drs.VMRefs(domains)
+			for _, d := range domains {
+				if d.State != "running" || d.HostID == "" {
+					continue
+				}
+				for _, h := range hosts {
+					if !h.Reachable || h.ID == d.HostID {
+						continue
+					}
+					if drs.RecommendationID(d.UUID, d.HostID, h.ID) == recID {
+						hard, _ := placement.Check(s.placement.Rules(), vms, d.UUID, h.ID)
+						if len(hard) > 0 {
+							s.writeJSON(w, http.StatusConflict, map[string]string{
+								"error": "recommendation is stale: " + strings.Join(hard, "; "),
+							})
+							return
+						}
+					}
+				}
+			}
+		}
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "recommendation not found or already applied"})
 		return
 	}
+
+	if s.placement != nil {
+		vms := drs.VMRefs(domains)
+		hard, _ := placement.Check(s.placement.Rules(), vms, rec.DomainUUID, rec.TargetHostID)
+		if len(hard) > 0 {
+			s.writeJSON(w, http.StatusConflict, map[string]string{
+				"error": "recommendation is stale: " + strings.Join(hard, "; "),
+			})
+			return
+		}
+	}
+
 	s.applyRecommendation(r.Context(), w, *rec, identity(r))
 }
 
@@ -327,11 +361,21 @@ func (s *Server) autoBalance(ctx context.Context, moved map[string]time.Time, no
 		}
 	}
 	hosts, domains := s.collectClusterPlacements(ctx, drsIdentity)
-	recs := s.drs.Evaluate(ctx, hosts, domains).Recommendations
+	recs := s.drs.Evaluate(ctx, hosts, domains, s.placementView()).Recommendations
 	slices.SortStableFunc(recs, func(a, b drs.Recommendation) int { return b.Priority - a.Priority })
+	var vms []placement.VMRef
+	if s.placement != nil {
+		vms = drs.VMRefs(domains)
+	}
 	for _, rec := range recs {
 		if rec.SourceHostID != s.cluster.SelfID() || now.Sub(moved[rec.DomainUUID]) < drsCooldown {
 			continue
+		}
+		if s.placement != nil {
+			hard, _ := placement.Check(s.placement.Rules(), vms, rec.DomainUUID, rec.TargetHostID)
+			if len(hard) > 0 {
+				continue
+			}
 		}
 		moved[rec.DomainUUID] = now
 		rw := &statusRecorder{ResponseWriter: discard{}, status: http.StatusOK}
@@ -342,6 +386,13 @@ func (s *Server) autoBalance(ctx context.Context, moved map[string]time.Time, no
 		})
 		return
 	}
+}
+
+func (s *Server) placementView() placement.View {
+	if s.placement == nil {
+		return placement.View{}
+	}
+	return s.placement.View()
 }
 
 // drsIdentity is who automatic DRS acts as.
