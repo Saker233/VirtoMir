@@ -19,6 +19,9 @@ func TestTokens(t *testing.T) {
 	if _, _, err := ts.Create(onur, "too strong", Admin, 0); !errors.Is(err, ErrTokenRole) {
 		t.Errorf("token above owner's role must be refused: %v", err)
 	}
+	if _, _, err := ts.Create(onur, "sub-viewer", Member, 0); !errors.Is(err, ErrTokenRole) {
+		t.Errorf("token with Member role must be refused: %v", err)
+	}
 	secret, tok, err := ts.Create(onur, "ci", Viewer, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +73,7 @@ func TestTokenExpiry(t *testing.T) {
 }
 
 func TestParseRole(t *testing.T) {
-	for _, s := range []string{"viewer", "operator", "admin"} {
+	for _, s := range []string{"member", "viewer", "operator", "admin"} {
 		r, err := ParseRole(s)
 		if err != nil || r.String() != s {
 			t.Errorf("%s → %v %v", s, r, err)
@@ -79,7 +82,7 @@ func TestParseRole(t *testing.T) {
 	if _, err := ParseRole("none"); err == nil {
 		t.Error("none is not a grantable role")
 	}
-	if !(Viewer < Operator && Operator < Admin) {
+	if !(NoAccess < Member && Member < Viewer && Viewer < Operator && Operator < Admin) {
 		t.Error("role order")
 	}
 }

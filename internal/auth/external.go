@@ -105,8 +105,9 @@ type ExternalConfig struct {
 // externalState is the file: the configuration plus the last role each external user had,
 // so their API tokens keep the right role between sign-ins and restarts.
 type externalState struct {
-	Config ExternalConfig  `json:"config"`
-	Roles  map[string]Role `json:"roles"`
+	Config ExternalConfig      `json:"config"`
+	Roles  map[string]Role     `json:"roles"`
+	Groups map[string][]string `json:"groups,omitempty"`
 }
 
 // External holds the external sign-in configuration (in -state-dir/signin.json, 0600).
@@ -116,10 +117,19 @@ type External struct {
 	st   externalState
 	// ldapAuth is replaceable in tests.
 	ldapAuth func(ctx context.Context, cfg LDAPConfig, user, password string) ([]string, error)
+	// roleFallback can decide a role when group mapping returns NoAccess (e.g. project membership).
+	roleFallback func(user string, groups []string) Role
+}
+
+// SetRoleFallback sets a fallback function when LDAP/OIDC groups do not map to a global role.
+func (e *External) SetRoleFallback(fn func(user string, groups []string) Role) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.roleFallback = fn
 }
 
 func OpenExternal(path string) (*External, error) {
-	e := &External{path: path, st: externalState{Roles: map[string]Role{}}, ldapAuth: ldapAuthenticate}
+	e := &External{path: path, st: externalState{Roles: map[string]Role{}, Groups: map[string][]string{}}, ldapAuth: ldapAuthenticate}
 	e.st.Config.LDAP.UserFilter = "(uid=%s)"
 	e.st.Config.LDAP.GroupAttr = "memberOf"
 	e.st.Config.OIDC.UsernameClaim = "preferred_username"
@@ -137,6 +147,9 @@ func OpenExternal(path string) (*External, error) {
 	}
 	if e.st.Roles == nil {
 		e.st.Roles = map[string]Role{}
+	}
+	if e.st.Groups == nil {
+		e.st.Groups = map[string][]string{}
 	}
 	return e, nil
 }
@@ -222,22 +235,63 @@ func loopbackURL(u string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// remember keeps an external user's role from their last sign-in.
-func (e *External) remember(name string, r Role) {
+// RememberUser keeps an external user's role and groups from their last sign-in.
+// Global roles (Viewer, Operator, Admin) are persisted in Roles; project-derived
+// Member roles are not persisted, so removing a user from a project revokes access immediately.
+func (e *External) RememberUser(name string, r Role, groups []string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.st.Roles[name] == r {
-		return
+	changed := false
+	if len(groups) > 0 {
+		if e.st.Groups == nil {
+			e.st.Groups = map[string][]string{}
+		}
+		if !slices.Equal(e.st.Groups[name], groups) {
+			e.st.Groups[name] = slices.Clone(groups)
+			changed = true
+		}
 	}
-	e.st.Roles[name] = r
-	_ = e.saveLocked()
+	if r <= Member {
+		if _, ok := e.st.Roles[name]; ok {
+			delete(e.st.Roles, name)
+			changed = true
+		}
+	} else {
+		if e.st.Roles[name] != r {
+			e.st.Roles[name] = r
+			changed = true
+		}
+	}
+	if changed {
+		_ = e.saveLocked()
+	}
 }
 
-// RoleOf is an external user's role as of their last sign-in.
+// Remember keeps an external user's role from their last sign-in.
+func (e *External) Remember(name string, r Role) {
+	e.RememberUser(name, r, nil)
+}
+
+func (e *External) remember(name string, r Role) {
+	e.Remember(name, r)
+}
+
+// RoleOf is an external user's role: persistent global role if set, otherwise
+// evaluated dynamically against roleFallback using the user's remembered groups.
 func (e *External) RoleOf(name string) Role {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.st.Roles[name]
+	if r, ok := e.st.Roles[name]; ok && r >= Viewer {
+		return r
+	}
+	if e.roleFallback != nil {
+		var groups []string
+		if e.st.Groups != nil {
+			groups = e.st.Groups[name]
+		}
+		return e.roleFallback(name, groups)
+	}
+	return NoAccess
 }
 
 // IsExternal reports whether a user name belongs to LDAP or SSO.
@@ -256,8 +310,15 @@ func (e *External) loginLDAP(ctx context.Context, user, password string) (Identi
 	if err != nil {
 		return Identity{}, err
 	}
-	id := Identity{Name: user + SuffixLDAP, Role: cfg.Roles.RoleFor(groups)}
-	e.remember(id.Name, id.Role)
+	role := cfg.Roles.RoleFor(groups)
+	if role == NoAccess && e.roleFallback != nil {
+		role = e.roleFallback(user+SuffixLDAP, groups)
+		if role == NoAccess {
+			role = e.roleFallback(user, groups)
+		}
+	}
+	id := Identity{Name: user + SuffixLDAP, Role: role}
+	e.RememberUser(id.Name, id.Role, groups)
 	return id, nil
 }
 
@@ -311,8 +372,16 @@ func (e *External) Methods() (ldapOn bool, oidcOn bool, oidcLabel string) {
 // SSOIdentity turns verified OIDC claims into an identity (user@sso) and remembers its role.
 func (e *External) SSOIdentity(username string, groups []string) Identity {
 	cfg := e.Config(false).OIDC
-	id := Identity{Name: username + SuffixSSO, Role: cfg.Roles.RoleFor(groups)}
-	e.remember(id.Name, id.Role)
+	name := username + SuffixSSO
+	role := cfg.Roles.RoleFor(groups)
+	if role == NoAccess && e.roleFallback != nil {
+		role = e.roleFallback(name, groups)
+		if role == NoAccess {
+			role = e.roleFallback(username, groups)
+		}
+	}
+	id := Identity{Name: name, Role: role}
+	e.RememberUser(id.Name, id.Role, groups)
 	return id
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/project"
 	"github.com/onurbaydas/virtomir/internal/respool"
 	"github.com/onurbaydas/virtomir/internal/virt"
@@ -37,11 +38,28 @@ func (s *Server) domainRoutes(mux *routeMux) {
 	mux.HandleFunc("DELETE /api/v1/domains/{uuid}/snapshots/{name}", s.deleteSnapshot)
 }
 
-func (s *Server) listDomains(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) listDomains(w http.ResponseWriter, r *http.Request) {
 	doms, err := s.backend.ListDomains()
 	if err != nil {
 		s.writeError(w, err)
 		return
+	}
+	id := identity(r)
+	if id.Role == auth.Member {
+		filtered := []virt.Domain{}
+		if s.projects != nil {
+			myProjects := s.projects.ProjectsFor(id.Name, s.groupsOf(id.Name))
+			allowed := make(map[string]bool, len(myProjects))
+			for _, p := range myProjects {
+				allowed[p.ID] = true
+			}
+			for _, d := range doms {
+				if d.Project != "" && allowed[d.Project] {
+					filtered = append(filtered, d)
+				}
+			}
+		}
+		doms = filtered
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"domains": doms})
 }

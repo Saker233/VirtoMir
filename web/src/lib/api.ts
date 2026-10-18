@@ -298,7 +298,7 @@ const netPath = (name: string) => `/api/v1/networks/${enc(name)}`
 
 // ---- Management API types (mirror internal/virt) ------------------------------------
 
-export type Role = 'viewer' | 'operator' | 'admin'
+export type Role = 'member' | 'viewer' | 'operator' | 'admin'
 
 export interface Session {
   mode: 'pam' | 'none'

@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -351,5 +353,196 @@ func TestProjectEffectiveRole(t *testing.T) {
 		} else if rec.Code != c.want {
 			t.Errorf("%s: %d %s, want %d", c.name, rec.Code, rec.Body, c.want)
 		}
+	}
+}
+
+type memberStubAuthn map[string]string
+
+func (m memberStubAuthn) Authenticate(_ context.Context, u, p string) error {
+	if pw, ok := m[u]; ok && pw == p {
+		return nil
+	}
+	return auth.ErrBadCredentials
+}
+
+func TestMemberRole(t *testing.T) {
+	pj, err := project.Open(filepath.Join(t.TempDir(), "projects.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []project.Project{
+		{
+			ID:      "dev",
+			Name:    "Dev",
+			Members: []project.Member{{Kind: "user", Name: "member-op", Role: "operator"}},
+			Limits:  project.Limits{Machines: 5, VCPUs: 10, MemoryMiB: 10240, DiskGiB: 100},
+		},
+		{
+			ID:      "other",
+			Name:    "Other",
+			Members: []project.Member{{Kind: "user", Name: "other-user", Role: "operator"}},
+		},
+	} {
+		if _, err := pj.Create(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	doms := []virt.Domain{
+		{UUID: "u-dev", Name: "web", Project: "dev", VCPUs: 2, MaxMemoryKiB: 2048 << 10},
+		{UUID: "u-other", Name: "db", Project: "other", VCPUs: 1, MaxMemoryKiB: 512 << 10},
+		{UUID: "u-global", Name: "global", Project: "", VCPUs: 1, MaxMemoryKiB: 512 << 10},
+	}
+	backend := &projectBackend{&fakeBackend{domains: doms}, map[string]string{}}
+	alog, _ := activity.Open("")
+
+	// Users:
+	// "view" has global Viewer role.
+	// "member-op" has NO global role (NoAccess), but is an operator in project "dev".
+	// "outsider" has NO global role (NoAccess) and is NOT in any project.
+	authn := memberStubAuthn{
+		"view":      "pw",
+		"member-op": "pw",
+		"outsider":  "pw",
+	}
+	baseRoleOf := func(u string) auth.Role {
+		if u == "view" {
+			return auth.Viewer
+		}
+		return auth.NoAccess
+	}
+	roleOf := RoleOfWithProjects(baseRoleOf, pj, nil)
+	m := auth.New(authn, roleOf)
+	h := NewServer(Options{
+		Backend:  backend,
+		Live:     &fakeLive{},
+		Auth:     m,
+		Projects: pj,
+		Activity: alog,
+		GroupsOf: func(string) []string { return nil },
+		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}).Handler()
+
+	// 1. A user with no role and no project membership is refused at sign-in (401 Unauthorized).
+	rec := do(h, "POST", "/api/v1/auth/login", `{"user":"outsider","password":"pw"}`, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("outsider login: got code %d, want 401", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "this account is not allowed to use VirtoMir") {
+		t.Errorf("outsider login error message: %s", rec.Body.String())
+	}
+
+	// 2. Member signs in successfully and gets role "member".
+	rec = do(h, "POST", "/api/v1/auth/login", `{"user":"member-op","password":"pw"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("member-op login: got code %d %s, want 200", rec.Code, rec.Body)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("member-op login: expected session cookie, got none")
+	}
+	memberCookie := cookies[0]
+
+	rec = do(h, "GET", "/api/v1/auth/session", "", memberCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("member session: %d %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"role":"member"`) {
+		t.Errorf("member session json missing '\"role\":\"member\"': %s", rec.Body.String())
+	}
+	var sess sessionInfo
+	if err := json.Unmarshal(rec.Body.Bytes(), &sess); err != nil {
+		t.Fatal(err)
+	}
+	if sess.Role != auth.Member || sess.Role.String() != "member" {
+		t.Fatalf("member session role: got %v (%q), want %v (member)", sess.Role, sess.Role.String(), auth.Member)
+	}
+
+	// 3. Member lists only own-project machines.
+	rec = do(h, "GET", "/api/v1/domains", "", memberCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("member list domains: %d %s", rec.Code, rec.Body)
+	}
+	var memberDoms struct{ Domains []virt.Domain }
+	if err := json.Unmarshal(rec.Body.Bytes(), &memberDoms); err != nil {
+		t.Fatal(err)
+	}
+	if len(memberDoms.Domains) != 1 || memberDoms.Domains[0].UUID != "u-dev" {
+		t.Fatalf("member domains list = %v, want only [u-dev]", memberDoms.Domains)
+	}
+
+	// Viewer sees all machines unchanged.
+	viewerRec := do(h, "POST", "/api/v1/auth/login", `{"user":"view","password":"pw"}`, nil)
+	viewerCookie := viewerRec.Result().Cookies()[0]
+	rec = do(h, "GET", "/api/v1/domains", "", viewerCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("viewer list domains: %d %s", rec.Code, rec.Body)
+	}
+	var viewerDoms struct{ Domains []virt.Domain }
+	if err := json.Unmarshal(rec.Body.Bytes(), &viewerDoms); err != nil {
+		t.Fatal(err)
+	}
+	if len(viewerDoms.Domains) != 3 {
+		t.Fatalf("viewer domains list count = %d, want 3", len(viewerDoms.Domains))
+	}
+
+	// 4. Verify that starting own-project machine succeeds and executes the backend action.
+	backend.lastAction = ""
+	rec = do(h, "POST", "/api/v1/domains/u-dev/actions/start", "", memberCookie)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("member starts own-project machine: got %d %s, want 202", rec.Code, rec.Body)
+	}
+	if backend.lastAction != virt.ActionStart {
+		t.Fatalf("expected lastAction = %v, got %v", virt.ActionStart, backend.lastAction)
+	}
+	backend.lastAction = ""
+
+	// 5. Table-driven access tests:
+	// Member with project operator role gets 403 on a global machine, on another project's machine,
+	// on host/storage/network endpoints and on DELETE /api/v1/projects/{id}.
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		want   int
+	}{
+		{"member cannot start global machine", "POST", "/api/v1/domains/u-global/actions/start", "", http.StatusForbidden},
+		{"member cannot start other project machine", "POST", "/api/v1/domains/u-other/actions/start", "", http.StatusForbidden},
+		{"member cannot view global machine", "GET", "/api/v1/domains/u-global", "", http.StatusForbidden},
+		{"member cannot view other project machine", "GET", "/api/v1/domains/u-other", "", http.StatusForbidden},
+		{"member views own project machine", "GET", "/api/v1/domains/u-dev", "", http.StatusOK},
+		{"member gets 403 on host endpoint", "GET", "/api/v1/host", "", http.StatusForbidden},
+		{"member gets 403 on storage endpoint", "GET", "/api/v1/storage/pools", "", http.StatusForbidden},
+		{"member gets 403 on networks endpoint", "GET", "/api/v1/networks", "", http.StatusForbidden},
+		{"member gets 403 on alerts endpoint", "GET", "/api/v1/alerts", "", http.StatusForbidden},
+		{"member gets 403 on activity endpoint", "GET", "/api/v1/activity", "", http.StatusForbidden},
+		{"member gets 403 on DELETE project", "DELETE", "/api/v1/projects/dev", "", http.StatusForbidden},
+		{"member gets 403 on DELETE other project", "DELETE", "/api/v1/projects/other", "", http.StatusForbidden},
+		{"member lists own projects", "GET", "/api/v1/projects", "", http.StatusOK},
+		{"member gets own project detail", "GET", "/api/v1/projects/dev", "", http.StatusOK},
+		{"member cannot get other project detail", "GET", "/api/v1/projects/other", "", http.StatusNotFound},
+	}
+	for _, c := range cases {
+		backend.lastAction = ""
+		rec := do(h, c.method, c.path, c.body, memberCookie)
+		if rec.Code != c.want {
+			t.Errorf("%s: %s %s = %d %s, want %d", c.name, c.method, c.path, rec.Code, rec.Body, c.want)
+		}
+		if backend.lastAction != "" {
+			t.Errorf("%s: unexpectedly triggered backend action %v", c.name, backend.lastAction)
+		}
+	}
+}
+
+func TestWriteErrorNotAllowed(t *testing.T) {
+	s := &Server{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	rec := httptest.NewRecorder()
+	s.writeError(rec, auth.ErrNotAllowed)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("writeError(ErrNotAllowed) code = %d, want 401", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "this account is not allowed to use VirtoMir") {
+		t.Errorf("writeError(ErrNotAllowed) body = %s", rec.Body.String())
 	}
 }

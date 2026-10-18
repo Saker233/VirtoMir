@@ -98,7 +98,12 @@ func run(c config, log *slog.Logger) error {
 		return fmt.Errorf("state directory: %w", err)
 	}
 
-	authMgr, err := setupAuth(c, log)
+	pjStore, err := project.Open(filepath.Join(c.stateDir, "projects.json"))
+	if err != nil {
+		log.Warn("projects store", "err", err)
+	}
+
+	authMgr, err := setupAuth(c, pjStore, log)
 	if err != nil {
 		return err
 	}
@@ -206,9 +211,7 @@ func run(c config, log *slog.Logger) error {
 	} else {
 		opts.Respools = rpStore
 	}
-	if pjStore, err := project.Open(filepath.Join(c.stateDir, "projects.json")); err != nil {
-		log.Warn("projects store", "err", err)
-	} else {
+	if pjStore != nil {
 		opts.Projects = pjStore
 	}
 	if zr, err := zfsrep.Open(filepath.Join(c.stateDir, "zfs-replication.json"), zfsrep.Exec{}, log); err != nil {
@@ -317,7 +320,7 @@ func saveHistory(ctx context.Context, h *history.Store, log *slog.Logger) {
 	}
 }
 
-func setupAuth(c config, log *slog.Logger) (*auth.Manager, error) {
+func setupAuth(c config, pj *project.Store, log *slog.Logger) (*auth.Manager, error) {
 	switch c.authMode {
 	case "none":
 		log.Warn("SIGN-IN IS DISABLED (-auth=none): anyone who can reach " + c.listen + " controls every VM on this host. Use only for development.")
@@ -327,11 +330,15 @@ func setupAuth(c config, log *slog.Logger) (*auth.Manager, error) {
 			return nil, errors.New("this build has no PAM support; rebuild with CGO_ENABLED=1 -tags pam, or use -auth=none for development")
 		}
 		groups := auth.Groups{Admin: c.authGroup, Operator: c.operatorGroup, Viewer: c.viewerGroup}
-		m := auth.New(auth.PAM{Service: c.pamService}, groups.RoleOf)
+		roleOf := api.RoleOfWithProjects(groups.RoleOf, pj, auth.UserGroups)
+		m := auth.New(auth.PAM{Service: c.pamService}, roleOf)
 		// LDAP and OpenID Connect, configured by admins in the UI (ADR-0023).
 		ext, err := auth.OpenExternal(filepath.Join(c.stateDir, "signin.json"))
 		if err != nil {
 			return nil, err
+		}
+		if pj != nil {
+			ext.SetRoleFallback(api.ExternalRoleFallback(pj))
 		}
 		m.SetExternal(ext)
 		tf, err := auth.OpenTwoFactor(filepath.Join(c.stateDir, "twofactor.json"))
