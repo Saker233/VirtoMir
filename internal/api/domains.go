@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
+	"github.com/onurbaydas/virtomir/internal/project"
 	"github.com/onurbaydas/virtomir/internal/respool"
 	"github.com/onurbaydas/virtomir/internal/virt"
 )
@@ -45,7 +47,11 @@ func (s *Server) listDomains(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) createDomain(w http.ResponseWriter, r *http.Request) {
-	var spec virt.CreateSpec
+	var spec struct {
+		virt.CreateSpec
+		// Project is the multi-tenancy project the machine belongs to (ADR-0060); empty = global.
+		Project string `json:"project,omitempty"`
+	}
 	if !s.decode(w, r, &spec) {
 		return
 	}
@@ -54,6 +60,25 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request) {
 		newDisk = spec.DiskGiB // a new disk or a copy of a cloud image, grown to this size
 	}
 	if !s.checkQuota(w, r, 1, max(spec.VCPUs, 1), max(spec.MemoryMiB, 1024), newDisk) {
+		return
+	}
+	// A project machine needs an operator+ role in the project, its pool and network on the
+	// project's allowed lists, and room in the project's limits (ADR-0060).
+	id := identity(r)
+	pool := ""
+	if spec.DiskPath == "" {
+		pool = spec.Pool // only a newly created volume reaches into a pool
+		if spec.DiskGiB > 0 && pool == "" {
+			pool = "default" // CreateDomain puts new disks here when no pool is given
+		}
+	}
+	var networks []string
+	if spec.Network != nil {
+		networks = []string{spec.Network.Network}
+	}
+	if !s.checkProject(w, id.Name, id.Role, spec.Project, project.Usage{
+		Machines: 1, VCPUs: max(spec.VCPUs, 1), MemoryMiB: int64(max(spec.MemoryMiB, 1024)), DiskGiB: int64(newDisk),
+	}, pool, networks) {
 		return
 	}
 	// ?respool=<id>: the machine goes into that resource pool if it fits its limits.
@@ -66,15 +91,16 @@ func (s *Server) createDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if spec.Kind == "container" {
-		s.createContainer(w, r, spec, rp)
+		s.createContainer(w, r, spec.CreateSpec, rp, spec.Project)
 		return
 	}
-	res, err := s.backend.CreateDomain(spec)
+	res, err := s.backend.CreateDomain(spec.CreateSpec)
 	if err != nil {
 		s.writeError(w, err)
 		return
 	}
 	s.recordOwner(r, res.UUID)
+	s.recordProject(res.UUID, spec.Project)
 	s.joinRespool(rp, res.UUID)
 	s.done(w, http.StatusCreated, res)
 }
@@ -94,7 +120,7 @@ func (s *Server) containers(w http.ResponseWriter) (containerBackend, bool) {
 }
 
 // createContainer answers 202 with the job; its result is the new container's UUID.
-func (s *Server) createContainer(w http.ResponseWriter, r *http.Request, spec virt.CreateSpec, respool string) {
+func (s *Server) createContainer(w http.ResponseWriter, r *http.Request, spec virt.CreateSpec, respool string, projectID string) {
 	cb, ok := s.containers(w)
 	if !ok {
 		return
@@ -109,6 +135,7 @@ func (s *Server) createContainer(w http.ResponseWriter, r *http.Request, spec vi
 			return "", err
 		}
 		s.recordOwner(r, res.UUID)
+		s.recordProject(res.UUID, projectID)
 		s.joinRespool(respool, res.UUID)
 		s.live.Refresh()
 		if res.StartError != "" {
@@ -255,15 +282,40 @@ func (s *Server) rename(w http.ResponseWriter, r *http.Request) {
 	s.done(w, http.StatusNoContent, nil)
 }
 
-// clone copies disks in the background and answers 202 with the job to poll.
+// clone copies disks in the background and answers 202 with the job to poll. The copy
+// stays in its source's project (or the one given) and must fit that project's limits.
 func (s *Server) clone(w http.ResponseWriter, r *http.Request) {
-	var b nameBody
+	var b struct {
+		Name    string `json:"name"`
+		Project string `json:"project,omitempty"`
+	}
 	if !s.decode(w, r, &b) {
 		return
 	}
 	uuid := r.PathValue("uuid")
+	projectID := b.Project
+	if projectID == "" {
+		projectID = s.projectOf(uuid) // a copy stays in the project its source belongs to
+	}
+	id := identity(r)
+	vcpus, mem := 0, uint64(0)
+	if doms, err := s.backend.ListDomains(); err == nil {
+		for _, d := range doms {
+			if strings.EqualFold(d.UUID, uuid) {
+				vcpus, mem = d.VCPUs, d.MaxMemoryKiB>>10
+			}
+		}
+	}
+	if !s.checkProject(w, id.Name, id.Role, projectID, project.Usage{
+		Machines: 1, VCPUs: vcpus, MemoryMiB: int64(mem), DiskGiB: int64(s.diskGiB([]string{uuid})),
+	}, "", nil) {
+		return
+	}
 	job := s.jobs.Start("clone", "Clone to "+b.Name, func(ctx context.Context, report func(string)) (string, error) {
 		res, err := s.backend.Clone(ctx, uuid, b.Name, report)
+		if err == nil {
+			s.recordProject(res, projectID)
+		}
 		s.live.Refresh()
 		return res, err
 	})

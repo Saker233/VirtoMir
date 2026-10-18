@@ -31,6 +31,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/jobs"
 	"github.com/onurbaydas/virtomir/internal/live"
 	"github.com/onurbaydas/virtomir/internal/offsite"
+	"github.com/onurbaydas/virtomir/internal/project"
 	"github.com/onurbaydas/virtomir/internal/quota"
 	"github.com/onurbaydas/virtomir/internal/reports"
 	"github.com/onurbaydas/virtomir/internal/respool"
@@ -204,6 +205,11 @@ func run(c config, log *slog.Logger) error {
 		log.Warn("respools store", "err", err)
 	} else {
 		opts.Respools = rpStore
+	}
+	if pjStore, err := project.Open(filepath.Join(c.stateDir, "projects.json")); err != nil {
+		log.Warn("projects store", "err", err)
+	} else {
+		opts.Projects = pjStore
 	}
 	if zr, err := zfsrep.Open(filepath.Join(c.stateDir, "zfs-replication.json"), zfsrep.Exec{}, log); err != nil {
 		log.Warn("zfs replication", "err", err)

@@ -24,6 +24,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/hostnet"
 	"github.com/onurbaydas/virtomir/internal/jobs"
 	"github.com/onurbaydas/virtomir/internal/offsite"
+	"github.com/onurbaydas/virtomir/internal/project"
 	"github.com/onurbaydas/virtomir/internal/quota"
 	"github.com/onurbaydas/virtomir/internal/reports"
 	"github.com/onurbaydas/virtomir/internal/respool"
@@ -136,6 +137,8 @@ type Options struct {
 	Offsite *offsite.Store
 	// DRS nil: no distributed resource scheduler.
 	DRS *drs.Engine
+	// Projects nil: no multi-tenancy (ADR-0060).
+	Projects *project.Store
 	// RateLimiter nil: standard token-bucket limiter (60/min) is used.
 	RateLimiter *auth.RateLimiter
 	// ZFSRep nil: no ZFS replication.
@@ -178,6 +181,7 @@ type Server struct {
 	hostnet     *hostnet.Manager
 	offsite     *offsite.Store
 	drs         *drs.Engine
+	projects    *project.Store
 	rateLimiter *auth.RateLimiter
 	zfsRep      *zfsrep.Manager
 }
@@ -201,7 +205,7 @@ func NewServer(o Options) *Server {
 		cluster: o.Cluster, fingerprint: o.Fingerprint, hostName: o.HostName, listenPort: o.ListenPort,
 		confighist: o.ConfigHistory, quotas: o.Quotas, groupsOf: o.GroupsOf,
 		ha: o.HA, reports: o.Reports, respools: o.Respools, hostinfo: o.HostInfo, updater: o.Updater, stateDir: o.StateDir, hostnet: o.HostNet, offsite: o.Offsite,
-		drs: o.DRS, rateLimiter: rl, zfsRep: o.ZFSRep}
+		drs: o.DRS, projects: o.Projects, rateLimiter: rl, zfsRep: o.ZFSRep}
 }
 
 func (s *Server) Handler() http.Handler {

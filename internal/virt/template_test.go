@@ -16,13 +16,21 @@ func TestMetaRoundTrip(t *testing.T) {
 	if got := string(b); got != `<vm template="true"></vm>` {
 		t.Fatalf("marshal = %s", got)
 	}
+	// The project ID travels with the owner (ADR-0060).
+	b, err = xml.Marshal(vmMeta{Owner: "alice", Project: "dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(b); got != `<vm owner="alice" project="dev"></vm>` {
+		t.Fatalf("marshal = %s", got)
+	}
 	// libvirt hands metadata back with its namespace prefix.
 	var m vmMeta
-	raw := `<virtomir:vm xmlns:virtomir="` + metaURI + `" linked-from="0e1d-aa"/>`
+	raw := `<virtomir:vm xmlns:virtomir="` + metaURI + `" linked-from="0e1d-aa" owner="alice" project="dev"/>`
 	if err := xml.Unmarshal([]byte(raw), &m); err != nil {
 		t.Fatal(err)
 	}
-	if m.Template || m.LinkedFrom != "0e1d-aa" {
+	if m.Template || m.LinkedFrom != "0e1d-aa" || m.Owner != "alice" || m.Project != "dev" {
 		t.Fatalf("unmarshal = %+v", m)
 	}
 	if !(vmMeta{}).empty() || m.empty() {
