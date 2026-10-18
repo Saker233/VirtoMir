@@ -478,3 +478,19 @@ func randomHex(bytes int) string {
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
 }
+
+// Placement is the reachable host a new machine needing memB bytes of memory fits best: the
+// least loaded one (CPU and memory together) that still has that much memory free. ok is
+// false when none has room.
+func Placement(hosts []HostMetrics, memB uint64) (best HostMetrics, ok bool) {
+	lowest := math.MaxFloat64
+	for _, h := range hosts {
+		if !h.Reachable || (h.MemTotalB > 0 && h.MemTotalB-min(h.MemUsedB, h.MemTotalB) < memB) {
+			continue
+		}
+		if load := h.CPUPct + h.MemPct; load < lowest {
+			best, lowest, ok = h, load, true
+		}
+	}
+	return best, ok
+}

@@ -17,7 +17,8 @@
   import { machineHref, router } from '../router.svelte'
   import { toasts } from '../toast.svelte'
   import IaCPanel from '../components/IaCPanel.svelte'
-  import { ent, type PoolView } from '../enterprise'
+  import { ent, type DRSPlacement, type PoolView } from '../enterprise'
+  import { cluster } from '../cluster.svelte'
 
   type OS = CreateSpec['os']
   const OSES: { key: OS; label: string; hint: string }[] = [
@@ -136,6 +137,21 @@
           : '',
   )
   let bootable = $derived(source === 'iso' ? withDisk || !!iso : source === 'cloud' ? !!baseImage : !!existingDisk)
+  // DRS (partially or fully automated) suggests the member the machine fits best.
+  let placement = $state<DRSPlacement | null>(null)
+  $effect(() => {
+    const mib = Math.round(memGiB * 1024)
+    if (!cluster.clustered) {
+      placement = null
+      return
+    }
+    const timer = setTimeout(() => {
+      ent.drsPlacement(mib).then((p) => (placement = p ?? null)).catch(() => (placement = null))
+    }, 400)
+    return () => clearTimeout(timer)
+  })
+  let suggested = $derived(placement && cluster.current && placement.hostId !== cluster.current.id ? placement : null)
+
   let canCreate = $derived(nameValid && !nameTaken && bootable && !ciProblem && vcpus >= 1 && memGiB > 0)
 
   let busy = $state(false)
@@ -204,6 +220,13 @@
 </header>
 
 {#if loadErr}<div class="ui-error-box">{loadErr}</div>{/if}
+
+{#if suggested}
+  <section class="ui-panel drs-hint">
+    <span>{t('DRS suggests {host}: the least loaded host with room for this machine ({cpu} % CPU, {mem} % memory in use).', { host: suggested.hostName, cpu: Math.round(suggested.cpuPct), mem: Math.round(suggested.memPct) })}</span>
+    <button type="button" class="ui-btn" onclick={() => suggested && cluster.open(suggested.hostId)}>{t('Create it on {host}', { host: suggested.hostName })}</button>
+  </section>
+{/if}
 
 {#if templates.length}
   <section class="ui-panel templates">
@@ -490,6 +513,17 @@
 </form>
 
 <style>
+  .drs-hint {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 14px;
+    padding: 12px 14px;
+    border-left: 3px solid var(--accent);
+    font-size: 13px;
+  }
   .back {
     display: inline-flex;
     align-items: center;

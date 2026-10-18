@@ -116,3 +116,19 @@ func TestDRS_AntiAffinityRuleViolation(t *testing.T) {
 		t.Errorf("expected 0 rules after deletion")
 	}
 }
+
+func TestPlacementPicksTheLeastLoadedHostWithRoom(t *testing.T) {
+	const gib = 1 << 30
+	hosts := []HostMetrics{
+		{ID: "busy", Reachable: true, CPUPct: 70, MemPct: 60, MemUsedB: 60 * gib, MemTotalB: 100 * gib},
+		{ID: "idle-but-full", Reachable: true, CPUPct: 5, MemPct: 98, MemUsedB: 98 * gib, MemTotalB: 100 * gib},
+		{ID: "quiet", Reachable: true, CPUPct: 20, MemPct: 30, MemUsedB: 30 * gib, MemTotalB: 100 * gib},
+		{ID: "down", CPUPct: 0, MemPct: 0, MemTotalB: 100 * gib},
+	}
+	if h, ok := Placement(hosts, 8*gib); !ok || h.ID != "quiet" {
+		t.Errorf("placement = %s, %v", h.ID, ok)
+	}
+	if _, ok := Placement(hosts, 80*gib); ok {
+		t.Error("placed a machine no host has room for")
+	}
+}

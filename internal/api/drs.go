@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/onurbaydas/virtomir/internal/activity"
+	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/cluster"
 	"github.com/onurbaydas/virtomir/internal/drs"
+	"github.com/onurbaydas/virtomir/internal/jobs"
 	"github.com/onurbaydas/virtomir/internal/live"
 	"github.com/onurbaydas/virtomir/internal/virt"
 )
@@ -23,6 +27,7 @@ func (s *Server) drsRoutes(mux *routeMux) {
 	mux.HandleFunc("POST /api/v1/cluster/drs/rules", s.createDRSRule)
 	mux.HandleFunc("DELETE /api/v1/cluster/drs/rules/{id}", s.deleteDRSRule)
 	mux.HandleFunc("POST /api/v1/cluster/drs/recommendations/{id}/apply", s.applyDRSRecommendation)
+	mux.HandleFunc("GET /api/v1/cluster/drs/placement", s.drsPlacement)
 
 	// Unified vCenter-style cluster inventory: returns all VMs across all cluster nodes
 	mux.HandleFunc("GET /api/v1/cluster/inventory/machines", s.getClusterInventoryMachines)
@@ -118,15 +123,22 @@ func (s *Server) applyDRSRecommendation(w http.ResponseWriter, r *http.Request) 
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "recommendation not found or already applied"})
 		return
 	}
-	s.log.Info("applying DRS recommendation", "vm", rec.DomainName, "from", rec.SourceName, "to", rec.TargetName)
+	s.applyRecommendation(r.Context(), w, *rec, identity(r))
+}
 
+// applyRecommendation starts rec's live migration as id: the machine's host runs it through
+// the same path as the Move button (checks, job, activity), and w gets that answer.
+func (s *Server) applyRecommendation(ctx context.Context, w http.ResponseWriter, rec drs.Recommendation, id auth.Identity) {
+	s.log.Info("applying DRS recommendation", "vm", rec.DomainName, "from", rec.SourceName, "to", rec.TargetName, "by", id.Name)
 	movePath := "/api/v1/domains/" + rec.DomainUUID + "/move"
 	body := map[string]string{"host": rec.TargetHostID}
 	if rec.SourceHostID == s.cluster.SelfID() {
 		raw, _ := json.Marshal(body)
-		inner := r.Clone(r.Context())
-		inner.URL.Path, inner.URL.RawPath = movePath, ""
-		inner.Body, inner.ContentLength = io.NopCloser(bytes.NewReader(raw)), int64(len(raw))
+		inner, err := http.NewRequestWithContext(context.WithValue(ctx, identityKey, id), http.MethodPost, movePath, bytes.NewReader(raw))
+		if err != nil {
+			s.writeError(w, err)
+			return
+		}
 		inner.SetPathValue("uuid", rec.DomainUUID)
 		s.moveDomain(w, inner)
 		return
@@ -136,11 +148,10 @@ func (s *Server) applyDRSRecommendation(w http.ResponseWriter, r *http.Request) 
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "the machine's host is no longer a cluster member"})
 		return
 	}
-	id := identity(r)
 	var job json.RawMessage
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	c, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if err := s.peer(src).As(id.Name, id.Role.String(), id.Token).Call(ctx, http.MethodPost, movePath, body, &job); err != nil {
+	if err := s.peer(src).As(id.Name, id.Role.String(), id.Token).Call(c, http.MethodPost, movePath, body, &job); err != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": src.Name + ": " + err.Error()})
 		return
 	}
@@ -150,6 +161,91 @@ func (s *Server) applyDRSRecommendation(w http.ResponseWriter, r *http.Request) 
 		"recommendation": rec,
 		"job":            job,
 		"jobHost":        src.ID,
+	})
+}
+
+const (
+	// drsInterval is how often fully automated DRS looks at the cluster.
+	drsInterval = 5 * time.Minute
+	// drsCooldown keeps DRS from moving the same machine again soon (no ping-pong).
+	drsCooldown = 30 * time.Minute
+)
+
+// RunDRS carries out recommendations by itself while DRS is fully automated. Each member
+// acts only for the machines it runs, one live migration at a time, so members never move
+// the same machine twice; the overloaded host sheds its own load.
+func (s *Server) RunDRS(ctx context.Context) {
+	if s.drs == nil || s.cluster == nil {
+		return
+	}
+	moved := map[string]time.Time{}
+	t := time.NewTicker(drsInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		s.autoBalance(ctx, moved, time.Now())
+	}
+}
+
+func (s *Server) autoBalance(ctx context.Context, moved map[string]time.Time, now time.Time) {
+	cfg := s.drs.GetConfig()
+	if !cfg.Enabled || cfg.Mode != drs.ModeFullyAutomated || !s.cluster.Clustered() {
+		return
+	}
+	for _, j := range s.jobs.List() {
+		if j.State == jobs.Running && (j.Kind == "migrate" || j.Kind == "move") {
+			return // one at a time; the next pass sees the new balance
+		}
+	}
+	hosts, domains := s.collectClusterPlacements(ctx)
+	recs := s.drs.Evaluate(ctx, hosts, domains).Recommendations
+	slices.SortStableFunc(recs, func(a, b drs.Recommendation) int { return b.Priority - a.Priority })
+	for _, rec := range recs {
+		if rec.SourceHostID != s.cluster.SelfID() || now.Sub(moved[rec.DomainUUID]) < drsCooldown {
+			continue
+		}
+		moved[rec.DomainUUID] = now
+		rw := &statusRecorder{ResponseWriter: discard{}, status: http.StatusOK}
+		s.applyRecommendation(ctx, rw, rec, auth.Identity{Name: "drs", Role: auth.Admin})
+		s.record(activity.Entry{
+			User: "drs", Method: http.MethodPost, Path: "/api/v1/domains/" + rec.DomainUUID + "/move",
+			Status: rw.status, Error: rw.errorMessage(),
+		})
+		return
+	}
+}
+
+// discard is a ResponseWriter for answers nobody reads (automatic actions).
+type discard struct{}
+
+func (discard) Header() http.Header         { return http.Header{} }
+func (discard) Write(b []byte) (int, error) { return len(b), nil }
+func (discard) WriteHeader(int)             {}
+
+// drsPlacement suggests the member a new machine fits best while DRS places machines
+// (partially or fully automated). No suggestion: 204.
+func (s *Server) drsPlacement(w http.ResponseWriter, r *http.Request) {
+	if s.drs == nil || s.cluster == nil || !s.cluster.Clustered() {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if cfg := s.drs.GetConfig(); !cfg.Enabled || cfg.Mode == drs.ModeManual {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	mib, _ := strconv.ParseUint(r.URL.Query().Get("memoryMiB"), 10, 64)
+	hosts, _ := s.collectClusterPlacements(r.Context())
+	best, ok := drs.Placement(hosts, mib<<20)
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"hostId": best.ID, "hostName": best.Name, "cpuPct": best.CPUPct, "memPct": best.MemPct,
 	})
 }
 

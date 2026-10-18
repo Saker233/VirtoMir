@@ -5,6 +5,12 @@
   import { t } from '../i18n.svelte'
   import Dialog from './Dialog.svelte'
 
+  const MODE_HINTS: Record<DRSMode, string> = {
+    manual: t('DRS only recommends; you apply each move.'),
+    partially_automated: t('New machines are suggested the best host; moves stay recommendations.'),
+    fully_automated: t('Every 5 minutes each host live-migrates one of its own machines when the cluster is out of balance (never the same machine twice within 30 minutes).'),
+  }
+
   let status = $state<DRSStatus | null>(null)
   let loading = $state(false)
   let applying = $state<string | null>(null)
@@ -126,6 +132,7 @@
             <option value="partially_automated">{t('Partially Automated')}</option>
             <option value="fully_automated">{t('Fully Automated')}</option>
           </select>
+          <span class="mode-hint">{MODE_HINTS[status.mode]}</span>
         </div>
 
         <button class="btn btn-sm" onclick={() => (showRuleDialog = true)}>
@@ -333,8 +340,14 @@
     gap: var(--space-3);
   }
 
+  .mode-hint {
+    flex-basis: 100%;
+    font-size: 12px;
+    color: var(--text-3);
+  }
   .mode-selector {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
     font-size: 0.82rem;
