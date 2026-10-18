@@ -125,6 +125,11 @@ func (m *Manager) fenced(ctx context.Context, cfg Config, n Node, rc *recovery, 
 		return true
 	}
 	if hasRep && rep.WatchdogArmed {
+		if m.othersMayHaveQuorum(cfg, now) {
+			m.note(rc, n.Name, "waiting-confirmation", "error",
+				"%s may still run with quorum on its side (the members it can reach plus the witness), so its watchdog proves nothing: power it off or give it a fence agent, then confirm on the HA page", n.Name)
+			return false
+		}
 		wd := time.Duration(max(rep.WatchdogTimeoutSec, 1)) * time.Second
 		safe := last.Add(time.Duration(cfg.FailoverTimeoutSec)*time.Second + wd + watchdogMargin)
 		if now.Before(safe) {
@@ -139,6 +144,34 @@ func (m *Manager) fenced(ctx context.Context, cfg Config, n Node, rc *recovery, 
 	m.note(rc, n.Name, "waiting-confirmation", "error",
 		"%s has no fence agent and no armed watchdog: make sure it is powered off, then confirm it on the HA page", n.Name)
 	return false
+}
+
+// othersMayHaveQuorum reports whether the members this one cannot see, together with the
+// witness, could hold quorum on their side of a split. The witness answers everyone who
+// reaches it, so in an even split both sides count it; an armed watchdog on the other side
+// then keeps being petted and never resets that host.
+func (m *Manager) othersMayHaveQuorum(cfg Config, now time.Time) bool {
+	members := m.transport.Members()
+	self := m.transport.SelfID()
+	timeout := time.Duration(cfg.FailoverTimeoutSec) * time.Second
+	m.mu.Lock()
+	unseen := 0
+	for _, n := range members {
+		last, ok := m.seen[n.ID]
+		if !ok {
+			last = m.started
+		}
+		if n.ID != self && now.Sub(last) > timeout {
+			unseen++
+		}
+	}
+	m.mu.Unlock()
+	total, theirs := len(members), unseen
+	if cfg.Witness != "" && len(members) > 1 {
+		total++
+		theirs++
+	}
+	return theirs >= total/2+1
 }
 
 // restart starts a dead member's machines on survivors, most important first.

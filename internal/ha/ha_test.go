@@ -228,6 +228,7 @@ type fakeHV struct {
 	mu      sync.Mutex
 	doms    []virt.Domain
 	actions []string
+	adopt   bool // AdoptDomain defines the machine (else this host cannot take machines)
 }
 
 func (h *fakeHV) ListDomains() ([]virt.Domain, error) {
@@ -264,7 +265,15 @@ func (h *fakeHV) SetAutostart(uuid string, on bool) error {
 	}
 	return nil
 }
-func (h *fakeHV) AdoptDomain(doc string) (string, error) { return "", errors.New("not here") }
+func (h *fakeHV) AdoptDomain(doc string) (string, error) {
+	if !h.adopt {
+		return "", errors.New("not here")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.doms = append(h.doms, virt.Domain{UUID: "v1", Name: "db", State: virt.StateShutoff, Persistent: true})
+	return "v1", nil
+}
 func (h *fakeHV) HostStats() (virt.HostStats, error) {
 	return virt.HostStats{MemTotalKiB: 64 << 20, MemUsedKiB: 16 << 20}, nil
 }
@@ -536,6 +545,12 @@ func TestResumeAfterBoot(t *testing.T) {
 	st.SetPolicy(VMPolicy{UUID: "v1", Name: "db", Enabled: true})
 	m.Accept([]Replica{{UUID: "v1", Name: "db", Owner: "a", Running: true, XML: "<domain/>"}})
 	m.Tick(context.Background())
+	if hv.doms[0].State != virt.StateShutoff {
+		t.Fatal("resumed before the others could report who runs it")
+	}
+	for range resumeAfterTicks {
+		m.Tick(context.Background())
+	}
 	if hv.doms[0].State != virt.StateRunning {
 		t.Fatalf("protected machine not started after boot: %v", hv.actions)
 	}
@@ -601,5 +616,52 @@ func TestNoSelfFenceRightAfterStart(t *testing.T) {
 	m.Tick(context.Background())
 	if hv.doms[0].State != virt.StateShutoff {
 		t.Fatalf("still running after the timeout without quorum; actions %v", hv.actions)
+	}
+}
+
+// A host that comes back after its machine was restarted elsewhere has only its own old
+// replica on disk; it must hear from the others before it resumes anything.
+func TestNoResumeOfAMachineTakenOverMeanwhile(t *testing.T) {
+	hv := &fakeHV{doms: []virt.Domain{{UUID: "v1", Name: "db", State: virt.StateShutoff, Persistent: true}}}
+	m, _, _, st := newTestManager(t, "a", hv)
+	st.SetPolicy(VMPolicy{UUID: "v1", Name: "db", Enabled: true})
+	m.Accept([]Replica{{UUID: "v1", Name: "db", Owner: "a", Running: true, XML: "<domain/>"}}) // from disk
+	m.Tick(context.Background())
+	m.Tick(context.Background())
+	m.Accept([]Replica{{UUID: "v1", Name: "db", Owner: "b", Running: true, Epoch: 1, XML: "<domain/>"}}) // b's push
+	for range resumeAfterTicks + 2 {
+		m.Tick(context.Background())
+	}
+	if hv.doms[0].State != virt.StateShutoff {
+		t.Fatalf("started the stale copy of a machine b runs now; actions %v", hv.actions)
+	}
+}
+
+// Two members and a TCP witness: when they cannot reach each other but both reach the
+// witness, both sides have two of three votes. The silent side keeps petting its watchdog,
+// so the watchdog proves nothing; only its BMC or an admin can.
+func TestWatchdogIsNoProofWhenTheOtherSideMayHaveQuorum(t *testing.T) {
+	hv := &fakeHV{adopt: true}
+	m, fc, clk, st := newTestManager(t, "a", hv)
+	fc.nodes = fc.nodes[:2]
+	st.UpdateSettings(Settings{AutoFailover: true, FailoverTimeoutSec: 10, Witness: "w:1"})
+	st.SetPolicy(VMPolicy{UUID: "v1", Name: "db", Enabled: true})
+	m.Accept([]Replica{{UUID: "v1", Name: "db", Owner: "b", Running: true, XML: "<domain/>"}})
+	fc.reports["b"] = Report{WatchdogArmed: true, WatchdogTimeoutSec: 30}
+	m.Tick(context.Background())
+	fc.down["b"] = true
+	clk.add(5 * time.Minute)
+	m.Tick(context.Background())
+	m.waitRecovery(t, "b", "waiting-confirmation")
+	if len(fc.recovered) != 0 {
+		t.Fatalf("restarted b's machines on watchdog evidence alone: %+v", fc.recovered)
+	}
+	if err := m.ConfirmOff("b", "onur"); err != nil {
+		t.Fatal(err)
+	}
+	m.Tick(context.Background())
+	m.waitRecovery(t, "b", "done")
+	if hv.doms[0].State != virt.StateRunning {
+		t.Errorf("db not running here after the confirmation; actions %v", hv.actions)
 	}
 }

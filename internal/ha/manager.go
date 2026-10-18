@@ -168,9 +168,12 @@ type Manager struct {
 	lostSince  time.Time // when this member lost quorum (zero: has it)
 	selfFenced bool
 	resumed    bool // protected machines restarted after this member booted
-	started    time.Time
-	wdErr      string
-	tick       int
+	// atBoot is what this member ran when it last looked before this start: machine UUID →
+	// replica epoch. Taken on the first beat, before replicate rewrites the replicas.
+	atBoot  map[string]int
+	started time.Time
+	wdErr   string
+	tick    int
 }
 
 type recovery struct {
@@ -292,6 +295,14 @@ func (m *Manager) Tick(ctx context.Context) {
 	m.mu.Lock()
 	m.tick++
 	tick := m.tick
+	if m.atBoot == nil {
+		m.atBoot = map[string]int{}
+		for id, r := range m.replicas {
+			if r.Owner == self && r.Running {
+				m.atBoot[id] = r.Epoch
+			}
+		}
+	}
 	m.mu.Unlock()
 
 	// 1. Heartbeats, in parallel, each bounded by the interval.
@@ -380,7 +391,9 @@ func (m *Manager) Tick(ctx context.Context) {
 
 	// 4. Local protected machines: start them after a reboot, stop them without quorum,
 	// replicate them and keep their autostart off.
-	if domErr == nil && !m.resumed && (quorate || !clustered) {
+	// Wait for the others' replicas first: one of them may have taken a machine over while
+	// this host was away, and the replicas on disk do not know that yet.
+	if domErr == nil && !m.resumed && (!clustered || quorate && tick > resumeAfterTicks) {
 		m.resumeAfterBoot(cfg, doms, self)
 		doms, domErr = m.hv.ListDomains()
 	}
@@ -414,6 +427,10 @@ func (m *Manager) Tick(ctx context.Context) {
 	}
 	m.mu.Unlock()
 }
+
+// resumeAfterTicks is how many heartbeats a member that just started waits before resuming
+// its machines: more than two rounds of replicas from the others (sent every 5 beats).
+const resumeAfterTicks = 12
 
 // report is this member's heartbeat.
 func (m *Manager) report(cfg Config) Report {
@@ -613,10 +630,13 @@ func (m *Manager) resumeAfterBoot(cfg Config, doms []virt.Domain, self string) {
 		if p := cfg.VMPolicies[strings.ToLower(d.UUID)]; !p.Enabled {
 			continue
 		}
+		id := strings.ToLower(d.UUID)
 		m.mu.Lock()
-		r, ok := m.replicas[strings.ToLower(d.UUID)]
+		r, ok := m.replicas[id]
+		epoch, ran := m.atBoot[id]
 		m.mu.Unlock()
-		if !ok || r.Owner != self || !r.Running {
+		// Still ours with the epoch it had: nobody restarted it elsewhere meanwhile.
+		if !ok || !ran || r.Owner != self || r.Epoch != epoch {
 			continue
 		}
 		err := m.hv.DomainAction(d.UUID, virt.ActionStart)
