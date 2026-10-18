@@ -58,9 +58,12 @@ try {
         & $npmCmd ci --no-fund --no-audit
         if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
     }
+    # Vite prints warnings on stderr; PowerShell 5.1 turns those into terminating errors under
+    # 'Stop', so rely on the exit code here.
+    $ErrorActionPreference = 'Continue'
     & $npmCmd run build --silent
     if ($LASTEXITCODE -ne 0) { throw 'web build failed' }
-} finally { Pop-Location }
+} finally { $ErrorActionPreference = 'Stop'; Pop-Location }
 
 $rev = (git -C $repoRoot rev-parse --short HEAD).Trim()
 if (git -C $repoRoot status --porcelain) { $rev += '-dirty' }
