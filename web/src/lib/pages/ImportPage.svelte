@@ -224,6 +224,6 @@
     border-radius: var(--radius-sm, 4px);
     background: var(--surface-2);
     color: var(--text-2);
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--border);
   }
 </style>

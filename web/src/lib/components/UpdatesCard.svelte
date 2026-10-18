@@ -122,9 +122,8 @@
             </span>
             <span class="auto-title">{t('Automatic GitHub Updates')}</span>
           </div>
-          <label class="toggle-switch" title={t('Toggle automatic updates')}>
-            <input type="checkbox" bind:checked={st.auto.enabled} onchange={saveAutoConfig} disabled={savingAuto} />
-            <span class="slider"></span>
+          <label class="ui-switch" title={t('Toggle automatic updates')}>
+            <input type="checkbox" bind:checked={st.auto.enabled} onchange={saveAutoConfig} disabled={savingAuto} aria-label={t('Toggle automatic updates')} />
           </label>
         </div>
 
@@ -137,7 +136,7 @@
 
             <div class="freq-row">
               <span class="muted small">{t('Check interval:')}</span>
-              <select bind:value={st.auto.intervalHours} onchange={saveAutoConfig} disabled={savingAuto} class="ui-select sm">
+              <select bind:value={st.auto.intervalHours} onchange={saveAutoConfig} disabled={savingAuto} class="ui-input">
                 <option value={1}>{t('Every 1 hour')}</option>
                 <option value={6}>{t('Every 6 hours')}</option>
                 <option value={12}>{t('Every 12 hours')}</option>
@@ -198,59 +197,17 @@
     font-size: 11px;
     font-weight: 600;
     padding: 2px 7px;
-    border-radius: 12px;
     background: var(--bg-elev);
     color: var(--text-2);
   }
   .badge.active {
-    background: rgba(34, 197, 94, 0.15);
-    color: var(--ok, #22c55e);
-    border: 1px solid rgba(34, 197, 94, 0.3);
+    background: color-mix(in srgb, var(--ok) 15%, transparent);
+    color: var(--ok);
+    border: 1px solid color-mix(in srgb, var(--ok) 30%, transparent);
   }
   .auto-title {
     font-size: 13px;
     font-weight: 600;
-  }
-  .toggle-switch {
-    position: relative;
-    display: inline-block;
-    width: 38px;
-    height: 20px;
-    cursor: pointer;
-  }
-  .toggle-switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-  .slider {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: 20px;
-    transition: 0.2s;
-  }
-  .slider:before {
-    position: absolute;
-    content: "";
-    height: 14px;
-    width: 14px;
-    left: 2px;
-    bottom: 2px;
-    background-color: var(--text-2);
-    border-radius: 50%;
-    transition: 0.2s;
-  }
-  input:checked + .slider {
-    background-color: var(--accent);
-  }
-  input:checked + .slider:before {
-    transform: translateX(18px);
-    background-color: #fff;
   }
   .auto-details {
     display: flex;
@@ -272,11 +229,11 @@
     margin-top: 2px;
   }
   .err-text {
-    color: var(--danger, #ef4444);
+    color: var(--danger);
     margin: 0;
   }
   .ok-toast {
-    color: var(--ok, #22c55e);
+    color: var(--ok);
     margin: 0;
   }
 </style>

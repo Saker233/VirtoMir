@@ -437,7 +437,7 @@
   }
   .node-pill.active {
     background: var(--accent);
-    color: #000;
+    color: var(--accent-contrast);
     border-color: var(--accent);
   }
   .pill-count {

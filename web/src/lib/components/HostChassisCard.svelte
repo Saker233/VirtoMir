@@ -136,7 +136,7 @@
   .r.warn, .sensors .warn { color: var(--warn); }
   .r.danger, .sensors .danger { color: var(--danger); }
   .acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-  .acts .active { color: var(--accent, #6366f1); border-color: var(--accent, #6366f1); }
+  .acts .active { color: var(--accent); border-color: var(--accent); }
   .sensors { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px 16px; font-size: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
   .muted { color: var(--text-2); }
   .small { font-size: 11px; }

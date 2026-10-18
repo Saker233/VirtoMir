@@ -159,7 +159,7 @@
     display: inline-flex;
     align-items: center;
     padding: 1px 5px;
-    border-radius: var(--radius-xs);
+    border-radius: var(--radius-sm);
     font-size: 10px;
     font-weight: 700;
     text-transform: uppercase;
@@ -167,9 +167,9 @@
     flex-shrink: 0;
   }
   .kind-badge.lxc {
-    background: rgba(14, 165, 233, 0.15);
-    color: #38bdf8;
-    border: 1px solid rgba(56, 189, 248, 0.3);
+    background: color-mix(in srgb, var(--info) 15%, transparent);
+    color: var(--info);
+    border: 1px solid color-mix(in srgb, var(--info) 30%, transparent);
   }
   .host-dot {
     width: 6px;

@@ -295,7 +295,7 @@
   .drs-deck {
     background: var(--surface);
     border: 2px solid var(--border);
-    margin-bottom: var(--space-4);
+    margin-bottom: 16px;
     box-shadow: 4px 4px 0 var(--shadow);
   }
 
@@ -303,17 +303,17 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: var(--space-3) var(--space-4);
-    background: var(--card);
+    padding: 12px 16px;
+    background: var(--surface);
     border-bottom: 1px solid var(--border);
     flex-wrap: wrap;
-    gap: var(--space-2);
+    gap: 8px;
   }
 
   .title-cluster {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: 8px;
   }
 
   .drs-icon {
@@ -331,13 +331,13 @@
   .subtitle {
     margin: 0;
     font-size: 0.78rem;
-    color: var(--muted);
+    color: var(--text-3);
   }
 
   .controls-cluster {
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: 12px;
   }
 
   .mode-hint {
@@ -349,7 +349,7 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-2);
+    gap: 8px;
     font-size: 0.82rem;
   }
 
@@ -363,8 +363,8 @@
   .balance-strip {
     display: flex;
     align-items: center;
-    gap: var(--space-4);
-    padding: var(--space-3) var(--space-4);
+    gap: 16px;
+    padding: 12px 16px;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     flex-wrap: wrap;
@@ -374,9 +374,9 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: var(--space-2) var(--space-4);
+    padding: 8px 16px;
     border: 1px solid var(--border);
-    background: var(--card);
+    background: var(--surface);
     min-width: 140px;
   }
 
@@ -387,23 +387,23 @@
   }
 
   .gauge-val.optimal {
-    color: #4ade80;
+    color: var(--ok);
   }
 
   .gauge-val.warning {
-    color: #f87171;
+    color: var(--danger);
   }
 
   .gauge-label {
     font-size: 0.72rem;
     text-transform: uppercase;
-    color: var(--muted);
+    color: var(--text-3);
     font-weight: 600;
   }
 
   .metric-skew {
     display: flex;
-    gap: var(--space-4);
+    gap: 16px;
     flex-wrap: wrap;
   }
 
@@ -415,7 +415,7 @@
 
   .skew-item .lbl {
     font-size: 0.72rem;
-    color: var(--muted);
+    color: var(--text-3);
     text-transform: uppercase;
   }
 
@@ -426,55 +426,55 @@
 
   .recommendations-section,
   .rules-section {
-    padding: var(--space-3) var(--space-4);
+    padding: 12px 16px;
     border-bottom: 1px solid var(--border);
   }
 
   .recommendations-section h4,
   .rules-section h4 {
-    margin: 0 0 var(--space-2) 0;
+    margin: 0 0 8px 0;
     font-size: 0.85rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: 8px;
   }
 
   .count-badge {
     background: var(--accent);
-    color: #000;
+    color: var(--accent-contrast);
     font-size: 0.7rem;
     padding: 1px 6px;
     font-weight: 800;
   }
 
   .empty-recs {
-    padding: var(--space-3);
+    padding: 12px;
     font-size: 0.85rem;
-    color: var(--muted);
+    color: var(--text-3);
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: 8px;
   }
 
   .check-icon {
-    color: #4ade80;
+    color: var(--ok);
     font-weight: 900;
   }
 
   .rec-list {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: 8px;
   }
 
   .rec-row {
     display: flex;
     align-items: center;
-    gap: var(--space-3);
-    padding: var(--space-2) var(--space-3);
-    background: var(--card);
+    gap: 12px;
+    padding: 8px 12px;
+    background: var(--surface);
     border: 1px solid var(--border);
   }
 
@@ -483,7 +483,7 @@
   }
 
   .rec-stars {
-    color: #fbbf24;
+    color: var(--warn);
     font-size: 0.85rem;
     letter-spacing: 1px;
     white-space: nowrap;
@@ -500,43 +500,43 @@
     font-size: 0.85rem;
     display: flex;
     align-items: center;
-    gap: var(--space-1);
+    gap: 4px;
   }
 
   .arrow {
-    color: var(--muted);
+    color: var(--text-3);
   }
 
   .host-from {
-    color: #f87171;
+    color: var(--danger);
   }
 
   .host-to {
-    color: #4ade80;
+    color: var(--ok);
   }
 
   .rec-reason {
     font-size: 0.75rem;
-    color: var(--muted);
+    color: var(--text-3);
   }
 
   .rec-gain {
     font-size: 0.82rem;
-    color: #4ade80;
+    color: var(--ok);
     white-space: nowrap;
   }
 
   .rules-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-2);
+    gap: 8px;
   }
 
   .rule-chip {
     display: flex;
     align-items: center;
-    gap: var(--space-1);
-    background: var(--card);
+    gap: 4px;
+    background: var(--surface);
     border: 1px solid var(--border);
     padding: 3px 8px;
     font-size: 0.78rem;
@@ -545,13 +545,13 @@
   .kind-tag {
     font-size: 0.65rem;
     padding: 1px 4px;
-    background: #3b82f6;
-    color: #fff;
+    background: var(--info);
+    color: var(--accent-contrast);
     font-weight: 700;
   }
 
   .kind-tag.anti {
-    background: #ef4444;
+    background: var(--danger);
   }
 
   .rule-chip .name {
@@ -559,26 +559,26 @@
   }
 
   .rule-chip .count {
-    color: var(--muted);
+    color: var(--text-3);
   }
 
   .del-btn {
     background: none;
     border: none;
-    color: var(--muted);
+    color: var(--text-3);
     cursor: pointer;
     font-size: 1rem;
     padding: 0 3px;
   }
 
   .del-btn:hover {
-    color: #ef4444;
+    color: var(--danger);
   }
 
   .dialog-form {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
+    gap: 12px;
   }
 
   .dialog-form label {
@@ -605,7 +605,7 @@
   .dialog-actions {
     display: flex;
     justify-content: flex-end;
-    gap: var(--space-2);
-    margin-top: var(--space-2);
+    gap: 8px;
+    margin-top: 8px;
   }
 </style>
