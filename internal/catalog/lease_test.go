@@ -545,10 +545,16 @@ func TestLeaseManager_ExtendLease_MaxLeaseDaysAndPermissions(t *testing.T) {
 		t.Errorf("expected ErrUnauthorized for project viewer dave, got %v", err)
 	}
 
-	// 3. Project operator "bob" should be allowed.
-	extended, err := mgr.ExtendLease(savedReq.ID, "bob", auth.Viewer, nil, 3)
+	// 3. Project operator "bob" (not requester, not admin) should fail.
+	_, err = mgr.ExtendLease(savedReq.ID, "bob", auth.Viewer, nil, 3)
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("expected ErrUnauthorized for non-requester operator bob, got %v", err)
+	}
+
+	// 4. Project admin "carol" should be allowed.
+	extended, err := mgr.ExtendLease(savedReq.ID, "carol", auth.Viewer, nil, 3)
 	if err != nil {
-		t.Fatalf("expected project operator bob to be allowed, got error: %v", err)
+		t.Fatalf("expected project admin carol to be allowed, got error: %v", err)
 	}
 	if extended.State != LeaseStateActive {
 		t.Errorf("expected active state, got %q", extended.State)

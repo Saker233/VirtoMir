@@ -76,7 +76,7 @@ func SubmitRequest(store *Store, projects *project.Store, user string, groups []
 	}
 
 	if len(bp.AllowedProjects) > 0 && !slices.Contains(bp.AllowedProjects, req.ProjectID) {
-		return Request{}, invalidf("project %q is not allowed to use blueprint %q", req.ProjectID, bp.ID)
+		return Request{}, fmt.Errorf("%w: project %q is not allowed to use blueprint %q", ErrUnauthorized, req.ProjectID, bp.ID)
 	}
 
 	req.PresetID = strings.TrimSpace(req.PresetID)

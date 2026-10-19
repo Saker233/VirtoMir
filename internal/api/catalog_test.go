@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -322,9 +323,19 @@ func TestCatalogExtendLease(t *testing.T) {
 		t.Errorf("expiry not saved: %v", got.Expiry.UTC())
 	}
 
-	// A project operator may extend, too…
-	if rec := do(h, "POST", "/api/v1/catalog/requests/req1/extend", `{"days":1}`, op); rec.Code != http.StatusOK {
-		t.Errorf("project operator extend: %d %s", rec.Code, rec.Body)
+	// A project operator who is not the requester and not project admin cannot extend someone else's request.
+	if rec := do(h, "POST", "/api/v1/catalog/requests/req1/extend", `{"days":1}`, op); rec.Code != http.StatusForbidden {
+		t.Errorf("operator extend another user's lease: %d %s", rec.Code, rec.Body)
+	}
+
+	// An operator can extend their own request:
+	seedLeaseRequest(t, h, store, "req-op", "dev", "op")
+	if rec := do(h, "POST", "/api/v1/catalog/requests/req-op/extend", `{"days":1}`, op); rec.Code != http.StatusOK {
+		t.Errorf("operator extend own lease: %d %s", rec.Code, rec.Body)
+	}
+	// A project admin (view) may extend a request in their project:
+	if rec := do(h, "POST", "/api/v1/catalog/requests/req-op/extend", `{"days":1}`, view); rec.Code != http.StatusOK {
+		t.Errorf("project admin extend: %d %s", rec.Code, rec.Body)
 	}
 	// …as may a global admin.
 	if rec := do(h, "POST", "/api/v1/catalog/requests/req1/extend", `{"days":1}`, onur); rec.Code != http.StatusOK {
@@ -368,16 +379,16 @@ func TestCatalogRequestCancel(t *testing.T) {
 		t.Error("cancelled request still there")
 	}
 
-	// A non-pending record belongs to the admins.
+	// A non-pending record can only be deleted by project admins or global admins; an operator is forbidden.
 	if _, err := store.CreateRequest(catalog.Request{ID: "old-one", BlueprintID: "web", ProjectID: "dev",
 		Requester: "view", VMName: "gone", Status: catalog.StatusFailed}); err != nil {
 		t.Fatal(err)
 	}
-	if rec := do(h, "DELETE", "/api/v1/catalog/requests/old-one", "", view); rec.Code != http.StatusForbidden {
-		t.Errorf("requester deletes a non-pending record: %d %s", rec.Code, rec.Body)
+	if rec := do(h, "DELETE", "/api/v1/catalog/requests/old-one", "", op); rec.Code != http.StatusForbidden {
+		t.Errorf("operator deletes a non-pending record: %d %s", rec.Code, rec.Body)
 	}
-	if rec := do(h, "DELETE", "/api/v1/catalog/requests/old-one", "", onur); rec.Code != http.StatusNoContent {
-		t.Errorf("admin delete: %d %s", rec.Code, rec.Body)
+	if rec := do(h, "DELETE", "/api/v1/catalog/requests/old-one", "", view); rec.Code != http.StatusNoContent {
+		t.Errorf("project admin delete: %d %s", rec.Code, rec.Body)
 	}
 }
 
@@ -449,15 +460,18 @@ func TestCatalogShowback(t *testing.T) {
 		}
 	}
 
-	// A member with no project asked gets only their own; ?project enforces
-	// membership.
+	// A member who is not project admin is refused; project admin sees their project.
 	rec = do(h, "GET", base+"&project=other", "", op)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("member asks a foreign project: %d %s", rec.Code, rec.Body)
 	}
+	rec = do(h, "GET", base+"&project=dev", "", op)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("operator asks project showback: %d %s", rec.Code, rec.Body)
+	}
 	rec = do(h, "GET", base+"&project=dev", "", view)
 	if rec.Code != http.StatusOK {
-		t.Errorf("member asks their project: %d %s", rec.Code, rec.Body)
+		t.Errorf("project admin asks their project: %d %s", rec.Code, rec.Body)
 	}
 	var mine catalog.ShowbackReport
 	if err := json.Unmarshal(rec.Body.Bytes(), &mine); err != nil {
@@ -506,5 +520,397 @@ func TestCatalogClusterReplication(t *testing.T) {
 	}
 	if got, _ := b.api.catalog.GetBlueprint("wanderer"); got.ID != "wanderer" {
 		t.Errorf("beta blueprint after replicated create: %+v", got)
+	}
+}
+
+func TestCatalogMemberRoleIntegration(t *testing.T) {
+	doms := []virt.Domain{
+		{UUID: "u-a", Name: "vm-a", Project: "team-a", State: virt.StateRunning, VCPUs: 2, MaxMemoryKiB: 2048 << 10},
+		{UUID: "u-b", Name: "vm-b", Project: "team-b", State: virt.StateRunning, VCPUs: 4, MaxMemoryKiB: 4096 << 10},
+	}
+	authn := memberStubAuthn{
+		"onur":    "pw",
+		"op-a":    "pw",
+		"admin-a": "pw",
+		"op-b":    "pw",
+		"admin-b": "pw",
+	}
+	m := auth.New(authn, func(u string) auth.Role {
+		return map[string]auth.Role{
+			"onur":    auth.Admin,
+			"op-a":    auth.Member,
+			"admin-a": auth.Member,
+			"op-b":    auth.Member,
+			"admin-b": auth.Member,
+		}[u]
+	})
+	pj, err := project.Open(filepath.Join(t.TempDir(), "projects.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []project.Project{
+		{ID: "team-a", Name: "Team A", Members: []project.Member{
+			{Kind: "user", Name: "op-a", Role: "operator"},
+			{Kind: "user", Name: "admin-a", Role: "admin"},
+		}},
+		{ID: "team-b", Name: "Team B", Members: []project.Member{
+			{Kind: "user", Name: "op-b", Role: "operator"},
+			{Kind: "user", Name: "admin-b", Role: "admin"},
+		}},
+	} {
+		if _, err := pj.Create(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := catalog.Open(filepath.Join(t.TempDir(), "catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alog, _ := activity.Open("")
+	b := &fakeBackend{domains: doms}
+	lm := catalog.NewLeaseManager(store, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), catalog.WithProjectStore(pj))
+	h := NewServer(Options{
+		Backend:  b,
+		Live:     &fakeLive{},
+		Auth:     m,
+		Projects: pj,
+		Catalog:  store,
+		LeaseMgr: lm,
+		Activity: alog,
+		Jobs:     jobs.New(context.Background()),
+		GroupsOf: func(string) []string { return nil },
+		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}).Handler()
+
+	onurCookie := signIn(t, h, "onur")
+	opACookie := signIn(t, h, "op-a")
+	adminACookie := signIn(t, h, "admin-a")
+
+	// Seed blueprints
+	for _, bp := range []catalog.Blueprint{
+		{
+			ID: "bp-all", Name: "Global Blueprint", SourceType: catalog.SourceTypeImage, SourceRef: "base.img",
+			RequireApproval: true, AllowedProjects: []string{},
+			Presets: []catalog.SizePreset{{ID: "s", Name: "Small", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10}},
+		},
+		{
+			ID: "bp-a", Name: "Team A Blueprint", SourceType: catalog.SourceTypeImage, SourceRef: "team-a.img",
+			RequireApproval: true, AllowedProjects: []string{"team-a"},
+			Presets: []catalog.SizePreset{{ID: "s", Name: "Small", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10}},
+		},
+		{
+			ID: "bp-b", Name: "Team B Blueprint", SourceType: catalog.SourceTypeImage, SourceRef: "team-b.img",
+			RequireApproval: true, AllowedProjects: []string{"team-b"},
+			Presets: []catalog.SizePreset{{ID: "s", Name: "Small", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10}},
+		},
+	} {
+		if _, err := store.CreateBlueprint(bp); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// First, let op-a submit a request to team-a so we have an active request to work with
+	recSubmit := do(h, "POST", "/api/v1/catalog/requests", `{"blueprintId":"bp-a","projectId":"team-a","vmName":"vm-a-1"}`, opACookie)
+	if recSubmit.Code != http.StatusCreated {
+		t.Fatalf("op-a initial submit: %d %s", recSubmit.Code, recSubmit.Body)
+	}
+	var reqA catalog.Request
+	if err := json.Unmarshal(recSubmit.Body.Bytes(), &reqA); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed a request in team-b for cross-project approval check
+	reqB := catalog.Request{
+		ID:          "req-b-pending",
+		BlueprintID: "bp-b",
+		ProjectID:   "team-b",
+		Requester:   "op-b",
+		VMName:      "vm-b-pending",
+		Status:      catalog.StatusPendingApproval,
+		CreatedAt:   time.Now().UTC(),
+	}
+	if _, err := store.CreateRequest(reqB); err != nil {
+		t.Fatal(err)
+	}
+
+	// Table-driven verification of member access scenarios
+	cases := []struct {
+		name       string
+		method     string
+		path       string
+		body       string
+		cookie     *http.Cookie
+		wantStatus int
+		check      func(t *testing.T, rec *httptest.ResponseRecorder)
+	}{
+		{
+			name:       "op-a lists allowed blueprints (sees bp-all and bp-a, not bp-b)",
+			method:     "GET",
+			path:       "/api/v1/catalog/blueprints",
+			cookie:     opACookie,
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				var res struct {
+					Blueprints []catalog.Blueprint `json:"blueprints"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+					t.Fatal(err)
+				}
+				var ids []string
+				for _, bp := range res.Blueprints {
+					ids = append(ids, bp.ID)
+				}
+				if !slices.Contains(ids, "bp-all") || !slices.Contains(ids, "bp-a") {
+					t.Errorf("expected bp-all and bp-a in %v", ids)
+				}
+				if slices.Contains(ids, "bp-b") {
+					t.Errorf("bp-b should not be visible to op-a: %v", ids)
+				}
+			},
+		},
+		{
+			name:       "op-a get allowed blueprint bp-a succeeds",
+			method:     "GET",
+			path:       "/api/v1/catalog/blueprints/bp-a",
+			cookie:     opACookie,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "op-a get disallowed blueprint bp-b returns 404",
+			method:     "GET",
+			path:       "/api/v1/catalog/blueprints/bp-b",
+			cookie:     opACookie,
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "op-a orders into team-a with disallowed blueprint bp-b fails 403",
+			method:     "POST",
+			path:       "/api/v1/catalog/requests",
+			body:       `{"blueprintId":"bp-b","projectId":"team-a","vmName":"vm-bad-bp"}`,
+			cookie:     opACookie,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "op-a cannot order into team-b fails 403",
+			method:     "POST",
+			path:       "/api/v1/catalog/requests",
+			body:       `{"blueprintId":"bp-b","projectId":"team-b","vmName":"vm-bad-proj"}`,
+			cookie:     opACookie,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "op-a cannot approve own pending request in team-a fails 403",
+			method:     "POST",
+			path:       "/api/v1/catalog/requests/" + reqA.ID + "/approve",
+			body:       `{"comment":"self-approval"}`,
+			cookie:     opACookie,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "admin-a cannot approve pending request in team-b fails 403",
+			method:     "POST",
+			path:       "/api/v1/catalog/requests/req-b-pending/approve",
+			body:       `{"comment":"cross-project approval"}`,
+			cookie:     adminACookie,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "admin-a approves pending request in team-a succeeds 202",
+			method:     "POST",
+			path:       "/api/v1/catalog/requests/" + reqA.ID + "/approve",
+			body:       `{"comment":"approved by team admin"}`,
+			cookie:     adminACookie,
+			wantStatus: http.StatusAccepted,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := do(h, tc.method, tc.path, tc.body, tc.cookie)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("%s %s got status %d, want %d; body: %s", tc.method, tc.path, rec.Code, tc.wantStatus, rec.Body)
+			}
+			if tc.check != nil {
+				tc.check(t, rec)
+			}
+		})
+	}
+
+	// Lease extension tests
+	// Seed active lease for reqA
+	leaseA := catalog.Lease{
+		RequestID:   reqA.ID,
+		MachineUUID: "m-" + reqA.ID,
+		ProjectID:   "team-a",
+		Expiry:      time.Now().UTC().Add(7 * 24 * time.Hour),
+		State:       catalog.LeaseStateActive,
+	}
+	if err := store.SaveLease(leaseA); err != nil {
+		t.Fatal(err)
+	}
+	reqA.MachineUUID = "m-" + reqA.ID
+	reqA.Status = catalog.StatusActive
+	_ = store.UpdateRequest(reqA)
+
+	// Seed another request and lease in team-a owned by admin-a
+	otherReq := catalog.Request{
+		ID:          "req-admin-a",
+		BlueprintID: "bp-a",
+		ProjectID:   "team-a",
+		Requester:   "admin-a",
+		VMName:      "vm-admin-a",
+		Status:      catalog.StatusActive,
+		MachineUUID: "m-admin-a",
+		CreatedAt:   time.Now().UTC(),
+	}
+	if _, err := store.CreateRequest(otherReq); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveLease(catalog.Lease{
+		RequestID:   "req-admin-a",
+		MachineUUID: "m-admin-a",
+		ProjectID:   "team-a",
+		Expiry:      time.Now().UTC().Add(7 * 24 * time.Hour),
+		State:       catalog.LeaseStateActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	leaseCases := []struct {
+		name       string
+		method     string
+		path       string
+		body       string
+		cookie     *http.Cookie
+		wantStatus int
+	}{
+		{
+			name:       "op-a can extend own request",
+			method:     "POST",
+			path:       "/api/v1/catalog/requests/" + reqA.ID + "/extend",
+			body:       `{"days":3}`,
+			cookie:     opACookie,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "op-a cannot extend another user's request even in team-a fails 403",
+			method:     "POST",
+			path:       "/api/v1/catalog/requests/req-admin-a/extend",
+			body:       `{"days":3}`,
+			cookie:     opACookie,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "admin-a as project admin can extend any request in team-a",
+			method:     "POST",
+			path:       "/api/v1/catalog/requests/" + reqA.ID + "/extend",
+			body:       `{"days":2}`,
+			cookie:     adminACookie,
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tc := range leaseCases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := do(h, tc.method, tc.path, tc.body, tc.cookie)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("%s %s got status %d, want %d; body: %s", tc.method, tc.path, rec.Code, tc.wantStatus, rec.Body)
+			}
+		})
+	}
+
+	// Showback scoping tests
+	baseShowback := "/api/v1/catalog/showback?year=2026&month=6"
+	showbackCases := []struct {
+		name       string
+		path       string
+		cookie     *http.Cookie
+		wantStatus int
+		check      func(t *testing.T, rec *httptest.ResponseRecorder)
+	}{
+		{
+			name:       "admin-a sees showback for their project team-a",
+			path:       baseShowback + "&project=team-a",
+			cookie:     adminACookie,
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				var rep catalog.ShowbackReport
+				if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
+					t.Fatal(err)
+				}
+				if len(rep.Projects) != 1 || rep.Projects[0].ProjectID != "team-a" {
+					t.Errorf("unexpected projects in admin-a team-a showback: %+v", rep.Projects)
+				}
+			},
+		},
+		{
+			name:       "admin-a cannot see showback for team-b fails 403",
+			path:       baseShowback + "&project=team-b",
+			cookie:     adminACookie,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "admin-a without project parameter sees only their projects (team-a)",
+			path:       baseShowback,
+			cookie:     adminACookie,
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				var rep catalog.ShowbackReport
+				if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
+					t.Fatal(err)
+				}
+				if len(rep.Projects) != 1 || rep.Projects[0].ProjectID != "team-a" {
+					t.Errorf("admin-a unfiltered showback should only contain team-a, got: %+v", rep.Projects)
+				}
+			},
+		},
+		{
+			name:       "op-a (operator, not project admin) asks for team-a showback fails 403",
+			path:       baseShowback + "&project=team-a",
+			cookie:     opACookie,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "op-a without project parameter gets empty project report",
+			path:       baseShowback,
+			cookie:     opACookie,
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				var rep catalog.ShowbackReport
+				if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
+					t.Fatal(err)
+				}
+				if len(rep.Projects) != 0 {
+					t.Errorf("op-a unfiltered showback should be empty, got: %+v", rep.Projects)
+				}
+			},
+		},
+		{
+			name:       "global admin sees all projects",
+			path:       baseShowback,
+			cookie:     onurCookie,
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, rec *httptest.ResponseRecorder) {
+				var rep catalog.ShowbackReport
+				if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
+					t.Fatal(err)
+				}
+				if len(rep.Projects) != 2 {
+					t.Errorf("global admin should see all 2 projects, got: %d", len(rep.Projects))
+				}
+			},
+		},
+	}
+
+	for _, tc := range showbackCases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := do(h, "GET", tc.path, "", tc.cookie)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("GET %s got status %d, want %d; body: %s", tc.path, rec.Code, tc.wantStatus, rec.Body)
+			}
+			if tc.check != nil {
+				tc.check(t, rec)
+			}
+		})
 	}
 }

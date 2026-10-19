@@ -316,18 +316,18 @@ func (m *LeaseManager) ExtendLease(requestID, user string, role auth.Role, group
 		return Lease{}, invalidf("cannot extend terminated lease for machine %q", lease.MachineUUID)
 	}
 
-	// Caller must be request.Requester, project operator/admin in request.ProjectID, or global admin.
+	// Caller must be request.Requester, project admin in request.ProjectID, or global admin.
 	isGlobalAdmin := role >= auth.Admin
 	isRequester := user != "" && user == req.Requester
-	isProjectOpOrAdmin := false
+	isProjectAdmin := false
 	if m.projects != nil {
 		pRole, isMember := m.projects.RoleFor(req.ProjectID, user, groups)
-		if isMember && (pRole == "operator" || pRole == "admin") {
-			isProjectOpOrAdmin = true
+		if isMember && pRole == "admin" {
+			isProjectAdmin = true
 		}
 	}
-	if !isGlobalAdmin && !isRequester && !isProjectOpOrAdmin {
-		return Lease{}, fmt.Errorf("%w: caller %q is not authorized to extend lease for request %q", ErrUnauthorized, user, requestID)
+	if !isGlobalAdmin && !isRequester && !isProjectAdmin {
+		return Lease{}, fmt.Errorf("%w: caller %q is not authorized to extend lease for request %q (must be requester, project admin, or global admin)", ErrUnauthorized, user, requestID)
 	}
 
 	if additionalDays <= 0 {

@@ -75,19 +75,41 @@ func ExternalRoleFallback(pj *project.Store) func(user string, groups []string) 
 	}
 }
 
-// memberAllowed reports whether a GET/HEAD endpoint is accessible to a Member.
+// memberAllowed reports whether an endpoint is accessible to a Member (ADR-0060, ADR-0065).
 func (s *Server) memberAllowed(id auth.Identity, method, path string) bool {
 	if id.Role != auth.Member {
 		return false
 	}
-	if method != http.MethodGet && method != http.MethodHead {
-		return false
-	}
-	if path == "/api/v1/domains" || path == "/api/v1/projects" {
-		return true
-	}
-	if rest, ok := strings.CutPrefix(path, "/api/v1/projects/"); ok {
-		return rest != "" && !strings.Contains(rest, "/")
+	switch method {
+	case http.MethodGet, http.MethodHead:
+		if path == "/api/v1/domains" || path == "/api/v1/projects" || path == "/api/v1/catalog/blueprints" ||
+			path == "/api/v1/catalog/requests" || path == "/api/v1/catalog/showback" {
+			return true
+		}
+		if rest, ok := strings.CutPrefix(path, "/api/v1/projects/"); ok {
+			return rest != "" && !strings.Contains(rest, "/")
+		}
+		if rest, ok := strings.CutPrefix(path, "/api/v1/catalog/blueprints/"); ok {
+			return rest != "" && !strings.Contains(rest, "/")
+		}
+		if rest, ok := strings.CutPrefix(path, "/api/v1/catalog/requests/"); ok {
+			return rest != "" && !strings.Contains(rest, "/")
+		}
+	case http.MethodPost:
+		if path == "/api/v1/catalog/requests" {
+			return true
+		}
+		if rest, ok := strings.CutPrefix(path, "/api/v1/catalog/requests/"); ok {
+			for _, action := range []string{"/extend", "/approve", "/reject"} {
+				if reqID, found := strings.CutSuffix(rest, action); found {
+					return reqID != "" && !strings.Contains(reqID, "/")
+				}
+			}
+		}
+	case http.MethodDelete:
+		if rest, ok := strings.CutPrefix(path, "/api/v1/catalog/requests/"); ok {
+			return rest != "" && !strings.Contains(rest, "/")
+		}
 	}
 	return false
 }
