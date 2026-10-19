@@ -152,6 +152,7 @@ type StepLog struct {
 	Name        string     `json:"name"`
 	BootGroupID string     `json:"bootGroupId,omitempty"`
 	VMUUID      string     `json:"vmUuid,omitempty"`
+	DomainUUID  string     `json:"domainUuid,omitempty"` // the test domain the step defined, so cleanup can stop it
 	Status      StepStatus `json:"status"`
 	Output      string     `json:"output,omitempty"`
 	Error       string     `json:"error,omitempty"`

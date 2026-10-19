@@ -448,13 +448,13 @@ func (s *Store) RecordRun(run ExecutionRun) error {
 	return nil
 }
 
-// GetRun returns one execution run from the history.
+// GetRun returns one execution run from the history (newest first).
 func (s *Store) GetRun(id string) (ExecutionRun, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for _, r := range s.runs {
-		if r.ID == id {
-			return r, true
+	for i := len(s.runs) - 1; i >= 0; i-- {
+		if s.runs[i].ID == id {
+			return s.runs[i], true
 		}
 	}
 	return ExecutionRun{}, false
