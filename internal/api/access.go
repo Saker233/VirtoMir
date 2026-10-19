@@ -110,6 +110,12 @@ func requiredRole(method, path string) auth.Role {
 		return auth.Admin // who may sign in and who may create what is the admins' business
 	case strings.Contains(path, "/console/"):
 		return auth.Operator // a console is control over the machine
+	// Self-service catalog (ADR-0065): ordering a machine, approving it, extending its
+	// lease and cancelling an order is tenant work; the handlers decide who may do
+	// what to whom (project membership, requester, admins). Blueprint and pricing
+	// edits stay admin-only through the default below.
+	case strings.HasPrefix(path, "/api/v1/catalog/requests") && method != http.MethodGet:
+		return auth.Viewer
 	case strings.HasPrefix(path, "/api/v1/domains/") && strings.HasSuffix(path, "/project"):
 		return auth.Operator // moving a machine into/out of a project: the handler checks both projects
 	case method == http.MethodGet || method == http.MethodHead:

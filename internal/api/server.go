@@ -16,6 +16,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/activity"
 	"github.com/onurbaydas/virtomir/internal/alerts"
 	"github.com/onurbaydas/virtomir/internal/auth"
+	"github.com/onurbaydas/virtomir/internal/catalog"
 	"github.com/onurbaydas/virtomir/internal/cluster"
 	"github.com/onurbaydas/virtomir/internal/confighist"
 	"github.com/onurbaydas/virtomir/internal/drs"
@@ -157,6 +158,10 @@ type Options struct {
 	RateLimiter *auth.RateLimiter
 	// ZFSRep nil: no ZFS replication.
 	ZFSRep *zfsrep.Manager
+	// Catalog nil: no self-service catalog (ADR-0065). LeaseMgr nil: catalog machines
+	// never expire.
+	Catalog  *catalog.Store
+	LeaseMgr *catalog.LeaseManager
 }
 
 type Server struct {
@@ -204,6 +209,8 @@ type Server struct {
 	projects        *project.Store
 	rateLimiter     *auth.RateLimiter
 	zfsRep          *zfsrep.Manager
+	catalog         *catalog.Store
+	leaseMgr        *catalog.LeaseManager
 }
 
 func NewServer(o Options) *Server {
@@ -242,7 +249,8 @@ func NewServer(o Options) *Server {
 		confighist: o.ConfigHistory, quotas: o.Quotas, groupsOf: o.GroupsOf,
 		ha: o.HA, reports: o.Reports, respools: o.Respools, hostinfo: o.HostInfo, updater: o.Updater, stateDir: o.StateDir, hostnet: o.HostNet, offsite: o.Offsite,
 		vmwareStore: o.VMwareStore, vmwareWaves: o.VMwareWaves, vmwareLister: vl, vmwarePreflight: vp, vmwareConverter: vc,
-		drs: o.DRS, placement: o.Placement, projects: o.Projects, rateLimiter: rl, zfsRep: o.ZFSRep}
+		drs: o.DRS, placement: o.Placement, projects: o.Projects, rateLimiter: rl, zfsRep: o.ZFSRep,
+		catalog: o.Catalog, leaseMgr: o.LeaseMgr}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -290,6 +298,7 @@ func (s *Server) Handler() http.Handler {
 	s.drsRoutes(mux)
 	s.placementRoutes(mux)
 	s.projectRoutes(mux)
+	s.catalogRoutes(mux)
 
 	spec := s.openAPI(mux.routes) // everything above, built once
 	mux.HandleFunc("GET /api/v1/openapi.json", func(w http.ResponseWriter, _ *http.Request) {

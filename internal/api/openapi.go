@@ -120,6 +120,119 @@ func projectSchema() map[string]any {
 	}
 }
 
+// catalogSchemas describe the self-service catalog (ADR-0065) in the OpenAPI document.
+func catalogSchemas() map[string]any {
+	str := func() map[string]any { return map[string]any{"type": "string"} }
+	num := func() map[string]any { return map[string]any{"type": "number"} }
+	return map[string]any{
+		"SizePreset": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":        str(),
+				"name":      str(),
+				"vcpus":     map[string]any{"type": "integer"},
+				"memoryMiB": map[string]any{"type": "integer", "format": "int64"},
+				"diskGiB":   map[string]any{"type": "integer", "format": "int64"},
+			},
+		},
+		"InputField": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"key":      str(),
+				"label":    str(),
+				"type":     map[string]any{"type": "string", "description": "string, password, ssh_key, number or select"},
+				"required": map[string]any{"type": "boolean"},
+				"default":  str(),
+				"options":  map[string]any{"type": "array", "items": str()},
+			},
+		},
+		"Blueprint": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":                str(),
+				"name":              str(),
+				"description":       str(),
+				"icon":              str(),
+				"sourceType":        map[string]any{"type": "string", "description": "template or image"},
+				"sourceRef":         str(),
+				"targetPool":        str(),
+				"presets":           map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/SizePreset"}},
+				"defaultPresetId":   str(),
+				"allowedNetworks":   map[string]any{"type": "array", "items": str()},
+				"cloudInitTemplate": str(),
+				"cloudInitFields":   map[string]any{"type": "array", "items": map[string]any{"$ref": "#/components/schemas/InputField"}},
+				"allowedProjects":   map[string]any{"type": "array", "items": str()},
+				"requireApproval":   map[string]any{"type": "boolean"},
+				"defaultLeaseDays":  map[string]any{"type": "integer"},
+				"maxLeaseDays":      map[string]any{"type": "integer"},
+				"created":           str(),
+				"updated":           str(),
+			},
+		},
+		"CatalogRequest": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":            str(),
+				"blueprintId":   str(),
+				"projectId":     str(),
+				"requester":     str(),
+				"vmName":        str(),
+				"presetId":      str(),
+				"vcpus":         map[string]any{"type": "integer"},
+				"memoryMiB":     map[string]any{"type": "integer", "format": "int64"},
+				"diskGiB":       map[string]any{"type": "integer", "format": "int64"},
+				"network":       str(),
+				"fieldValues":   map[string]any{"type": "object", "additionalProperties": str()},
+				"leaseDays":     map[string]any{"type": "integer"},
+				"status":        map[string]any{"type": "string", "description": "pending_approval, approved, rejected, provisioning, active, expired or failed"},
+				"createdAt":     str(),
+				"reviewedAt":    str(),
+				"reviewedBy":    str(),
+				"reviewComment": str(),
+				"machineUuid":   str(),
+				"errorMessage":  str(),
+			},
+		},
+		"PricingConfig": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"vcpuHour":     num(),
+				"ramGiBHour":   num(),
+				"diskGiBMonth": num(),
+				"currency":     str(),
+			},
+		},
+		"ShowbackReport": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"period":        map[string]any{"type": "string", "description": "YYYY-MM"},
+				"year":          map[string]any{"type": "integer"},
+				"month":         map[string]any{"type": "integer"},
+				"generatedAt":   str(),
+				"currency":      str(),
+				"pricing":       map[string]any{"$ref": "#/components/schemas/PricingConfig"},
+				"totalCost":     num(),
+				"totalMachines": map[string]any{"type": "integer"},
+				"projects": map[string]any{"type": "array", "items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"projectId":      str(),
+						"projectName":    str(),
+						"machineCount":   map[string]any{"type": "integer"},
+						"totalVcpus":     map[string]any{"type": "integer"},
+						"totalMemoryMiB": map[string]any{"type": "integer", "format": "int64"},
+						"totalDiskGiB":   map[string]any{"type": "integer", "format": "int64"},
+						"vcpuCost":       num(),
+						"ramCost":        num(),
+						"diskCost":       num(),
+						"totalCost":      num(),
+					},
+				}},
+			},
+		},
+	}
+}
+
 // openAPI builds an OpenAPI 3.1 document of the registered routes: path, method, parameters,
 // the role each needs and how to authenticate. Bodies are JSON unless noted; the types are
 // the ones in web/src/lib/api.ts.
@@ -175,6 +288,19 @@ func (s *Server) openAPI(routes []route) map[string]any {
 			if strings.HasPrefix(p, "/api/v1/domains/") && strings.HasSuffix(p, "/project") {
 				body = map[string]any{"type": "object", "properties": map[string]any{"project": map[string]any{"type": "string", "description": "the project the machine moves into; empty makes it global again"}}}
 			}
+			switch {
+			case strings.HasPrefix(p, "/api/v1/catalog/blueprints"):
+				body = map[string]any{"$ref": "#/components/schemas/Blueprint"}
+			case p == "/api/v1/catalog/requests":
+				body = map[string]any{"$ref": "#/components/schemas/CatalogRequest"}
+			case strings.HasPrefix(p, "/api/v1/catalog/requests/") && strings.HasSuffix(p, "/approve"),
+				strings.HasPrefix(p, "/api/v1/catalog/requests/") && strings.HasSuffix(p, "/reject"):
+				body = map[string]any{"type": "object", "properties": map[string]any{"comment": map[string]any{"type": "string"}}}
+			case strings.HasPrefix(p, "/api/v1/catalog/requests/") && strings.HasSuffix(p, "/extend"):
+				body = map[string]any{"type": "object", "properties": map[string]any{"days": map[string]any{"type": "integer"}}}
+			case p == "/api/v1/catalog/pricing":
+				body = map[string]any{"$ref": "#/components/schemas/PricingConfig"}
+			}
 			op["requestBody"] = map[string]any{"content": map[string]any{"application/json": map[string]any{"schema": body}}}
 		}
 		if paths[p] == nil {
@@ -191,7 +317,7 @@ func (s *Server) openAPI(routes []route) map[string]any {
 	for _, t := range names {
 		tagList = append(tagList, map[string]any{"name": t})
 	}
-	return map[string]any{
+	doc := map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
 			"title":   "VirtoMir API",
@@ -215,4 +341,8 @@ func (s *Server) openAPI(routes []route) map[string]any {
 		},
 		"security": []any{map[string]any{"token": []any{}}, map[string]any{"session": []any{}}},
 	}
+	for name, sch := range catalogSchemas() { // self-service catalog (ADR-0065)
+		doc["components"].(map[string]any)["schemas"].(map[string]any)[name] = sch
+	}
+	return doc
 }
