@@ -22,13 +22,23 @@
   let open = $state(false)
   let armed = $state<number | null>(null)
   let up = $state(false)
+  // Fixed position next to the trigger; the menu lives on <body> so no card or stacking context can cover it.
+  let pos = $state('')
   let root: HTMLDivElement
   let button: HTMLButtonElement
+  let menuEl = $state<HTMLDivElement>()
+
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node)
+    return { destroy: () => node.remove() }
+  }
 
   function toggle() {
     if (!open) {
       const r = button.getBoundingClientRect()
       up = window.innerHeight - r.bottom < 56 + items.length * 40
+      const right = `right: ${Math.max(8, window.innerWidth - r.right)}px;`
+      pos = up ? `${right} bottom: ${window.innerHeight - r.top + 6}px;` : `${right} top: ${r.bottom + 6}px;`
     }
     open = !open
     armed = null
@@ -53,8 +63,13 @@
   $effect(() => {
     if (!open) return
     const onDown = (e: PointerEvent) => {
-      if (!root.contains(e.target as Node)) close()
+      const t = e.target as Node
+      if (!root.contains(t) && !menuEl?.contains(t)) close()
     }
+    // A fixed menu would drift away from its trigger on scroll or resize; close it instead.
+    const onMove = () => close()
+    window.addEventListener('scroll', onMove, true)
+    window.addEventListener('resize', onMove)
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         close()
@@ -66,6 +81,8 @@
     return () => {
       document.removeEventListener('pointerdown', onDown, true)
       document.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', onMove, true)
+      window.removeEventListener('resize', onMove)
     }
   })
 </script>
@@ -83,7 +100,7 @@
     <Ellipsis size={16} />
   </button>
   {#if open}
-    <div class="menu" class:up role="menu">
+    <div class="menu" class:up role="menu" style={pos} bind:this={menuEl} use:portal>
       {#each items as item, i (item.label)}
         {@const Icon = item.icon}
         <button
@@ -129,10 +146,8 @@
     color: var(--text);
   }
   .menu {
-    position: absolute;
-    right: 0;
-    top: calc(100% + 6px);
-    z-index: 20;
+    position: fixed;
+    z-index: 1000;
     min-width: 220px;
     padding: 3px;
     background: var(--surface);
@@ -145,8 +160,6 @@
     transform-origin: top right;
   }
   .menu.up {
-    top: auto;
-    bottom: calc(100% + 6px);
     transform-origin: bottom right;
   }
   .item {
