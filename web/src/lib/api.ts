@@ -465,6 +465,61 @@ export interface SIEMConfig {
 }
 
 
+// ---- Compliance & audit integrity (mirror internal/compliance, internal/activity) ----
+
+/** Severity expresses the security impact of a compliance finding. */
+export type CheckSeverity = 'critical' | 'high' | 'medium' | 'low'
+
+/** The evaluation outcome of an individual compliance check. */
+export type CheckStatus = 'pass' | 'fail' | 'warn' | 'error'
+
+export interface ComplianceCheck {
+  id: string
+  title: string
+  /** "SSH", "Virtualization", "Firewall", "Kernel", "System". */
+  category: string
+  severity: CheckSeverity
+  status: CheckStatus
+  detail: string
+  remediation: string
+  benchmark: string
+}
+
+export interface HostCompliance {
+  hostId: string
+  hostName: string
+  evaluatedAt: string
+  /** 0–100 percentage; -1 when a cluster peer could not be reached. */
+  score: number
+  passedCount: number
+  failedCount: number
+  warningCount: number
+  totalCount: number
+  results: ComplianceCheck[]
+}
+
+/** Host kernel FIPS state and the daemon's TLS restriction profile. Evaluation is experimental. */
+export interface FIPSInfo {
+  kernelEnabled: boolean
+  enforced: boolean
+  tlsMinVersion: string
+  cipherSuites: string[]
+  curves: string[]
+  description: string
+}
+
+/** Tamper-evident audit log verification: the hash chain across activity.jsonl. */
+export interface AuditVerification {
+  valid: boolean
+  verifiedCount: number
+  firstSeq?: number
+  lastSeq?: number
+  headHash?: string
+  tamperedSeq?: number
+  tamperedIndex?: number
+  reason?: string
+}
+
 export interface Job {
   id: string
   kind: string
@@ -1092,6 +1147,17 @@ export const api = {
   },
   siemConfig: () => request<SIEMConfig>('GET', '/api/v1/activity/siem'),
   saveSiemConfig: (cfg: SIEMConfig) => request<SIEMConfig>('PUT', '/api/v1/activity/siem', cfg),
+  /** Re-runs the tamper-evident chain check over the whole audit log (operator). */
+  verifyAuditLog: () => request<AuditVerification>('POST', '/api/v1/activity/verify'),
+  /** Where to download the audit trail (GET; an admin download). */
+  exportAuditLogURL: (format: 'jsonl' | 'csv') => scoped(`/api/v1/activity/export?format=${format}`),
+
+  // Compliance & hardening (ADR-0064)
+  complianceChecks: (refresh = false) => request<HostCompliance>('GET', `/api/v1/compliance/checks${refresh ? '?refresh=1' : ''}`),
+  runComplianceScan: () => request<HostCompliance>('POST', '/api/v1/compliance/checks/run'),
+  complianceFIPS: () => request<FIPSInfo>('GET', '/api/v1/compliance/fips'),
+  /** The host's own posture first, then every reachable cluster member's (score -1 = unreachable). */
+  clusterCompliance: () => request<HostCompliance[]>('GET', '/api/v1/cluster/compliance'),
 
 
   alerts: async (host?: string) => (await request<{ alerts: Alert[] }>('GET', at(host, '/api/v1/alerts'))).alerts,

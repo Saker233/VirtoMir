@@ -206,4 +206,71 @@ describe('demo API', () => {
 
     vi.useRealTimers()
   })
+
+  it('serves compliance posture, FIPS info and audit verification per host', () => {
+    // Checks (same shape the real GET /api/v1/compliance/checks returns).
+    const checks = call('GET', '/api/v1/compliance/checks').json
+    expect(checks.hostId).toBe('a1b2c3d4e5f60718')
+    expect(checks.totalCount).toBe(checks.results.length)
+    expect(checks.score).toBe(Math.round((checks.passedCount * 100) / checks.totalCount))
+    expect(checks.results.some((c: any) => c.category === 'SSH' && c.benchmark.length > 0)).toBe(true)
+
+    // A weaker host elsewhere in the cluster.
+    const other = call('GET', '/api/v1/hosts/c3d4e5f60718293a/compliance/checks').json
+    expect(other.failedCount).toBeGreaterThan(1)
+    expect(other.score).toBeLessThan(checks.score)
+
+    // Running a scan refreshes evaluatedAt.
+    const before = call('GET', '/api/v1/compliance/checks').json.evaluatedAt
+    vi.useFakeTimers()
+    const scan = call('POST', '/api/v1/compliance/checks/run').json
+    expect(new Date(scan.evaluatedAt).getTime()).toBeGreaterThan(new Date(before).getTime())
+    vi.useRealTimers()
+
+    // Cluster aggregation: one entry per member.
+    const cluster = call('GET', '/api/v1/cluster/compliance').json
+    expect(cluster).toHaveLength(3)
+    expect(cluster[0].hostName).toBe('hv-01')
+    expect(cluster.every((c: any) => c.results.length > 0)).toBe(true)
+
+    // FIPS profile
+    const fips = call('GET', '/api/v1/compliance/fips').json
+    expect(fips.kernelEnabled).toBe(true)
+    expect(fips.enforced).toBe(true)
+    expect(fips.tlsMinVersion).toBe('TLS 1.2')
+    expect(fips.cipherSuites.length).toBeGreaterThan(0)
+    expect(fips.curves).toEqual(['P-256', 'P-384', 'P-521'])
+
+    // Audit log verification: intact here, tampered on hv-03.
+    const audit = call('POST', '/api/v1/activity/verify').json
+    expect(audit.valid).toBe(true)
+    expect(audit.verifiedCount).toBeGreaterThan(0)
+    expect(audit.lastSeq).toBeGreaterThan(0)
+    expect(audit.headHash).toMatch(/^[0-9a-f]{64}$/)
+    const tampered = call('POST', '/api/v1/hosts/c3d4e5f60718293a/activity/verify').json
+    expect(tampered.valid).toBe(false)
+    expect(tampered.tamperedSeq).toBeGreaterThan(1)
+    expect(tampered.reason.length).toBeGreaterThan(0)
+
+    // A compliance report is generated like any other kind, with its own title.
+    const rep = call('POST', '/api/v1/reports', { kind: 'compliance', format: 'csv' }).json
+    expect(rep.kind).toBe('compliance')
+    expect(rep.title).toBe('Security compliance')
+    expect(rep.format).toBe('csv')
+  })
+
+  it('exports the audit log as JSONL and CSV text', () => {
+    const jsonl = handle('GET', new URL('http://demo/api/v1/activity/export?format=jsonl'), null)
+    expect(jsonl.status).toBe(200)
+    expect(jsonl.type).toContain('application/jsonl')
+    const lines = (jsonl.body as string).split('\n')
+    expect(lines.length).toBeGreaterThan(1)
+    for (const l of lines) expect(() => JSON.parse(l)).not.toThrow()
+
+    const csv = handle('GET', new URL('http://demo/api/v1/activity/export?format=csv'), null)
+    expect(csv.type).toContain('text/csv')
+    const rows = (csv.body as string).split('\n')
+    expect(rows[0]).toBe('time,user,method,path,status,error')
+    expect(rows.length).toBe(lines.length + 1)
+  })
 })

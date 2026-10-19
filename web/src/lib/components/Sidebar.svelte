@@ -16,6 +16,7 @@
   import Boxes from '@lucide/svelte/icons/boxes'
   import CircuitBoard from '@lucide/svelte/icons/circuit-board'
   import FileText from '@lucide/svelte/icons/file-text'
+  import ShieldCheck from '@lucide/svelte/icons/shield-check'
   import FolderKanban from '@lucide/svelte/icons/folder-kanban'
   import { cluster } from '../cluster.svelte'
   import { alerts } from '../alerts.svelte'
@@ -47,6 +48,7 @@
     { name: 'activity', href: '/activity', label: t('Activity'), icon: ClockArrowUp, role: 'admin' },
     { name: 'projects', href: '/projects', label: t('Projects'), icon: FolderKanban, role: 'admin' },
     { name: 'reports', href: '/reports', label: t('Reports'), icon: FileText, role: 'viewer' },
+    { name: 'compliance', href: '/compliance', label: t('Compliance'), icon: ShieldCheck, role: 'viewer' },
   ] as const
   // Cluster: admins always (that is where hosts are added), others once there is one.
   let NAV = $derived([
