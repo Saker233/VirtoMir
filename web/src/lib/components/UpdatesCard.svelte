@@ -100,12 +100,16 @@
         <strong>{st.latest?.name || st.latest?.tag} is available.</strong>
         {#if st.latest?.notes}<pre class="notes">{st.latest.notes.slice(0, 1500)}</pre>{/if}
         <div class="acts">
-          {#if st.installable && session.can('admin')}
-            <button class="ui-btn primary" disabled={installing} onclick={install}><Download size={14} /> {installing ? 'Starting…' : `Install ${st.latest?.version}`}</button>
-          {/if}
+          <!-- Always show the button: disabled with the reason when this host cannot install, so it never just "disappears". -->
+          <button
+            class="ui-btn primary"
+            disabled={installing || !st.installable || !session.can('admin')}
+            title={!st.installable ? t('Cannot install from here: {reason}', { reason: st.reason }) : session.why('admin')}
+            onclick={install}
+          ><Download size={14} /> {installing ? t('Starting…') : t('Install {v}', { v: st.latest?.version ?? '' })}</button>
           {#if st.latest?.url}<a class="ui-btn ghost" href={st.latest.url} target="_blank" rel="noopener"><ExternalLink size={13} /> {t('Release notes')}</a>{/if}
         </div>
-        {#if !st.installable}<p class="muted">{t('Cannot install from here: {reason}', { reason: st.reason })}</p>{/if}
+        {#if !st.installable}<div class="ui-error-box">{t('Cannot install from here: {reason}', { reason: st.reason })}</div>{/if}
         <p class="muted small">{t('In a cluster, update every host (switch host in the sidebar). The download is checked against the release\'s SHA-256; settings and machines are kept.')}</p>
       </div>
     {:else}

@@ -20,6 +20,14 @@
 
   let open = $state(false)
   let menuRef = $state<HTMLDivElement>()
+  // The dropdown lives on <body> with a fixed position so cards further down the page cannot cover it.
+  let dropRef = $state<HTMLDivElement>()
+  let pos = $state('')
+
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node)
+    return { destroy: () => node.remove() }
+  }
   // Force off and hard reset lose unsaved guest data: the first click arms the item, a
   // second click within a few seconds does it (P1: no name typing for these).
   let armed = $state<'force-off' | 'hard-reset' | null>(null)
@@ -31,6 +39,12 @@
 
   function toggleMenu(e: MouseEvent) {
     e.stopPropagation()
+    if (!open && menuRef) {
+      const r = menuRef.getBoundingClientRect()
+      const right = `right: ${Math.max(8, window.innerWidth - r.right)}px;`
+      const up = window.innerHeight - r.bottom < 380
+      pos = up ? `${right} bottom: ${window.innerHeight - r.top + 4}px;` : `${right} top: ${r.bottom + 4}px;`
+    }
     open = !open
   }
 
@@ -42,11 +56,20 @@
 
   onMount(() => {
     function onDocClick(e: MouseEvent) {
-      if (menuRef && !menuRef.contains(e.target as Node)) closeMenu()
+      const t = e.target as Node
+      if (menuRef && !menuRef.contains(t) && !dropRef?.contains(t)) closeMenu()
+    }
+    // A fixed dropdown would drift away from its button on scroll or resize; close it instead.
+    function onMove() {
+      if (open) closeMenu()
     }
     window.addEventListener('click', onDocClick)
+    window.addEventListener('scroll', onMove, true)
+    window.addEventListener('resize', onMove)
     return () => {
       window.removeEventListener('click', onDocClick)
+      window.removeEventListener('scroll', onMove, true)
+      window.removeEventListener('resize', onMove)
       clearTimeout(armTimer)
     }
   })
@@ -116,7 +139,7 @@
 
   <!-- Neo-Brutalist Dropdown Menu -->
   {#if open}
-    <div class="power-dropdown">
+    <div class="power-dropdown" style={pos} bind:this={dropRef} use:portal>
       <div class="dropdown-header">
         <span>{t('Power')}</span>
       </div>
@@ -259,14 +282,12 @@
 
   /* Dropdown Menu */
   .power-dropdown {
-    position: absolute;
-    top: calc(100% + 4px);
-    right: 0;
+    position: fixed;
     min-width: 280px;
     background: var(--bg);
     border: 1px solid var(--border-strong);
     box-shadow: 3px 3px 0 var(--ink);
-    z-index: 200;
+    z-index: 1000;
     padding: 4px;
     display: flex;
     flex-direction: column;
