@@ -743,6 +743,34 @@ func drVMName(vm PlanVM) string {
 	return vm.SourceName + "-test"
 }
 
+// GetDiskMappings reads every machine of the protection group and returns its
+// replicated disk mapping: which source volume maps to which target volume,
+// the pool and volume names, and the latest replica snapshot found, so the UI
+// can show the group's VM disk mappings on the group details page.
+func (o *Orchestrator) GetDiskMappings(ctx context.Context, group ProtectionGroup) ([]VMDiskMapping, error) {
+	mappings := make([]VMDiskMapping, 0, len(group.VMUUIDs))
+	for _, uuid := range group.VMUUIDs {
+		doc, err := o.resolveDomainXML(uuid)
+		if err != nil {
+			return nil, fmt.Errorf("machine %s: %w", uuid, err)
+		}
+		var d libvirtxml.Domain
+		if err := d.Unmarshal(doc); err != nil {
+			return nil, fmt.Errorf("machine %s: parse domain XML: %w", uuid, err)
+		}
+		disks, err := groupDisks(uuid, doc, group.TargetPool)
+		if err != nil {
+			return nil, err
+		}
+		mappings = append(mappings, VMDiskMapping{
+			VMUUID:     uuid,
+			DomainName: d.Name,
+			Disks:      disks,
+		})
+	}
+	return mappings, nil
+}
+
 // hookEnv is the VIRTOMIR_DR_* variables a hook script sees for one run.
 func hookEnv(plan RecoveryPlan, mode, step string) []string {
 	return []string{
