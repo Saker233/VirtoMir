@@ -1,33 +1,55 @@
 // Package activity records who changed what: every changing API call and every sign-in,
 // with its result. The newest entries are kept in memory for the UI; all of them are
 // appended to a JSON-lines file (rotated at MaxFileSize) for auditing and SIEM import.
+// Entries are cryptographically chained with SHA-256 hashes to guarantee tamper evidence.
 package activity
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
+// GenesisHash is the SHA-256 prevHash anchor for the first entry in an audit chain.
+const GenesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
 type Entry struct {
-	Time   time.Time `json:"time"`
-	User   string    `json:"user"`
-	Token  string    `json:"token,omitempty"` // API token name, if one was used
-	Remote string    `json:"remote,omitempty"`
-	Method string    `json:"method"`
-	Path   string    `json:"path"`
-	Status int       `json:"status"`
-	Error  string    `json:"error,omitempty"`
+	Seq      int64     `json:"seq,omitempty"`
+	PrevHash string    `json:"prevHash,omitempty"`
+	Hash     string    `json:"hash,omitempty"`
+	Time     time.Time `json:"time"`
+	User     string    `json:"user"`
+	Token    string    `json:"token,omitempty"` // API token name, if one was used
+	Remote   string    `json:"remote,omitempty"`
+	Method   string    `json:"method"`
+	Path     string    `json:"path"`
+	Status   int       `json:"status"`
+	Error    string    `json:"error,omitempty"`
 }
 
 // OK reports whether the request succeeded.
 func (e Entry) OK() bool { return e.Status > 0 && e.Status < 400 }
+
+// ComputeHash computes the canonical SHA-256 hash for an activity entry.
+func ComputeHash(e Entry) string {
+	canonical := fmt.Sprintf("%s|%d|%s|%s|%s|%s|%s|%s|%d|%s",
+		e.PrevHash, e.Seq, e.Time.UTC().Format(time.RFC3339Nano),
+		e.User, e.Token, e.Remote, e.Method, e.Path, e.Status, e.Error)
+	sum := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(sum[:])
+}
 
 const (
 	// Keep is how many entries stay in memory.
@@ -37,32 +59,77 @@ const (
 )
 
 type Log struct {
-	path string
-	mu   sync.Mutex
-	ring []Entry // oldest first
-	siem *Forwarder
+	path     string
+	mu       sync.Mutex
+	ring     []Entry // oldest first
+	siem     *Forwarder
+	lastHash string
+	lastSeq  int64
 }
 
 // Open loads the newest entries of path. A missing file is fine.
+// It scans the existing file (and rotated path+".1" if present) to discover the
+// last valid Hash and Seq on disk, resuming the chain seamlessly across restarts.
 func Open(path string) (*Log, error) {
 	l := &Log{path: path}
-	f, err := os.Open(path)
-	if errors.Is(err, fs.ErrNotExist) {
+	if path == "" {
 		return l, nil
 	}
-	if err != nil {
-		return l, err
+
+	var files []string
+	if _, err := os.Stat(path + ".1"); err == nil {
+		files = append(files, path+".1")
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64<<10), 1<<20)
-	for sc.Scan() {
-		var e Entry
-		if json.Unmarshal(sc.Bytes(), &e) == nil {
-			l.push(e)
+	if _, err := os.Stat(path); err == nil {
+		files = append(files, path)
+	}
+	if len(files) == 0 {
+		return l, nil
+	}
+
+	var (
+		totalEntries int64
+		lastEntry    Entry
+		hasAnyEntry  bool
+	)
+
+	for _, fp := range files {
+		f, err := os.Open(fp)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return l, err
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 64<<10), 1<<20)
+		for sc.Scan() {
+			var e Entry
+			if json.Unmarshal(sc.Bytes(), &e) == nil {
+				l.push(e)
+				lastEntry = e
+				hasAnyEntry = true
+				totalEntries++
+			}
+		}
+		_ = f.Close()
+		if err := sc.Err(); err != nil {
+			return l, err
 		}
 	}
-	return l, sc.Err()
+
+	if hasAnyEntry {
+		if lastEntry.Hash != "" {
+			l.lastHash = lastEntry.Hash
+			l.lastSeq = lastEntry.Seq
+		} else {
+			// Legacy unhashed entries
+			l.lastHash = GenesisHash
+			l.lastSeq = totalEntries
+		}
+	}
+
+	return l, nil
 }
 
 func (l *Log) push(e Entry) {
@@ -73,13 +140,27 @@ func (l *Log) push(e Entry) {
 }
 
 // Add records an entry (and appends it to the file; write errors are returned but the
-// entry is kept in memory either way).
+// entry is kept in memory either way). Each entry receives a strictly increasing Seq,
+// PrevHash pointing to the previous entry (or GenesisHash), and a cryptographic Hash.
 func (l *Log) Add(e Entry) error {
 	if e.Time.IsZero() {
 		e.Time = time.Now().UTC()
+	} else {
+		e.Time = e.Time.UTC()
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	l.lastSeq++
+	e.Seq = l.lastSeq
+	if l.lastHash == "" {
+		e.PrevHash = GenesisHash
+	} else {
+		e.PrevHash = l.lastHash
+	}
+	e.Hash = ComputeHash(e)
+	l.lastHash = e.Hash
+
 	l.push(e)
 	if l.siem != nil {
 		l.siem.Send(e)
@@ -105,6 +186,342 @@ func (l *Log) Add(e Entry) error {
 	}
 	_, err = f.Write(append(b, '\n'))
 	return err
+}
+
+// VerificationResult describes the outcome of verifying an audit log's cryptographic chain.
+type VerificationResult struct {
+	Valid         bool   `json:"valid"`
+	VerifiedCount int    `json:"verifiedCount"`
+	FirstSeq      int64  `json:"firstSeq,omitempty"`
+	LastSeq       int64  `json:"lastSeq,omitempty"`
+	HeadHash      string `json:"headHash,omitempty"`
+	TamperedSeq   int64  `json:"tamperedSeq,omitempty"`
+	TamperedIndex int    `json:"tamperedIndex,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+}
+
+func (l *Log) loadDiskEntries() ([]Entry, *VerificationResult, error) {
+	if l.path == "" {
+		out := make([]Entry, len(l.ring))
+		copy(out, l.ring)
+		return out, nil, nil
+	}
+
+	var files []string
+	if _, err := os.Stat(l.path + ".1"); err == nil {
+		files = append(files, l.path+".1")
+	}
+	if _, err := os.Stat(l.path); err == nil {
+		files = append(files, l.path)
+	}
+	if len(files) == 0 {
+		return nil, nil, nil
+	}
+
+	var entries []Entry
+	for _, fp := range files {
+		f, err := os.Open(fp)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 64<<10), 1<<20)
+		for sc.Scan() {
+			line := sc.Bytes()
+			if len(strings.TrimSpace(string(line))) == 0 {
+				continue
+			}
+			var e Entry
+			if err := json.Unmarshal(line, &e); err != nil {
+				_ = f.Close()
+				tamper := &VerificationResult{
+					Valid:         false,
+					VerifiedCount: len(entries),
+					TamperedIndex: len(entries),
+					Reason:        fmt.Sprintf("malformed json entry: %v", err),
+				}
+				return entries, tamper, nil
+			}
+			entries = append(entries, e)
+		}
+		_ = f.Close()
+		if err := sc.Err(); err != nil {
+			return nil, nil, err
+		}
+	}
+	return entries, nil, nil
+}
+
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < 64; i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func verifySlice(entries []Entry) VerificationResult {
+	if len(entries) == 0 {
+		return VerificationResult{Valid: true, VerifiedCount: 0}
+	}
+
+	// Skip legacy unhashed entries (written before cryptographic chaining).
+	chainStart := 0
+	for chainStart < len(entries) && entries[chainStart].Hash == "" {
+		e := entries[chainStart]
+		if e.Seq != 0 || e.PrevHash != "" {
+			return VerificationResult{
+				Valid:         false,
+				VerifiedCount: 0,
+				TamperedIndex: chainStart,
+				TamperedSeq:   e.Seq,
+				Reason:        fmt.Sprintf("missing hash on entry %d (seq %d)", chainStart, e.Seq),
+			}
+		}
+		chainStart++
+	}
+
+	// If all entries are legacy unhashed entries, log is valid with 0 verified chained entries.
+	if chainStart == len(entries) {
+		return VerificationResult{
+			Valid:         true,
+			VerifiedCount: 0,
+		}
+	}
+
+	first := entries[chainStart]
+	if chainStart > 0 {
+		// When starting after legacy entries, the first chained entry must anchor at GenesisHash.
+		if first.PrevHash != GenesisHash {
+			return VerificationResult{
+				Valid:         false,
+				VerifiedCount: 0,
+				TamperedIndex: chainStart,
+				TamperedSeq:   first.Seq,
+				Reason:        fmt.Sprintf("chain anchor prevHash mismatch at entry %d (seq %d): expected %s, got %s", chainStart, first.Seq, GenesisHash, first.PrevHash),
+			}
+		}
+	} else {
+		// chainStart == 0
+		if first.Seq == 1 {
+			// Unrotated genesis entry must point to GenesisHash.
+			if first.PrevHash != GenesisHash {
+				return VerificationResult{
+					Valid:         false,
+					VerifiedCount: 0,
+					TamperedIndex: 0,
+					TamperedSeq:   first.Seq,
+					Reason:        fmt.Sprintf("genesis prevHash mismatch at entry 0 (seq %d): expected %s, got %s", first.Seq, GenesisHash, first.PrevHash),
+				}
+			}
+		} else {
+			// Rotated log where genesis entry was rotated away.
+			if first.Seq <= 0 {
+				return VerificationResult{
+					Valid:         false,
+					VerifiedCount: 0,
+					TamperedIndex: 0,
+					TamperedSeq:   first.Seq,
+					Reason:        fmt.Sprintf("invalid sequence number at entry 0: %d", first.Seq),
+				}
+			}
+			if !isHex64(first.PrevHash) {
+				return VerificationResult{
+					Valid:         false,
+					VerifiedCount: 0,
+					TamperedIndex: 0,
+					TamperedSeq:   first.Seq,
+					Reason:        fmt.Sprintf("invalid prevHash format at entry 0 (seq %d): %s", first.Seq, first.PrevHash),
+				}
+			}
+		}
+	}
+
+	// Verify first chained entry's hash
+	expectedStart := ComputeHash(first)
+	if first.Hash != expectedStart {
+		return VerificationResult{
+			Valid:         false,
+			VerifiedCount: 0,
+			TamperedIndex: chainStart,
+			TamperedSeq:   first.Seq,
+			Reason:        fmt.Sprintf("hash mismatch at entry %d (seq %d): expected %s, got %s", chainStart, first.Seq, expectedStart, first.Hash),
+		}
+	}
+
+	for i := chainStart + 1; i < len(entries); i++ {
+		if entries[i].Hash == "" {
+			return VerificationResult{
+				Valid:         false,
+				VerifiedCount: i - chainStart,
+				TamperedIndex: i,
+				TamperedSeq:   entries[i].Seq,
+				Reason:        fmt.Sprintf("unhashed entry at entry %d after cryptographic chain started", i),
+			}
+		}
+
+		// d) e[i].Seq == e[i-1].Seq + 1
+		if entries[i].Seq != entries[i-1].Seq+1 {
+			return VerificationResult{
+				Valid:         false,
+				VerifiedCount: i - chainStart,
+				TamperedIndex: i,
+				TamperedSeq:   entries[i].Seq,
+				Reason:        fmt.Sprintf("sequence breakage at entry %d: expected seq %d, got %d", i, entries[i-1].Seq+1, entries[i].Seq),
+			}
+		}
+
+		// b) e[i].PrevHash == e[i-1].Hash
+		if entries[i].PrevHash != entries[i-1].Hash {
+			return VerificationResult{
+				Valid:         false,
+				VerifiedCount: i - chainStart,
+				TamperedIndex: i,
+				TamperedSeq:   entries[i].Seq,
+				Reason:        fmt.Sprintf("prevHash mismatch at entry %d (seq %d): expected %s, got %s", i, entries[i].Seq, entries[i-1].Hash, entries[i].PrevHash),
+			}
+		}
+
+		// c) e[i].Hash == ComputeHash(e[i])
+		expected := ComputeHash(entries[i])
+		if entries[i].Hash != expected {
+			return VerificationResult{
+				Valid:         false,
+				VerifiedCount: i - chainStart,
+				TamperedIndex: i,
+				TamperedSeq:   entries[i].Seq,
+				Reason:        fmt.Sprintf("hash mismatch at entry %d (seq %d): expected %s, got %s", i, entries[i].Seq, expected, entries[i].Hash),
+			}
+		}
+	}
+
+	return VerificationResult{
+		Valid:         true,
+		VerifiedCount: len(entries) - chainStart,
+		FirstSeq:      entries[chainStart].Seq,
+		LastSeq:       entries[len(entries)-1].Seq,
+		HeadHash:      entries[len(entries)-1].Hash,
+	}
+}
+
+// Verify opens the log file(s) from disk and verifies the full cryptographic chain.
+func (l *Log) Verify() (VerificationResult, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	entries, tamper, err := l.loadDiskEntries()
+	if err != nil {
+		return VerificationResult{}, err
+	}
+	if tamper != nil {
+		return *tamper, nil
+	}
+	res := verifySlice(entries)
+	if res.Valid && l.lastHash != "" && l.lastHash != GenesisHash && res.HeadHash != l.lastHash {
+		return VerificationResult{
+			Valid:         false,
+			VerifiedCount: res.VerifiedCount,
+			TamperedIndex: len(entries),
+			TamperedSeq:   l.lastSeq,
+			Reason:        fmt.Sprintf("head hash mismatch with in-memory log: expected %s (seq %d), got %s (seq %d)", l.lastHash, l.lastSeq, res.HeadHash, res.LastSeq),
+		}, nil
+	}
+	return res, nil
+}
+
+// Export streams all disk entries in either "jsonl" or "csv" format with full Seq,
+// PrevHash, Hash fields, and header comments/metadata indicating chain status.
+func (l *Log) Export(w io.Writer, format string) error {
+	f := strings.ToLower(strings.TrimSpace(format))
+	if f != "jsonl" && f != "csv" {
+		return fmt.Errorf("unsupported export format: %q (expected jsonl or csv)", format)
+	}
+
+	l.mu.Lock()
+	entries, tamper, err := l.loadDiskEntries()
+	l.mu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	var res VerificationResult
+	if tamper != nil {
+		res = *tamper
+	} else {
+		res = verifySlice(entries)
+	}
+
+	switch f {
+	case "csv":
+		var comment string
+		if res.Valid {
+			comment = fmt.Sprintf("# virtoMir audit log export; chain_valid=true; verified_count=%d; first_seq=%d; last_seq=%d; head_hash=%s\n",
+				res.VerifiedCount, res.FirstSeq, res.LastSeq, res.HeadHash)
+		} else {
+			comment = fmt.Sprintf("# virtoMir audit log export; chain_valid=false; verified_count=%d; tampered_seq=%d; tampered_index=%d; reason=%s\n",
+				res.VerifiedCount, res.TamperedSeq, res.TamperedIndex, res.Reason)
+		}
+		if _, err := io.WriteString(w, comment); err != nil {
+			return err
+		}
+
+		cw := csv.NewWriter(w)
+		if err := cw.Write([]string{"seq", "prevHash", "hash", "time", "user", "token", "remote", "method", "path", "status", "error"}); err != nil {
+			return err
+		}
+		for _, e := range entries {
+			row := []string{
+				strconv.FormatInt(e.Seq, 10),
+				e.PrevHash,
+				e.Hash,
+				e.Time.UTC().Format(time.RFC3339Nano),
+				e.User,
+				e.Token,
+				e.Remote,
+				e.Method,
+				e.Path,
+				strconv.Itoa(e.Status),
+				e.Error,
+			}
+			if err := cw.Write(row); err != nil {
+				return err
+			}
+		}
+		cw.Flush()
+		return cw.Error()
+
+	case "jsonl":
+		header := map[string]any{
+			"_metadata": res,
+		}
+		metaBytes, err := json.Marshal(header)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(append(metaBytes, '\n')); err != nil {
+			return err
+		}
+		for _, e := range entries {
+			b, err := json.Marshal(e)
+			if err != nil {
+				return err
+			}
+			if _, err := w.Write(append(b, '\n')); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	return nil
 }
 
 // Filter narrows List. Zero values match everything.
