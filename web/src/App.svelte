@@ -27,6 +27,7 @@
   import ActivityPage from './lib/pages/ActivityPage.svelte'
   import AccountPage from './lib/pages/AccountPage.svelte'
   import ReportsPage from './lib/pages/ReportsPage.svelte'
+  import CompliancePage from './lib/pages/CompliancePage.svelte'
   import SetupPage from './lib/pages/SetupPage.svelte'
   import { api } from './lib/api'
   import ConsolePage from './lib/pages/ConsolePage.svelte'
@@ -154,6 +155,8 @@
           <SetupPage />
         {:else if route.name === 'reports'}
           <ReportsPage />
+        {:else if route.name === 'compliance'}
+          <CompliancePage />
         {:else if route.name === 'cluster'}
           <ClusterPage />
         {:else if route.name === 'projects'}

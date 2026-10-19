@@ -120,6 +120,23 @@ func projectSchema() map[string]any {
 	}
 }
 
+func complianceResultSchema() map[string]any {
+	str := func() map[string]any { return map[string]any{"type": "string"} }
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":          str(),
+			"title":       str(),
+			"category":    str(),
+			"severity":    map[string]any{"type": "string", "enum": []string{"critical", "high", "medium", "low"}},
+			"status":      map[string]any{"type": "string", "enum": []string{"pass", "fail", "warn", "error"}},
+			"detail":      str(),
+			"remediation": str(),
+			"benchmark":   str(),
+		},
+	}
+}
+
 // contentItemSchema describes a content library item (ADR-0063) in OpenAPI.
 func contentItemSchema() map[string]any {
 	str := func() map[string]any { return map[string]any{"type": "string"} }
@@ -150,6 +167,63 @@ func contentItemSchema() map[string]any {
 				"sourceVol":   str(),
 				"created":     str(),
 			}}},
+		},
+	}
+}
+
+func hostComplianceSchema() map[string]any {
+	str := func() map[string]any { return map[string]any{"type": "string"} }
+	num := func() map[string]any { return map[string]any{"type": "integer"} }
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"hostId":       str(),
+			"hostName":     str(),
+			"evaluatedAt":  map[string]any{"type": "string", "format": "date-time"},
+			"score":        num(),
+			"passedCount":  num(),
+			"failedCount":  num(),
+			"warningCount": num(),
+			"totalCount":   num(),
+			"results": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"$ref": "#/components/schemas/complianceResult"},
+			},
+		},
+	}
+}
+
+func fipsInfoSchema() map[string]any {
+	str := func() map[string]any { return map[string]any{"type": "string"} }
+	boolean := func() map[string]any { return map[string]any{"type": "boolean"} }
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"kernelEnabled": boolean(),
+			"enforced":      boolean(),
+			"tlsMinVersion": str(),
+			"cipherSuites":  map[string]any{"type": "array", "items": str()},
+			"curves":        map[string]any{"type": "array", "items": str()},
+			"description":   str(),
+		},
+	}
+}
+
+func auditVerificationSchema() map[string]any {
+	str := func() map[string]any { return map[string]any{"type": "string"} }
+	num := func() map[string]any { return map[string]any{"type": "integer"} }
+	boolean := func() map[string]any { return map[string]any{"type": "boolean"} }
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"valid":         boolean(),
+			"verifiedCount": num(),
+			"firstSeq":      num(),
+			"lastSeq":       num(),
+			"headHash":      str(),
+			"tamperedSeq":   num(),
+			"tamperedIndex": num(),
+			"reason":        str(),
 		},
 	}
 }
@@ -246,9 +320,17 @@ func (s *Server) openAPI(routes []route) map[string]any {
 				"session": map[string]any{"type": "apiKey", "in": "cookie", "name": auth.CookieName},
 			},
 			"schemas": map[string]any{
-				"Error":       map[string]any{"type": "object", "properties": map[string]any{"error": map[string]any{"type": "string"}}},
-				"Project":     projectSchema(),
-				"ContentItem": contentItemSchema(),
+				"Error":             map[string]any{"type": "object", "properties": map[string]any{"error": map[string]any{"type": "string"}}},
+				"Project":           projectSchema(),
+				"ContentItem":       contentItemSchema(),
+				"complianceResult":  complianceResultSchema(),
+				"ComplianceResult":  complianceResultSchema(),
+				"hostCompliance":    hostComplianceSchema(),
+				"HostCompliance":    hostComplianceSchema(),
+				"fipsInfo":          fipsInfoSchema(),
+				"FIPSInfo":          fipsInfoSchema(),
+				"auditVerification": auditVerificationSchema(),
+				"AuditVerification": auditVerificationSchema(),
 			},
 		},
 		"security": []any{map[string]any{"token": []any{}}, map[string]any{"session": []any{}}},

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/onurbaydas/virtomir/internal/cluster"
+	"github.com/onurbaydas/virtomir/internal/compliance"
 	"github.com/onurbaydas/virtomir/internal/reports"
 	"github.com/onurbaydas/virtomir/internal/schedule"
 	"github.com/onurbaydas/virtomir/internal/virt"
@@ -39,7 +40,7 @@ func (s *Server) noReports(w http.ResponseWriter) bool {
 }
 
 // localFacts is what this host measures for reports.
-func (s *Server) localFacts() (reports.HostFacts, error) {
+func (s *Server) localFacts(ctx context.Context) (reports.HostFacts, error) {
 	h, err := s.backend.HostInfo()
 	if err != nil {
 		return reports.HostFacts{}, err
@@ -95,16 +96,30 @@ func (s *Server) localFacts() (reports.HostFacts, error) {
 			f.Schedules = append(f.Schedules, reports.BackupSchedule{DomainUUID: strings.ToLower(sc.Domain), Interval: iv})
 		}
 	}
+	if s.complianceScanner != nil {
+		hostID := ""
+		if s.cluster != nil && s.cluster.Clustered() {
+			hostID = s.cluster.SelfID()
+		}
+		if hostID == "" {
+			hostID = f.Name
+		}
+		comp := s.complianceScanner.Scan(ctx, hostID, f.Name)
+		f.Compliance = &comp
+	}
 	return f, nil
 }
 
 // clusterFacts asks every member (in parallel) and this host for their facts.
 func (s *Server) clusterFacts(ctx context.Context) (reports.Facts, error) {
-	local, err := s.localFacts()
+	local, err := s.localFacts(ctx)
 	if err != nil {
 		return reports.Facts{}, err
 	}
 	out := reports.Facts{Hosts: []reports.HostFacts{local}}
+	if local.Compliance != nil {
+		out.Compliance = append(out.Compliance, *local.Compliance)
+	}
 	if s.cluster == nil || !s.cluster.Clustered() {
 		return out, nil
 	}
@@ -129,6 +144,9 @@ func (s *Server) clusterFacts(ctx context.Context) (reports.Facts, error) {
 				return
 			}
 			out.Hosts = append(out.Hosts, hf)
+			if hf.Compliance != nil {
+				out.Compliance = append(out.Compliance, *hf.Compliance)
+			}
 		}(n)
 	}
 	wg.Wait()
@@ -139,7 +157,7 @@ func (s *Server) peerReportFacts(w http.ResponseWriter, r *http.Request) {
 	if s.notPeer(w, r) {
 		return
 	}
-	f, err := s.localFacts()
+	f, err := s.localFacts(r.Context())
 	if err != nil {
 		s.writeError(w, err)
 		return
@@ -271,24 +289,36 @@ func (s *Server) RunReportSchedules(ctx context.Context) {
 			return
 		case <-t.C:
 		}
-		for _, sc := range s.reports.Due(since) {
-			f, err := s.clusterFacts(ctx)
-			var m reports.Meta
-			if err == nil {
-				m, err = s.reports.Generate(sc.Kind, sc.Format, f, "schedule: "+sc.Name, sc.ID)
-			}
-			s.reports.Ran(sc.ID, err)
-			if err != nil {
-				s.log.Warn("scheduled report", "schedule", sc.Name, "err", err)
-				if sc.Notify && s.alerts != nil {
-					s.alerts.Notice("Report "+sc.Name+" failed", err.Error())
-				}
-				continue
-			}
-			s.log.Info("scheduled report", "schedule", sc.Name, "report", m.ID)
+		s.runDueReportSchedules(ctx, since)
+	}
+}
+
+func (s *Server) runDueReportSchedules(ctx context.Context, since time.Time) {
+	for _, sc := range s.reports.Due(since) {
+		f, err := s.clusterFacts(ctx)
+		var m reports.Meta
+		if err == nil {
+			m, err = s.reports.Generate(sc.Kind, sc.Format, f, "schedule: "+sc.Name, sc.ID)
+		}
+		s.reports.Ran(sc.ID, err)
+		if err != nil {
+			s.log.Warn("scheduled report", "schedule", sc.Name, "err", err)
 			if sc.Notify && s.alerts != nil {
-				s.alerts.Notice(m.Title, m.Summary+" — open Reports in VirtoMir to read it.")
+				s.alerts.Notice("Report "+sc.Name+" failed", err.Error())
 			}
+			continue
+		}
+		s.log.Info("scheduled report", "schedule", sc.Name, "report", m.ID)
+		hasFailures := false
+		if sc.Kind == reports.Compliance {
+			hasFailures = compliance.Summarize(f.Compliance).HasFailures()
+		}
+		if (sc.Notify || hasFailures) && s.alerts != nil {
+			subject := m.Title
+			if hasFailures {
+				subject = fmt.Sprintf("%s — compliance checks failed", m.Title)
+			}
+			s.alerts.Notice(subject, m.Summary+" — open Reports in VirtoMir to read it.")
 		}
 	}
 }

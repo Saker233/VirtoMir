@@ -17,6 +17,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/alerts"
 	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/cluster"
+	"github.com/onurbaydas/virtomir/internal/compliance"
 	"github.com/onurbaydas/virtomir/internal/confighist"
 	"github.com/onurbaydas/virtomir/internal/content"
 	"github.com/onurbaydas/virtomir/internal/drs"
@@ -158,24 +159,34 @@ type Options struct {
 	RateLimiter *auth.RateLimiter
 	// ZFSRep nil: no ZFS replication.
 	ZFSRep *zfsrep.Manager
+	// FIPSInfo holds kernel FIPS mode and TLS enforcement details (ADR-0064).
+	FIPSInfo compliance.FIPSInfo
+	// ComplianceScanner nil: standard scanner rooted at "/" is used (ADR-0064).
+	ComplianceScanner *compliance.Scanner
 	// Content nil: no content library (ADR-0063).
 	Content     *content.Store
 	ContentSync *content.SyncManager
 }
 
 type Server struct {
-	backend   Backend
-	live      Live
-	jobs      *jobs.Manager
-	auth      *auth.Manager
-	ui        fs.FS
-	version   string
-	log       *slog.Logger
-	history   HistoryQuerier
-	tokens    *auth.Tokens
-	activity  *activity.Log
-	alerts    *alerts.Engine
-	schedules *schedule.Scheduler
+	backend           Backend
+	live              Live
+	jobs              *jobs.Manager
+	auth              *auth.Manager
+	ui                fs.FS
+	version           string
+	log               *slog.Logger
+	history           HistoryQuerier
+	tokens            *auth.Tokens
+	activity          *activity.Log
+	alerts            *alerts.Engine
+	schedules         *schedule.Scheduler
+	fipsInfo          compliance.FIPSInfo
+	complianceScanner *compliance.Scanner
+	scannerOnce       sync.Once
+	auditVerifyMu     sync.Mutex
+	auditVerified     bool
+	auditVerifyAt     time.Time
 
 	confighist   *confighist.Store
 	quotas       *quota.Store
@@ -242,8 +253,13 @@ func NewServer(o Options) *Server {
 			vc = c
 		}
 	}
+	cs := o.ComplianceScanner
+	if cs == nil {
+		cs = compliance.NewScanner(nil)
+	}
 	s := &Server{backend: o.Backend, live: o.Live, jobs: o.Jobs, auth: o.Auth, ui: o.UI, version: o.Version, log: o.Log,
-		history: o.History, tokens: o.Tokens, activity: o.Activity, alerts: o.Alerts, schedules: o.Schedules,
+		history: o.History, tokens: o.Tokens, activity: o.Activity, alerts: o.Alerts, schedules: o.Schedules, fipsInfo: o.FIPSInfo,
+		complianceScanner: cs,
 		cluster: o.Cluster, fingerprint: o.Fingerprint, hostName: o.HostName, listenPort: o.ListenPort,
 		confighist: o.ConfigHistory, quotas: o.Quotas, groupsOf: o.GroupsOf,
 		ha: o.HA, reports: o.Reports, respools: o.Respools, hostinfo: o.HostInfo, updater: o.Updater, stateDir: o.StateDir, hostnet: o.HostNet, offsite: o.Offsite,
@@ -254,6 +270,11 @@ func NewServer(o Options) *Server {
 		s.contentSync.SetPeers(s)
 	}
 	return s
+}
+
+// FIPSInfo returns the FIPS cryptographic posture and TLS restriction details.
+func (s *Server) FIPSInfo() compliance.FIPSInfo {
+	return s.fipsInfo
 }
 
 func (s *Server) Handler() http.Handler {
@@ -301,6 +322,7 @@ func (s *Server) Handler() http.Handler {
 	s.drsRoutes(mux)
 	s.placementRoutes(mux)
 	s.projectRoutes(mux)
+	s.complianceRoutes(mux)
 	s.contentRoutes(mux)
 
 	spec := s.openAPI(mux.routes) // everything above, built once
@@ -441,6 +463,10 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
 
 // maxBody limits JSON and XML request bodies (uploads have their own path).
 const maxBody = 2 << 20
+
+// auditVerifyTTL caches Verify() results on the summary path: the audit log is
+// only re-walked when a caller asks after the TTL expires.
+const auditVerifyTTL = 30 * time.Second
 
 // decode reads a JSON body into v; on failure it has already answered 400.
 func (s *Server) decode(w http.ResponseWriter, r *http.Request, v any) bool {

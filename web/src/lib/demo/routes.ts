@@ -872,6 +872,28 @@ export function handle(method: string, url: URL, body: any): Reply {
     case 'GET /api/v1/activity':
       return json({ entries: host.self ? w.activity : w.activity.slice(4) })
 
+    // Compliance, FIPS and audit verification (ADR-0064)
+    case 'GET /api/v1/compliance/checks':
+      return json(w.compliance(host.id))
+    case 'POST /api/v1/compliance/checks/run':
+      return json(w.compliance(host.id, true))
+    case 'GET /api/v1/compliance/fips':
+      return json(w.demoFIPS)
+    case 'GET /api/v1/cluster/compliance':
+      return json(w.HOSTS.map((h) => w.compliance(h.id)))
+    case 'POST /api/v1/activity/verify':
+      return json(w.demoAuditVerification[host.id] ?? w.demoAuditVerification[w.SELF.id])
+    case 'GET /api/v1/activity/export': {
+      const rows = host.self ? w.activity : w.activity.slice(4)
+      if (q.get('format') === 'csv')
+        return {
+          status: 200,
+          type: 'text/csv; charset=utf-8',
+          body: ['time,user,method,path,status,error', ...rows.map((e) => [e.time, e.user, e.method, e.path, String(e.status), e.error ?? ''].map((f) => (/[",]/.test(f) ? '"' + f.replaceAll('"', '""') + '"' : f)).join(','))].join('\n'),
+        }
+      return { status: 200, type: 'application/jsonl; charset=utf-8', body: rows.map((e) => JSON.stringify(e)).join('\n') }
+    }
+
     // Host
     case 'GET /api/v1/host/devices':
       return json(host.self ? w.hardware : { iommu: true, pci: [], usb: [], mdevs: [] })
@@ -896,7 +918,14 @@ export function handle(method: string, url: URL, body: any): Reply {
     case 'GET /api/v1/reports':
       return json({ reports: w.reports })
     case 'POST /api/v1/reports': {
-      const r = { id: `rep-${Date.now()}`, kind: body?.kind ?? 'capacity', title: 'Capacity — cluster', format: body?.format ?? 'html', generatedAt: new Date().toISOString(), sizeBytes: 47100, summary: '3 hosts · 14 machines · N+1: yes', by: 'demo' }
+      const kind = body?.kind ?? 'capacity'
+      const TITLES: Record<string, string> = {
+        capacity: 'Capacity — cluster',
+        inventory: 'Machine inventory',
+        backup_sla: 'Backup compliance',
+        compliance: 'Security compliance',
+      }
+      const r = { id: `rep-${Date.now()}`, kind, title: TITLES[kind] ?? 'Report', format: body?.format ?? 'html', generatedAt: new Date().toISOString(), sizeBytes: 47100, summary: kind === 'compliance' ? '3 hosts · 75% average compliance score · 11 checks per host' : '3 hosts · 14 machines · N+1: yes', by: 'demo' }
       w.reports.unshift(r)
       return json(r)
     }
