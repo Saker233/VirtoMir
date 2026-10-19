@@ -447,3 +447,153 @@ func (c *Client) Info(ctx context.Context) (HostInfo, error) {
 	err := c.Do(ctx, http.MethodGet, "/api/v1/host", nil, &h)
 	return h, err
 }
+
+// ---- projects ---------------------------------------------------------------------------
+
+type ProjectMember struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	Role string `json:"role"`
+}
+
+type ProjectLimits struct {
+	Machines  int   `json:"machines"`
+	VCPUs     int   `json:"vcpus"`
+	MemoryMiB int64 `json:"memoryMiB"`
+	DiskGiB   int64 `json:"diskGiB"`
+}
+
+type ProjectUsage struct {
+	Machines  int   `json:"machines"`
+	VCPUs     int   `json:"vcpus"`
+	MemoryMiB int64 `json:"memoryMiB"`
+	DiskGiB   int64 `json:"diskGiB"`
+}
+
+type Project struct {
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description,omitempty"`
+	Members      []ProjectMember `json:"members"`
+	Limits       *ProjectLimits  `json:"limits,omitempty"`
+	StoragePools []string        `json:"storagePools"`
+	Networks     []string        `json:"networks"`
+	Created      time.Time       `json:"created,omitempty"`
+	Usage        *ProjectUsage   `json:"usage,omitempty"`
+}
+
+func (c *Client) Projects(ctx context.Context) ([]Project, error) {
+	var out struct {
+		Projects []Project `json:"projects"`
+	}
+	err := c.Do(ctx, http.MethodGet, "/api/v1/projects", nil, &out)
+	return out.Projects, err
+}
+
+func (c *Client) Project(ctx context.Context, id string) (Project, error) {
+	var p Project
+	err := c.Do(ctx, http.MethodGet, "/api/v1/projects/"+url.PathEscape(id), nil, &p)
+	return p, err
+}
+
+func (c *Client) CreateProject(ctx context.Context, p Project) error {
+	if p.Members == nil {
+		p.Members = []ProjectMember{}
+	}
+	if p.StoragePools == nil {
+		p.StoragePools = []string{}
+	}
+	if p.Networks == nil {
+		p.Networks = []string{}
+	}
+	return c.Do(ctx, http.MethodPost, "/api/v1/projects", p, nil)
+}
+
+func (c *Client) UpdateProject(ctx context.Context, id string, p Project) error {
+	if p.Members == nil {
+		p.Members = []ProjectMember{}
+	}
+	if p.StoragePools == nil {
+		p.StoragePools = []string{}
+	}
+	if p.Networks == nil {
+		p.Networks = []string{}
+	}
+	return c.Do(ctx, http.MethodPut, "/api/v1/projects/"+url.PathEscape(id), p, nil)
+}
+
+func (c *Client) DeleteProject(ctx context.Context, id string) error {
+	return c.Do(ctx, http.MethodDelete, "/api/v1/projects/"+url.PathEscape(id), nil, nil)
+}
+
+// ---- placement rules --------------------------------------------------------------------
+
+type PlacementKind string
+
+const (
+	PlacementVMAffinity     PlacementKind = "vm_affinity"
+	PlacementVMAntiAffinity PlacementKind = "vm_anti_affinity"
+	PlacementVMHost         PlacementKind = "vm_host"
+)
+
+type PlacementStrength string
+
+const (
+	PlacementStrengthMust   PlacementStrength = "must"
+	PlacementStrengthShould PlacementStrength = "should"
+)
+
+type PlacementRule struct {
+	ID       string            `json:"id"`
+	Name     string            `json:"name"`
+	Kind     PlacementKind     `json:"kind"`
+	Enabled  bool              `json:"enabled"`
+	Strength PlacementStrength `json:"strength"`
+	Domains  []string          `json:"domains"`
+	Hosts    *[]string         `json:"hosts,omitempty"`
+	Exclude  bool              `json:"exclude,omitempty"`
+}
+
+func (c *Client) PlacementRules(ctx context.Context) ([]PlacementRule, error) {
+	var out struct {
+		Rules []PlacementRule `json:"rules"`
+	}
+	if err := c.Do(ctx, http.MethodGet, "/api/v1/placement", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Rules, nil
+}
+
+func (c *Client) PlacementRule(ctx context.Context, id string) (PlacementRule, error) {
+	rules, err := c.PlacementRules(ctx)
+	if err != nil {
+		return PlacementRule{}, err
+	}
+	for _, r := range rules {
+		if r.ID == id {
+			return r, nil
+		}
+	}
+	return PlacementRule{}, fmt.Errorf("placement rule %s: %w", id, ErrNotFound)
+}
+
+func (c *Client) CreatePlacementRule(ctx context.Context, r PlacementRule) (PlacementRule, error) {
+	if r.Domains == nil {
+		r.Domains = []string{}
+	}
+	var out PlacementRule
+	err := c.Do(ctx, http.MethodPost, "/api/v1/placement/rules", r, &out)
+	return out, err
+}
+
+func (c *Client) UpdatePlacementRule(ctx context.Context, id string, r PlacementRule) error {
+	if r.Domains == nil {
+		r.Domains = []string{}
+	}
+	return c.Do(ctx, http.MethodPut, "/api/v1/placement/rules/"+url.PathEscape(id), r, nil)
+}
+
+func (c *Client) DeletePlacementRule(ctx context.Context, id string) error {
+	return c.Do(ctx, http.MethodDelete, "/api/v1/placement/rules/"+url.PathEscape(id), nil, nil)
+}
+
