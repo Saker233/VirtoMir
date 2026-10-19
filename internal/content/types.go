@@ -51,18 +51,27 @@ type ItemVersion struct {
 	Created     time.Time `json:"created"`
 }
 
+// HostSyncState represents the synchronization state of an item on a specific cluster host.
+type HostSyncState struct {
+	Host    string    `json:"host"`
+	State   string    `json:"state"` // synced, syncing, failed, pending
+	Error   string    `json:"error,omitempty"`
+	Updated time.Time `json:"updated,omitempty"`
+}
+
 // Item represents a catalog entry in the content library.
 type Item struct {
-	ID           string        `json:"id"`
-	Name         string        `json:"name"`
-	Type         ItemType      `json:"type"`
-	Description  string        `json:"description,omitempty"`
-	SourceHost   string        `json:"sourceHost"`
-	KeepVersions int           `json:"keepVersions"`
-	SyncPolicy   SyncPolicy    `json:"syncPolicy"`
-	Created      time.Time     `json:"created"`
-	Updated      time.Time     `json:"updated"`
-	Versions     []ItemVersion `json:"versions"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Type         ItemType        `json:"type"`
+	Description  string          `json:"description,omitempty"`
+	SourceHost   string          `json:"sourceHost"`
+	KeepVersions int             `json:"keepVersions"`
+	SyncPolicy   SyncPolicy      `json:"syncPolicy"`
+	Created      time.Time       `json:"created"`
+	Updated      time.Time       `json:"updated"`
+	Versions     []ItemVersion   `json:"versions"`
+	Hosts        []HostSyncState `json:"hosts,omitempty"`
 }
 
 // HostConfig stores per-host subscription and storage target preferences.
@@ -72,6 +81,23 @@ type HostConfig struct {
 	AutoSync   bool   `json:"autoSync"`
 }
 
+// LatestVersion returns the version with the newest Created timestamp, or nil when the
+// item has no versions. Version slices are not guaranteed to be time-ordered, so callers
+// must use this instead of indexing the last element. On equal timestamps the last element
+// wins, matching the historical behaviour for items persisted without per-version times.
+func (it Item) LatestVersion() *ItemVersion {
+	if len(it.Versions) == 0 {
+		return nil
+	}
+	latest := &it.Versions[len(it.Versions)-1]
+	for i := range it.Versions {
+		if it.Versions[i].Created.After(latest.Created) {
+			latest = &it.Versions[i]
+		}
+	}
+	return latest
+}
+
 func (it Item) clone() Item {
 	res := it
 	if it.SyncPolicy.Hosts != nil {
@@ -79,6 +105,9 @@ func (it Item) clone() Item {
 	}
 	if it.Versions != nil {
 		res.Versions = append([]ItemVersion{}, it.Versions...)
+	}
+	if it.Hosts != nil {
+		res.Hosts = append([]HostSyncState{}, it.Hosts...)
 	}
 	return res
 }

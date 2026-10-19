@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -89,6 +90,16 @@ func WithVolumeList(ctx context.Context, fn volumeListFunc) context.Context {
 	return context.WithValue(ctx, ctxVolumeKey{}, fn)
 }
 
+// HasDomainLookupHook checks if a custom domain lookup hook is attached to ctx.
+func HasDomainLookupHook(ctx context.Context) bool {
+	return ctx.Value(ctxLookupKey{}) != nil
+}
+
+// HasVolumeListHook checks if a custom volume list hook is attached to ctx.
+func HasVolumeListHook(ctx context.Context) bool {
+	return ctx.Value(ctxVolumeKey{}) != nil
+}
+
 var (
 	domainLookupHook domainLookupFunc = defaultLookupDomain
 	volumeListHook   volumeListFunc   = defaultListVolumes
@@ -116,6 +127,30 @@ func defaultLookupDomain(ctx context.Context, client *virt.Client, uuid string) 
 
 func defaultListVolumes(ctx context.Context, client *virt.Client, pool string) ([]virt.Volume, error) {
 	if client == nil {
+		if st, err := os.Stat(pool); err == nil && st.IsDir() {
+			entries, err := os.ReadDir(pool)
+			if err != nil {
+				return nil, err
+			}
+			var vols []virt.Volume
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				info, err := e.Info()
+				if err != nil {
+					continue
+				}
+				vols = append(vols, virt.Volume{
+					Name:            e.Name(),
+					Path:            filepath.Join(pool, e.Name()),
+					CapacityBytes:   uint64(info.Size()),
+					AllocationBytes: uint64(info.Size()),
+					Format:          DetectDiskFormat(filepath.Join(pool, e.Name()), ""),
+				})
+			}
+			return vols, nil
+		}
 		return nil, notFoundf("no libvirt client available")
 	}
 	return client.ListVolumes(pool)
@@ -359,7 +394,9 @@ func PublishTemplate(ctx context.Context, client *virt.Client, store *Store, sel
 		return Item{}, fmt.Errorf("marshal sanitized domain XML: %w", err)
 	}
 
+	now := time.Now().UTC()
 	version := ItemVersion{
+		ID:          randomHex(8),
 		Version:     req.Version,
 		Description: req.Description,
 		SHA256:      checksum,
@@ -367,6 +404,7 @@ func PublishTemplate(ctx context.Context, client *virt.Client, store *Store, sel
 		Format:      format,
 		SourceHost:  selfHostID,
 		TemplateXML: sanitizedXML,
+		Created:     now,
 	}
 
 	var existing *Item
@@ -393,6 +431,7 @@ func PublishTemplate(ctx context.Context, client *virt.Client, store *Store, sel
 		KeepVersions: req.KeepVersions,
 		SyncPolicy:   req.SyncPolicy,
 		Versions:     []ItemVersion{version},
+		Hosts:        []HostSyncState{{Host: selfHostID, State: "synced", Updated: now}},
 	}
 	return store.CreateItem(item)
 }
@@ -467,7 +506,9 @@ func PublishVolume(ctx context.Context, client *virt.Client, store *Store, selfH
 	}
 	format := DetectDiskFormat(targetVol.Path, fallbackFmt)
 
+	now := time.Now().UTC()
 	version := ItemVersion{
+		ID:          randomHex(8),
 		Version:     req.Version,
 		Description: req.Description,
 		SHA256:      checksum,
@@ -476,6 +517,7 @@ func PublishVolume(ctx context.Context, client *virt.Client, store *Store, selfH
 		SourceHost:  selfHostID,
 		SourcePool:  req.Pool,
 		SourceVol:   req.Volume,
+		Created:     now,
 	}
 
 	var existing *Item
@@ -502,6 +544,7 @@ func PublishVolume(ctx context.Context, client *virt.Client, store *Store, selfH
 		KeepVersions: req.KeepVersions,
 		SyncPolicy:   req.SyncPolicy,
 		Versions:     []ItemVersion{version},
+		Hosts:        []HostSyncState{{Host: selfHostID, State: "synced", Updated: now}},
 	}
 	return store.CreateItem(item)
 }
@@ -534,20 +577,30 @@ func PublishArtifact(store *Store, item Item, version ItemVersion) (Item, error)
 
 	if existing != nil {
 		if version.Version != "" || version.SHA256 != "" {
+			if version.ID == "" {
+				version.ID = randomHex(8)
+			}
+			if version.Created.IsZero() {
+				version.Created = time.Now().UTC()
+			}
 			updated, _, err := store.AddVersion(existing.ID, version)
 			return updated, err
 		}
 		return *existing, nil
 	}
 
+	now := time.Now().UTC()
 	if len(item.Versions) == 0 && (version.Version != "" || version.SHA256 != "") {
 		if version.ID == "" {
 			version.ID = randomHex(8)
 		}
 		if version.Created.IsZero() {
-			version.Created = time.Now().UTC()
+			version.Created = now
 		}
 		item.Versions = []ItemVersion{version}
+	}
+	if len(item.Hosts) == 0 && item.SourceHost != "" {
+		item.Hosts = []HostSyncState{{Host: item.SourceHost, State: "synced", Updated: now}}
 	}
 
 	created, err := store.CreateItem(item)

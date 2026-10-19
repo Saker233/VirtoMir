@@ -224,6 +224,9 @@ func Pull(ctx context.Context, peer *cluster.Peer, item Item, version ItemVersio
 	if err := validatePathComponent("format", version.Format); err != nil {
 		return "", err
 	}
+	if strings.TrimSpace(version.SHA256) == "" {
+		return "", errors.New("expected SHA-256 checksum cannot be empty")
+	}
 
 	tmpFile := fmt.Sprintf(".virtomir-content-%s-%s.tmp", item.ID, version.ID)
 	finalFile := fmt.Sprintf("content-%s-v%s.%s", item.Name, version.Version, version.Format)
@@ -361,6 +364,8 @@ func Pull(ctx context.Context, peer *cluster.Peer, item Item, version ItemVersio
 	}
 
 	if !strings.EqualFold(hash, version.SHA256) {
+		// Only the partial download is rubbish; an existing final file (already checksum-verified
+		// when it was written) is the last good local copy and must not be destroyed here.
 		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("%w: expected %s, got %s; discarded download", ErrChecksumMismatch, version.SHA256, hash)
 	}

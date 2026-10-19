@@ -8,9 +8,11 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/digitalocean/go-libvirt"
 	"github.com/onurbaydas/virtomir/internal/virt"
@@ -47,6 +49,11 @@ type ctxDeployHooksKey struct{}
 // WithDeployHooks attaches custom deployHooks to ctx for unit testing.
 func WithDeployHooks(ctx context.Context, h *deployHooks) context.Context {
 	return context.WithValue(ctx, ctxDeployHooksKey{}, h)
+}
+
+// HasDeployHooks reports whether deployHooks are attached to ctx.
+func HasDeployHooks(ctx context.Context) bool {
+	return ctx.Value(ctxDeployHooksKey{}) != nil
 }
 
 func deployHooksFromContext(ctx context.Context) *deployHooks {
@@ -102,11 +109,47 @@ func refreshPoolFn(ctx context.Context, client *virt.Client, poolName string) er
 	return nil
 }
 
+func copyArtifactFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+
+	tmpDst := dst + ".tmp"
+	out, err := os.Create(tmpDst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmpDst)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmpDst)
+		return err
+	}
+	return os.Rename(tmpDst, dst)
+}
+
 func cloneVol(ctx context.Context, client *virt.Client, srcPath, poolName, dstName, format string, minBytes uint64) (string, func(), error) {
 	if h := deployHooksFromContext(ctx); h != nil && h.cloneVolume != nil {
 		return h.cloneVolume(ctx, client, srcPath, poolName, dstName, format, minBytes)
 	}
 	if client == nil {
+		if st, err := os.Stat(poolName); err == nil && st.IsDir() {
+			dstPath := filepath.Join(poolName, dstName)
+			if err := copyArtifactFile(srcPath, dstPath); err != nil {
+				return "", nil, err
+			}
+			cleanup := func() { _ = os.Remove(dstPath) }
+			return dstPath, cleanup, nil
+		}
 		return "", nil, errors.New("libvirt client is required to clone storage volumes")
 	}
 	vol, path, err := client.CopyVolumeInto(srcPath, poolName, dstName, format, minBytes)
@@ -125,6 +168,16 @@ func createEmptyVol(ctx context.Context, client *virt.Client, poolName, volName 
 		return h.createVolume(ctx, client, poolName, volName, sizeBytes, format)
 	}
 	if client == nil {
+		if st, err := os.Stat(poolName); err == nil && st.IsDir() {
+			dstPath := filepath.Join(poolName, volName)
+			f, err := os.OpenFile(dstPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+			if err != nil {
+				return "", nil, err
+			}
+			_ = f.Close()
+			cleanup := func() { _ = os.Remove(dstPath) }
+			return dstPath, cleanup, nil
+		}
 		return "", nil, errors.New("libvirt client is required to create storage volumes")
 	}
 	vol, path, err := client.CreateVolumeFile(poolName, volName, sizeBytes, format)
@@ -143,6 +196,14 @@ func uploadSeed(ctx context.Context, client *virt.Client, poolName, isoName stri
 		return h.uploadSeedISO(ctx, client, poolName, isoName, data)
 	}
 	if client == nil {
+		if st, err := os.Stat(poolName); err == nil && st.IsDir() {
+			dstPath := filepath.Join(poolName, isoName)
+			if err := os.WriteFile(dstPath, data, 0644); err != nil {
+				return "", nil, err
+			}
+			cleanup := func() { _ = os.Remove(dstPath) }
+			return dstPath, cleanup, nil
+		}
 		return "", nil, errors.New("libvirt client is required to upload cloud-init seed ISO")
 	}
 	vol, path, err := client.UploadBytes(poolName, isoName, data)
@@ -321,19 +382,18 @@ func Deploy(
 		if !foundVersion {
 			return "", notFoundf("version %q not found for item %q", req.VersionID, req.ItemID)
 		}
-	} else {
-		version = item.Versions[len(item.Versions)-1]
-		for _, v := range item.Versions {
-			if v.Created.After(version.Created) {
-				version = v
-			}
-		}
+	} else if lv := item.LatestVersion(); lv != nil {
+		version = *lv
 	}
 
 	// 3. Check if version's volume file exists in the target pool (or host library pool)
 	targetPool := strings.TrimSpace(req.Pool)
 	if targetPool == "" {
-		targetPool = "default"
+		if cfg, ok := store.GetHostConfig(selfHostID); ok && strings.TrimSpace(cfg.TargetPool) != "" {
+			targetPool = strings.TrimSpace(cfg.TargetPool)
+		} else {
+			targetPool = "default"
+		}
 	}
 	targetPoolPath, err := resolvePool(ctx, client, targetPool)
 	if err != nil {
@@ -372,7 +432,9 @@ func Deploy(
 		}
 	}
 
-	if libraryVolumePath == "" {
+	if libraryVolumePath != "" {
+		report(fmt.Sprintf("Using local synced copy: %s", libraryVolumePath))
+	} else {
 		// Not present locally: pull from version.SourceHost
 		if version.SourceHost == "" || version.SourceHost == selfHostID {
 			return "", notFoundf("library volume for %s (v%s) is not present locally on host %s", item.Name, version.Version, selfHostID)
@@ -400,6 +462,14 @@ func Deploy(
 			return "", fmt.Errorf("failed to sync library image from %s: %w", version.SourceHost, err)
 		}
 		libraryVolumePath = pulledPath
+
+		if store != nil {
+			_, _ = store.SetHostSyncState(item.ID, HostSyncState{
+				Host:    selfHostID,
+				State:   "synced",
+				Updated: time.Now().UTC(),
+			})
+		}
 
 		if err := refreshPoolFn(ctx, client, pullPoolName); err != nil {
 			report(fmt.Sprintf("warning: failed to refresh storage pool %s: %v", pullPoolName, err))

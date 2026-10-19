@@ -779,6 +779,147 @@ func TestContentEvaluateSyncStatusValidation(t *testing.T) {
 	}
 }
 
+// TestContentEvaluateItemHosts verifies the standalone per-host state derivation:
+// a locally present copy marks self synced, the source host is synced, subscribed policy
+// hosts are pending, and a stored failed state is surfaced with its reason.
+func TestContentEvaluateItemHosts(t *testing.T) {
+	b := setupContentServer(t)
+
+	contentBytes := []byte("evaluate-hosts-local-copy")
+	fileName := "content-eval-item-v1.0.iso"
+	if err := os.WriteFile(filepath.Join(b.poolDir, fileName), contentBytes, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	item, err := b.store.CreateItem(content.Item{
+		Name:       "eval-item",
+		Type:       content.TypeISO,
+		SourceHost: "host-remote",
+		SyncPolicy: content.SyncPolicy{Mode: content.SyncSelected, Hosts: []string{"policy-host"}},
+		Versions: []content.ItemVersion{
+			{
+				ID:         "v1",
+				Version:    "1.0",
+				Format:     "iso",
+				Size:       int64(len(contentBytes)),
+				SHA256:     sha256Hex(contentBytes),
+				SourceHost: "host-remote",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	states := map[string]string{}
+	for _, h := range b.server.evaluateItemHosts(item) {
+		states[h.Host] = h.State
+	}
+	if states["test-host"] != "synced" {
+		t.Errorf("self state = %q, want synced (local copy present); all=%v", states["test-host"], states)
+	}
+	if states["host-remote"] != "synced" {
+		t.Errorf("source host state = %q, want synced; all=%v", states["host-remote"], states)
+	}
+	if states["policy-host"] != "pending" {
+		t.Errorf("policy host state = %q, want pending; all=%v", states["policy-host"], states)
+	}
+
+	// Missing locally plus a stored failed state for self -> failed with the reason carried through.
+	item2, err := b.store.CreateItem(content.Item{
+		Name:       "eval-item-missing",
+		Type:       content.TypeISO,
+		SourceHost: "host-remote",
+		Versions: []content.ItemVersion{
+			{
+				ID:         "v1",
+				Version:    "1.0",
+				Format:     "iso",
+				Size:       1500,
+				SHA256:     strings.Repeat("a", 64),
+				SourceHost: "host-remote",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.store.SetHostSyncState(item2.ID, content.HostSyncState{
+		Host:  "test-host",
+		State: "failed",
+		Error: "peer unreachable",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	item2, _ = b.store.GetItem(item2.ID)
+
+	var selfState, selfErr string
+	for _, h := range b.server.evaluateItemHosts(item2) {
+		if h.Host == "test-host" {
+			selfState, selfErr = h.State, h.Error
+		}
+	}
+	if selfState != "failed" {
+		t.Errorf("self state = %q, want failed when missing locally and marked failed", selfState)
+	}
+	if selfErr != "peer unreachable" {
+		t.Errorf("self error = %q, want 'peer unreachable'", selfErr)
+	}
+}
+
+// TestContentEvaluateItemHostsClusterMerge verifies that every cluster member appears in
+// the per-host sync state, with the source host synced and the rest pending.
+func TestContentEvaluateItemHostsClusterMerge(t *testing.T) {
+	node, _ := newContentTestNode(t, "alpha")
+
+	if !node.store.Clustered() {
+		self := node.store.Self("https://10.0.0.1:8420")
+		peer := cluster.Node{ID: "peer-1", Name: "peer-one"}
+		if err := node.store.Replace([]cluster.Node{self, peer}, 1); err != nil {
+			t.Fatalf("cluster.Replace: %v", err)
+		}
+	}
+	if !node.store.Clustered() {
+		t.Fatal("expected a two-member cluster")
+	}
+	selfID := node.store.SelfID()
+
+	it := content.Item{
+		ID:         "cluster-eval",
+		Name:       "cluster-eval",
+		Type:       content.TypeImage,
+		SourceHost: "remote-src",
+		SyncPolicy: content.SyncPolicy{Mode: content.SyncSelected, Hosts: []string{"policy-host"}},
+		Versions: []content.ItemVersion{
+			{
+				ID:         "v1",
+				Version:    "1.0",
+				Format:     "qcow2",
+				Size:       42,
+				SHA256:     strings.Repeat("b", 64),
+				SourceHost: "remote-src",
+			},
+		},
+	}
+
+	states := map[string]string{}
+	for _, h := range node.api.evaluateItemHosts(it) {
+		states[h.Host] = h.State
+	}
+	if states[selfID] != "pending" {
+		t.Errorf("self state = %q, want pending; all=%v", states[selfID], states)
+	}
+	if states["peer-1"] != "pending" {
+		t.Errorf("cluster peer state = %q, want pending; all=%v", states["peer-1"], states)
+	}
+	if states["remote-src"] != "synced" {
+		t.Errorf("source host state = %q, want synced; all=%v", states["remote-src"], states)
+	}
+	if states["policy-host"] != "pending" {
+		t.Errorf("policy host state = %q, want pending; all=%v", states["policy-host"], states)
+	}
+}
+
 func TestContentActivityLogging(t *testing.T) {
 	b := setupContentServer(t)
 

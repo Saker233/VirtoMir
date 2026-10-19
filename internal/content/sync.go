@@ -223,11 +223,22 @@ func (m *SyncManager) OnItemUpdated(ctx context.Context, item Item, selfID strin
 		return
 	}
 
-	latestVersion := item.Versions[len(item.Versions)-1]
-	for _, v := range item.Versions {
-		if v.Created.After(latestVersion.Created) {
-			latestVersion = v
+	latestPtr := item.LatestVersion()
+	if latestPtr == nil {
+		return
+	}
+	latestVersion := *latestPtr
+
+	if latestVersion.SourceHost == "" || latestVersion.SourceHost == selfID {
+		// Publisher holds the source volume and must not download from itself; mark as synced.
+		if m.store != nil {
+			_, _ = m.store.SetHostSyncState(item.ID, HostSyncState{
+				Host:    selfID,
+				State:   "synced",
+				Updated: time.Now().UTC(),
+			})
 		}
+		return
 	}
 
 	cfg, ok := m.store.GetHostConfig(selfID)
@@ -246,6 +257,13 @@ func (m *SyncManager) OnItemUpdated(ctx context.Context, item Item, selfID strin
 	if st, err := os.Stat(finalPath); err == nil && !st.IsDir() {
 		if latestVersion.Size <= 0 || st.Size() == latestVersion.Size {
 			// Already present locally
+			if m.store != nil {
+				_, _ = m.store.SetHostSyncState(item.ID, HostSyncState{
+					Host:    selfID,
+					State:   "synced",
+					Updated: time.Now().UTC(),
+				})
+			}
 			return
 		}
 	}
@@ -291,6 +309,14 @@ func (m *SyncManager) OnItemUpdated(ctx context.Context, item Item, selfID strin
 		return
 	}
 
+	if m.store != nil {
+		_, _ = m.store.SetHostSyncState(item.ID, HostSyncState{
+			Host:    selfID,
+			State:   "syncing",
+			Updated: time.Now().UTC(),
+		})
+	}
+
 	jobTitle := fmt.Sprintf("Sync %s (v%s)", item.Name, latestVersion.Version)
 	job := m.jobs.Start("content-sync", jobTitle, func(jobCtx context.Context, report func(string)) (string, error) {
 		defer func() {
@@ -302,6 +328,14 @@ func (m *SyncManager) OnItemUpdated(ctx context.Context, item Item, selfID strin
 		targetPath, err := Pull(jobCtx, peer, item, latestVersion, poolPath, report)
 		if err != nil {
 			m.logger().Warn("content sync failed", "item", item.Name, "version", latestVersion.Version, "err", err)
+			if m.store != nil {
+				_, _ = m.store.SetHostSyncState(item.ID, HostSyncState{
+					Host:    selfID,
+					State:   "failed",
+					Error:   err.Error(),
+					Updated: time.Now().UTC(),
+				})
+			}
 			return "", err
 		}
 
@@ -329,6 +363,14 @@ func (m *SyncManager) OnItemUpdated(ctx context.Context, item Item, selfID strin
 					m.logger().Info("pruned local file for older version", "item", item.Name, "version", prunedVer.Version)
 				}
 			}
+		}
+
+		if m.store != nil {
+			_, _ = m.store.SetHostSyncState(item.ID, HostSyncState{
+				Host:    selfID,
+				State:   "synced",
+				Updated: time.Now().UTC(),
+			})
 		}
 
 		m.logger().Info("content item synced successfully", "item", item.Name, "version", latestVersion.Version, "path", targetPath)

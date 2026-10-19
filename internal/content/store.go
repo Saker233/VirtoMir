@@ -60,6 +60,11 @@ func randomHex(bytes int) string {
 	return hex.EncodeToString(b)
 }
 
+// RandomHex returns a cryptographically random hexadecimal string of length 2*bytes.
+func RandomHex(bytes int) string {
+	return randomHex(bytes)
+}
+
 type storeData struct {
 	Items       []Item       `json:"items"`
 	HostConfigs []HostConfig `json:"hostConfigs,omitempty"`
@@ -141,6 +146,19 @@ func normalizeItem(it *Item) {
 	}
 	if it.Versions == nil {
 		it.Versions = []ItemVersion{}
+	}
+	for i := range it.Versions {
+		v := &it.Versions[i]
+		v.ID = strings.TrimSpace(v.ID)
+		if v.ID == "" {
+			v.ID = randomHex(8)
+		}
+		if v.Created.IsZero() {
+			v.Created = it.Created
+		}
+	}
+	if it.Hosts == nil {
+		it.Hosts = []HostSyncState{}
 	}
 }
 
@@ -308,6 +326,19 @@ func (s *Store) CreateItem(item Item) (Item, error) {
 	if item.Versions == nil {
 		item.Versions = []ItemVersion{}
 	}
+	for i := range item.Versions {
+		v := &item.Versions[i]
+		v.ID = strings.TrimSpace(v.ID)
+		if v.ID == "" {
+			v.ID = randomHex(8)
+		}
+		if v.Created.IsZero() {
+			v.Created = item.Created
+		}
+	}
+	if item.Hosts == nil {
+		item.Hosts = []HostSyncState{}
+	}
 
 	s.items[item.ID] = &item
 	if err := s.saveLocked(); err != nil {
@@ -318,7 +349,7 @@ func (s *Store) CreateItem(item Item) (Item, error) {
 	return item.clone(), nil
 }
 
-// UpdateItem updates name, description, keepVersions, and syncPolicy of an existing item.
+// UpdateItem updates name, description, keepVersions, syncPolicy, versions, and hosts of an existing item.
 func (s *Store) UpdateItem(item Item) (Item, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -362,8 +393,98 @@ func (s *Store) UpdateItem(item Item) (Item, error) {
 	cur.Description = item.Description
 	cur.KeepVersions = keep
 	cur.SyncPolicy = syncPolicy
+	if item.SourceHost != "" {
+		cur.SourceHost = item.SourceHost
+	}
+
+	if len(item.Versions) > 0 {
+		for _, nv := range item.Versions {
+			nv.ID = strings.TrimSpace(nv.ID)
+			if nv.ID == "" {
+				nv.ID = randomHex(8)
+			}
+			if nv.Created.IsZero() {
+				nv.Created = time.Now().UTC()
+			}
+			found := false
+			for idx, cv := range cur.Versions {
+				if (cv.ID != "" && cv.ID == nv.ID) || (cv.Version != "" && cv.Version == nv.Version) {
+					cur.Versions[idx] = nv
+					found = true
+					break
+				}
+			}
+			if !found {
+				cur.Versions = append(cur.Versions, nv)
+			}
+		}
+		if len(cur.Versions) > keep {
+			excess := len(cur.Versions) - keep
+			cur.Versions = append([]ItemVersion{}, cur.Versions[excess:]...)
+		}
+	}
+
+	if len(item.Hosts) > 0 {
+		for _, nh := range item.Hosts {
+			nh.Host = strings.TrimSpace(nh.Host)
+			if nh.Host == "" {
+				continue
+			}
+			found := false
+			for idx, ch := range cur.Hosts {
+				if ch.Host == nh.Host {
+					cur.Hosts[idx] = nh
+					found = true
+					break
+				}
+			}
+			if !found {
+				cur.Hosts = append(cur.Hosts, nh)
+			}
+		}
+	}
+
 	cur.Updated = time.Now().UTC()
 
+	if err := s.saveLocked(); err != nil {
+		*cur = prev
+		return Item{}, err
+	}
+	return cur.clone(), nil
+}
+
+// SetHostSyncState updates or appends the sync state for a host on an item.
+func (s *Store) SetHostSyncState(itemID string, state HostSyncState) (Item, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cur, ok := s.items[strings.TrimSpace(itemID)]
+	if !ok {
+		return Item{}, notFoundf("item %q not found", itemID)
+	}
+
+	state.Host = strings.TrimSpace(state.Host)
+	if state.Host == "" {
+		return Item{}, invalidf("host is required")
+	}
+	if state.Updated.IsZero() {
+		state.Updated = time.Now().UTC()
+	}
+
+	prev := cur.clone()
+	found := false
+	for i, h := range cur.Hosts {
+		if h.Host == state.Host {
+			cur.Hosts[i] = state
+			found = true
+			break
+		}
+	}
+	if !found {
+		cur.Hosts = append(cur.Hosts, state)
+	}
+
+	cur.Updated = time.Now().UTC()
 	if err := s.saveLocked(); err != nil {
 		*cur = prev
 		return Item{}, err
@@ -440,6 +561,21 @@ func (s *Store) AddVersion(itemID string, v ItemVersion) (Item, []string, error)
 			pruned[i] = cur.Versions[i].ID
 		}
 		cur.Versions = append([]ItemVersion{}, cur.Versions[excess:]...)
+	}
+
+	if v.SourceHost != "" {
+		now := time.Now().UTC()
+		foundHost := false
+		for i, h := range cur.Hosts {
+			if h.Host == v.SourceHost {
+				cur.Hosts[i] = HostSyncState{Host: v.SourceHost, State: "synced", Updated: now}
+				foundHost = true
+				break
+			}
+		}
+		if !foundHost {
+			cur.Hosts = append(cur.Hosts, HostSyncState{Host: v.SourceHost, State: "synced", Updated: now})
+		}
 	}
 
 	cur.Updated = time.Now().UTC()

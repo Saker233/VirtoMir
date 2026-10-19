@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -274,15 +275,9 @@ func (s *Server) listContentItems(w http.ResponseWriter, _ *http.Request) {
 			Item:         it,
 			VersionCount: len(it.Versions),
 		}
-		if len(it.Versions) > 0 {
-			latest := it.Versions[len(it.Versions)-1]
-			for _, v := range it.Versions {
-				if v.Created.After(latest.Created) {
-					latest = v
-				}
-			}
-			summary.LatestVersion = &latest
-			summary.SyncStatus = s.evaluateSyncStatus(it, &latest, targetPool)
+		if latest := it.LatestVersion(); latest != nil {
+			summary.LatestVersion = latest
+			summary.SyncStatus = s.evaluateSyncStatus(it, latest, targetPool)
 		} else {
 			summary.SyncStatus = "missing"
 		}
@@ -292,23 +287,23 @@ func (s *Server) listContentItems(w http.ResponseWriter, _ *http.Request) {
 }
 
 type publishItemReq struct {
-	TemplateUUID string             `json:"templateUuid,omitempty"`
-	Pool         string             `json:"pool,omitempty"`
-	Volume       string             `json:"volume,omitempty"`
-	ID           string             `json:"id,omitempty"`
-	Name         string             `json:"name,omitempty"`
-	Type         content.ItemType   `json:"type,omitempty"`
-	Description  string             `json:"description,omitempty"`
-	Version      string             `json:"version,omitempty"`
-	KeepVersions int                `json:"keepVersions,omitempty"`
-	SyncPolicy   content.SyncPolicy `json:"syncPolicy,omitempty"`
-	SourceHost   string             `json:"sourceHost,omitempty"`
-	SourcePool   string             `json:"sourcePool,omitempty"`
-	SourceVol    string             `json:"sourceVol,omitempty"`
-	Created      time.Time          `json:"created,omitempty"`
-	Updated      time.Time          `json:"updated,omitempty"`
-
-	Versions []content.ItemVersion `json:"versions,omitempty"`
+	TemplateUUID string                  `json:"templateUuid,omitempty"`
+	Pool         string                  `json:"pool,omitempty"`
+	Volume       string                  `json:"volume,omitempty"`
+	ID           string                  `json:"id,omitempty"`
+	Name         string                  `json:"name,omitempty"`
+	Type         content.ItemType        `json:"type,omitempty"`
+	Description  string                  `json:"description,omitempty"`
+	Version      string                  `json:"version,omitempty"`
+	KeepVersions int                     `json:"keepVersions,omitempty"`
+	SyncPolicy   content.SyncPolicy      `json:"syncPolicy,omitempty"`
+	SourceHost   string                  `json:"sourceHost,omitempty"`
+	SourcePool   string                  `json:"sourcePool,omitempty"`
+	SourceVol    string                  `json:"sourceVol,omitempty"`
+	Created      time.Time               `json:"created,omitempty"`
+	Updated      time.Time               `json:"updated,omitempty"`
+	Versions     []content.ItemVersion   `json:"versions,omitempty"`
+	Hosts        []content.HostSyncState `json:"hosts,omitempty"`
 
 	SHA256      string `json:"sha256,omitempty"`
 	Size        int64  `json:"size,omitempty"`
@@ -336,7 +331,7 @@ func (s *Server) publishContentItem(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case req.TemplateUUID != "" && !isLocal:
-		if !ok || client == nil {
+		if (!ok || client == nil) && !content.HasDomainLookupHook(r.Context()) {
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "hypervisor client is not available"})
 			return
 		}
@@ -349,7 +344,7 @@ func (s *Server) publishContentItem(w http.ResponseWriter, r *http.Request) {
 			SyncPolicy:   req.SyncPolicy,
 		})
 	case req.Pool != "" && req.Volume != "" && !isLocal:
-		if !ok || client == nil {
+		if (!ok || client == nil) && !content.HasVolumeListHook(r.Context()) {
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "hypervisor client is not available"})
 			return
 		}
@@ -375,11 +370,15 @@ func (s *Server) publishContentItem(w http.ResponseWriter, r *http.Request) {
 			Created:      req.Created,
 			Updated:      req.Updated,
 			Versions:     req.Versions,
+			Hosts:        req.Hosts,
 		}
 		if item.SourceHost == "" {
 			item.SourceHost = selfID
 		}
 		for i := range item.Versions {
+			if item.Versions[i].ID == "" {
+				item.Versions[i].ID = content.RandomHex(8)
+			}
 			if item.Versions[i].SourceHost == "" {
 				item.Versions[i].SourceHost = item.SourceHost
 			}
@@ -387,6 +386,9 @@ func (s *Server) publishContentItem(w http.ResponseWriter, r *http.Request) {
 		created, err = s.content.CreateItem(item)
 		if isLocal && errors.Is(err, content.ErrConflict) {
 			created, err = s.content.UpdateItem(item)
+		}
+		if err == nil && s.contentSync != nil && isLocal {
+			go s.contentSync.OnItemUpdated(context.Background(), created, selfID)
 		}
 	default:
 		item := content.Item{
@@ -399,13 +401,18 @@ func (s *Server) publishContentItem(w http.ResponseWriter, r *http.Request) {
 			SyncPolicy:   req.SyncPolicy,
 			Created:      req.Created,
 			Updated:      req.Updated,
+			Hosts:        req.Hosts,
 		}
 		if item.SourceHost == "" {
 			item.SourceHost = selfID
 		}
 		if req.Version != "" || req.SHA256 != "" {
+			verID := req.ID
+			if verID == "" {
+				verID = content.RandomHex(8)
+			}
 			ver := content.ItemVersion{
-				ID:          req.ID,
+				ID:          verID,
 				Version:     req.Version,
 				Description: req.Description,
 				SHA256:      req.SHA256,
@@ -423,6 +430,9 @@ func (s *Server) publishContentItem(w http.ResponseWriter, r *http.Request) {
 		}
 		if isLocal && errors.Is(err, content.ErrConflict) {
 			created, err = s.content.UpdateItem(item)
+		}
+		if err == nil && s.contentSync != nil && isLocal {
+			go s.contentSync.OnItemUpdated(context.Background(), created, selfID)
 		}
 	}
 
@@ -442,7 +452,115 @@ func (s *Server) publishContentItem(w http.ResponseWriter, r *http.Request) {
 	s.done(w, http.StatusCreated, answer)
 }
 
-// getContentItem returns item details with all its versions.
+func (s *Server) evaluateItemHosts(it content.Item) []content.HostSyncState {
+	selfID := s.selfHostID()
+	targetPool := s.hostTargetPool()
+
+	latestVer := it.LatestVersion()
+
+	selfStatus := s.evaluateSyncStatus(it, latestVer, targetPool)
+	var localState string
+	switch selfStatus {
+	case "syncing":
+		localState = "syncing"
+	case "ready":
+		localState = "synced"
+	default:
+		if latestVer != nil && (latestVer.SourceHost == "" || latestVer.SourceHost == selfID) {
+			localState = "synced"
+		} else if it.SourceHost == selfID {
+			localState = "synced"
+		} else {
+			localState = "pending"
+		}
+	}
+
+	var localErr string
+	for _, h := range it.Hosts {
+		if h.Host == selfID {
+			if h.State == "failed" && localState == "pending" {
+				localState = "failed"
+				localErr = h.Error
+			}
+			break
+		}
+	}
+
+	hostMap := make(map[string]content.HostSyncState)
+	for _, h := range it.Hosts {
+		hostMap[h.Host] = h
+	}
+
+	hostMap[selfID] = content.HostSyncState{
+		Host:    selfID,
+		State:   localState,
+		Error:   localErr,
+		Updated: time.Now().UTC(),
+	}
+
+	srcHost := it.SourceHost
+	if latestVer != nil && latestVer.SourceHost != "" {
+		srcHost = latestVer.SourceHost
+	}
+	if srcHost != "" {
+		if cur, exists := hostMap[srcHost]; !exists {
+			hostMap[srcHost] = content.HostSyncState{
+				Host:    srcHost,
+				State:   "synced",
+				Updated: it.Updated,
+			}
+		} else if cur.State == "pending" {
+			cur.State = "synced"
+			hostMap[srcHost] = cur
+		}
+	}
+
+	if s.cluster != nil && s.cluster.Clustered() {
+		members, _ := s.cluster.Members()
+		for _, m := range members {
+			hID := m.ID
+			if hID == "" {
+				hID = m.Name
+			}
+			if _, exists := hostMap[hID]; !exists {
+				state := "pending"
+				if hID == srcHost {
+					state = "synced"
+				}
+				hostMap[hID] = content.HostSyncState{
+					Host:    hID,
+					State:   state,
+					Updated: it.Updated,
+				}
+			}
+		}
+	}
+	for _, hID := range it.SyncPolicy.Hosts {
+		if _, exists := hostMap[hID]; !exists {
+			state := "pending"
+			if hID == srcHost {
+				state = "synced"
+			}
+			hostMap[hID] = content.HostSyncState{
+				Host:    hID,
+				State:   state,
+				Updated: it.Updated,
+			}
+		}
+	}
+
+	hosts := make([]content.HostSyncState, 0, len(hostMap))
+	for _, h := range hostMap {
+		hosts = append(hosts, h)
+	}
+	sort.Slice(hosts, func(i, j int) bool {
+		return hosts[i].Host < hosts[j].Host
+	})
+
+	return hosts
+}
+
+// getContentItem returns item details with all its versions and per-host sync state.
 func (s *Server) getContentItem(w http.ResponseWriter, r *http.Request) {
 	if s.content == nil {
 		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "content library is not available on this host"})
@@ -454,6 +572,7 @@ func (s *Server) getContentItem(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "item " + id + " not found"})
 		return
 	}
+	it.Hosts = s.evaluateItemHosts(it)
 	s.writeJSON(w, http.StatusOK, it)
 }
 
@@ -771,13 +890,13 @@ func (s *Server) syncContentItem(w http.ResponseWriter, r *http.Request) {
 			s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "version " + b.VersionID + " not found"})
 			return
 		}
-	} else {
-		targetVer = it.Versions[len(it.Versions)-1]
-		for _, v := range it.Versions {
-			if v.Created.After(targetVer.Created) {
-				targetVer = v
-			}
-		}
+	} else if lv := it.LatestVersion(); lv != nil {
+		targetVer = *lv
+	}
+	if targetVer.ID == "" {
+		// Legacy data without a stored version ID: address the peer by version string,
+		// which its download handler also matches.
+		targetVer.ID = targetVer.Version
 	}
 
 	targetPool := s.hostTargetPool()
@@ -793,34 +912,101 @@ func (s *Server) syncContentItem(w http.ResponseWriter, r *http.Request) {
 			finalFile := fmt.Sprintf("content-%s-v%s.%s", it.Name, targetVer.Version, targetVer.Format)
 			finalPath := filepath.Join(poolPath, finalFile)
 			if artifactFileMatches(finalPath, targetVer.Size, targetVer.SHA256) {
+				if s.content != nil {
+					_, _ = s.content.SetHostSyncState(it.ID, content.HostSyncState{
+						Host:    selfID,
+						State:   "synced",
+						Updated: time.Now().UTC(),
+					})
+				}
 				report("Already present on source host")
 				return finalPath, nil
 			}
 			srcPath, err := s.findLocalArtifactFile(it, targetVer)
 			if err != nil {
+				if s.content != nil {
+					_, _ = s.content.SetHostSyncState(it.ID, content.HostSyncState{
+						Host:    selfID,
+						State:   "failed",
+						Error:   fmt.Sprintf("artifact for %s (v%s) not found on source host: %v", it.Name, targetVer.Version, err),
+						Updated: time.Now().UTC(),
+					})
+				}
 				return "", fmt.Errorf("artifact for %s (v%s) not found on source host: %w", it.Name, targetVer.Version, err)
 			}
 			if srcPath == finalPath {
+				if s.content != nil {
+					_, _ = s.content.SetHostSyncState(it.ID, content.HostSyncState{
+						Host:    selfID,
+						State:   "synced",
+						Updated: time.Now().UTC(),
+					})
+				}
 				report("Already present on source host")
 				return finalPath, nil
 			}
 			report(fmt.Sprintf("Copying artifact to target pool %s", targetPool))
 			if err := copyArtifactFile(srcPath, finalPath); err != nil {
+				if s.content != nil {
+					_, _ = s.content.SetHostSyncState(it.ID, content.HostSyncState{
+						Host:    selfID,
+						State:   "failed",
+						Error:   fmt.Sprintf("copy artifact to target pool: %v", err),
+						Updated: time.Now().UTC(),
+					})
+				}
 				return "", fmt.Errorf("copy artifact to target pool: %w", err)
 			}
 			if s.backend != nil {
 				_ = s.backend.PoolAction(targetPool, "refresh")
 			}
+			if s.content != nil {
+				_, _ = s.content.SetHostSyncState(it.ID, content.HostSyncState{
+					Host:    selfID,
+					State:   "synced",
+					Updated: time.Now().UTC(),
+				})
+			}
 			report("Synced to target pool")
 			return finalPath, nil
 		}
+		if s.content != nil {
+			_, _ = s.content.SetHostSyncState(it.ID, content.HostSyncState{
+				Host:    selfID,
+				State:   "syncing",
+				Updated: time.Now().UTC(),
+			})
+		}
 		peer, ok := s.PeerFor(targetVer.SourceHost)
 		if !ok || peer == nil {
+			if s.content != nil {
+				_, _ = s.content.SetHostSyncState(it.ID, content.HostSyncState{
+					Host:    selfID,
+					State:   "failed",
+					Error:   fmt.Sprintf("source host %q not found in peers", targetVer.SourceHost),
+					Updated: time.Now().UTC(),
+				})
+			}
 			return "", fmt.Errorf("source host %q not found in peers", targetVer.SourceHost)
 		}
 		res, err := content.Pull(jobCtx, peer, it, targetVer, poolPath, report)
 		if err != nil {
+			if s.content != nil {
+				_, _ = s.content.SetHostSyncState(it.ID, content.HostSyncState{
+					Host:    selfID,
+					State:   "failed",
+					Error:   err.Error(),
+					Updated: time.Now().UTC(),
+				})
+			}
 			return "", err
+		}
+		if s.content != nil {
+			_, _ = s.content.SetHostSyncState(it.ID, content.HostSyncState{
+				Host:    selfID,
+				State:   "synced",
+				Updated: time.Now().UTC(),
+			})
 		}
 		if s.backend != nil {
 			_ = s.backend.PoolAction(targetPool, "refresh")
@@ -906,14 +1092,16 @@ func (s *Server) deployContentItem(w http.ResponseWriter, r *http.Request) {
 	jobTitle := fmt.Sprintf("Deploy %s from %s", req.Name, it.Name)
 
 	job := s.jobs.Start("content-deploy", jobTitle, func(jobCtx context.Context, report func(string)) (string, error) {
-		if !ok || client == nil {
+		if (!ok || client == nil) && !content.HasDeployHooks(jobCtx) {
 			return "", errors.New("hypervisor client is not available")
 		}
 		uuid, err := content.Deploy(jobCtx, client, s.content, s, req, selfID, report)
 		if err != nil {
 			return "", err
 		}
-		s.live.Refresh()
+		if s.live != nil {
+			s.live.Refresh()
+		}
 		return uuid, nil
 	})
 

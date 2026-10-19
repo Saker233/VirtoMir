@@ -136,15 +136,15 @@ func TestServeContent_OutOfBounds(t *testing.T) {
 	}
 
 	invalidRanges := []string{
-		"bytes=10-20",      // start >= total
-		"bytes=20-30",      // start > total
-		"bytes=8-5",        // start > end
-		"bytes=5-15",       // end >= total
-		"bytes=-5",         // omitted start
-		"bytes=abc-def",    // non-numeric
-		"bytes=0-abc",      // non-numeric end
-		"invalid",          // missing bytes= prefix
-		"characters=0-5",   // unsupported unit
+		"bytes=10-20",    // start >= total
+		"bytes=20-30",    // start > total
+		"bytes=8-5",      // start > end
+		"bytes=5-15",     // end >= total
+		"bytes=-5",       // omitted start
+		"bytes=abc-def",  // non-numeric
+		"bytes=0-abc",    // non-numeric end
+		"invalid",        // missing bytes= prefix
+		"characters=0-5", // unsupported unit
 	}
 
 	for _, rHdr := range invalidRanges {
@@ -349,6 +349,64 @@ func TestPull_ChecksumMismatch(t *testing.T) {
 	// Verify final file was not created
 	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
 		t.Errorf("final file should not exist on checksum mismatch")
+	}
+}
+
+func TestPull_EmptyChecksum(t *testing.T) {
+	item := Item{ID: "item-empty-sha", Name: "empty-sha-img", Type: TypeImage}
+	version := ItemVersion{ID: "v1-empty-sha", Version: "1.0", Format: "iso", Size: 100, SHA256: ""}
+
+	peer := cluster.NewPeer(cluster.Node{Address: "http://127.0.0.1:9"}, nil)
+	targetDir := t.TempDir()
+
+	_, err := Pull(context.Background(), peer, item, version, targetDir, nil)
+	if err == nil {
+		t.Fatalf("expected error on empty SHA256, got nil")
+	}
+	if !strings.Contains(err.Error(), "checksum cannot be empty") {
+		t.Errorf("error = %q, want containing 'checksum cannot be empty'", err.Error())
+	}
+}
+
+// TestPull_ChecksumMismatchPreservesExistingFinal verifies that a failed re-download does
+// not destroy an already checksum-verified final file sitting in the pool.
+func TestPull_ChecksumMismatchPreservesExistingFinal(t *testing.T) {
+	good := []byte("good-local-copy-that-is-checksum-verified")
+	bad := append([]byte{}, good...)
+	bad[0] ^= 0xff
+	if len(good) != len(bad) {
+		t.Fatalf("test setup: payload sizes must match")
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.Itoa(len(bad)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(bad)
+	}))
+	defer ts.Close()
+
+	item := Item{ID: "item-preserve", Name: "preserve", Type: TypeImage}
+	version := ItemVersion{ID: "v1-preserve", Version: "1.0", Format: "qcow2", Size: int64(len(good)), SHA256: sha256Hex(good)}
+
+	targetDir := t.TempDir()
+	finalPath := filepath.Join(targetDir, "content-preserve-v1.0.qcow2")
+	if err := os.WriteFile(finalPath, good, 0644); err != nil {
+		t.Fatalf("write existing final file: %v", err)
+	}
+
+	peer := cluster.NewPeer(cluster.Node{Address: ts.URL}, ts.Client())
+	_, err := Pull(context.Background(), peer, item, version, targetDir, nil)
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("expected ErrChecksumMismatch, got %v", err)
+	}
+
+	kept, readErr := os.ReadFile(finalPath)
+	if readErr != nil {
+		t.Fatalf("existing final file was deleted on a failed re-download: %v", readErr)
+	}
+	if !bytes.Equal(kept, good) {
+		t.Errorf("existing final file was modified: got %q, want %q", kept, good)
 	}
 }
 

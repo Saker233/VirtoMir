@@ -1,9 +1,12 @@
 package content
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +20,7 @@ import (
 
 	"github.com/onurbaydas/virtomir/internal/cluster"
 	"github.com/onurbaydas/virtomir/internal/jobs"
+	"github.com/onurbaydas/virtomir/internal/virt"
 )
 
 func sha256Hex(data []byte) string {
@@ -551,5 +555,414 @@ func TestReconcile(t *testing.T) {
 	sm.Reconcile(ctx, selfID)
 	if len(jm.List()) != 1 {
 		t.Errorf("expected duplicate job to be prevented by activeJobs, got %d jobs", len(jm.List()))
+	}
+}
+
+// waitForJob blocks until jobID leaves the Running state and fails the test on error or timeout.
+func waitForJob(t *testing.T, jm *jobs.Manager, jobID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		j, ok := jm.Get(jobID)
+		if ok && j.State != jobs.Running {
+			if j.State != jobs.Succeeded {
+				t.Fatalf("sync job failed: %s", j.Message)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("sync job %s timed out", jobID)
+}
+
+// TestPublishReplicateSync_EndToEnd verifies the full publish → replicate → sync flow
+// between two fake hosts: publish assigns a stable version ID, cluster replication of
+// the item metadata keeps it, the transfer addresses it, the subscriber writes
+// content-<item>-v<version>.<format> verified by SHA-256, refreshes the pool, and
+// marks the subscriber host as synced.
+func TestPublishReplicateSync_EndToEnd(t *testing.T) {
+	storePub, err := Open("")
+	if err != nil {
+		t.Fatalf("Open publisher store: %v", err)
+	}
+	storeSub, err := Open("")
+	if err != nil {
+		t.Fatalf("Open subscriber store: %v", err)
+	}
+
+	srcDir := t.TempDir()
+	srcVol := "cirros-0.6.3-base.img"
+	payload := []byte("cirros-0.6.3-base-image-payload-bytes")
+	srcPath := filepath.Join(srcDir, srcVol)
+	if err := os.WriteFile(srcPath, payload, 0644); err != nil {
+		t.Fatalf("write source volume: %v", err)
+	}
+
+	// 1. Publish on host A from a local volume
+	pubCtx := WithVolumeList(context.Background(), func(ctx context.Context, client *virt.Client, pool string) ([]virt.Volume, error) {
+		return []virt.Volume{{Name: srcVol, Path: srcPath}}, nil
+	})
+	itemPub, err := PublishVolume(pubCtx, nil, storePub, "host-a", PublishVolumeReq{
+		Pool:       "images",
+		Volume:     srcVol,
+		Type:       TypeImage,
+		Name:       "cirros-lib",
+		Version:    "1.0",
+		SyncPolicy: SyncPolicy{Mode: SyncAll},
+	})
+	if err != nil {
+		t.Fatalf("PublishVolume: %v", err)
+	}
+	if len(itemPub.Versions) != 1 {
+		t.Fatalf("published versions = %d, want 1", len(itemPub.Versions))
+	}
+	published := itemPub.Versions[0]
+	if published.ID == "" {
+		t.Fatal("publish did not assign a version ID")
+	}
+
+	// 2. Replicate the item metadata to host B (full item JSON as pushed by the API)
+	raw, err := json.Marshal(itemPub)
+	if err != nil {
+		t.Fatalf("marshal replicated item: %v", err)
+	}
+	var replicated Item
+	if err := json.Unmarshal(raw, &replicated); err != nil {
+		t.Fatalf("unmarshal replicated item: %v", err)
+	}
+	if replicated.Versions[0].ID != published.ID {
+		t.Fatalf("replication lost the version ID: got %q, want %q", replicated.Versions[0].ID, published.ID)
+	}
+	itemSub, err := storeSub.CreateItem(replicated)
+	if err != nil {
+		t.Fatalf("subscriber CreateItem: %v", err)
+	}
+	if itemSub.Versions[0].ID != published.ID {
+		t.Errorf("subscriber stored version ID = %q, want %q", itemSub.Versions[0].ID, published.ID)
+	}
+
+	// 3. Fake source host serving the download endpoint for that version
+	var gotPath atomic.Value
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath.Store(r.URL.RequestURI())
+		if r.URL.Path == DownloadPath(itemPub.ID, published.ID) {
+			ServeContent(w, r, srcPath, int64(len(payload)))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	peer := cluster.NewPeer(cluster.Node{ID: "host-a", Address: ts.URL}, ts.Client())
+	resolver := MapPeerResolver{"host-a": peer}
+
+	dirB := t.TempDir()
+	if err := storeSub.SetHostConfig(HostConfig{HostID: "host-b", TargetPool: dirB}); err != nil {
+		t.Fatalf("SetHostConfig subscriber: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	jm := jobs.New(ctx)
+	sm := NewSyncManager(storeSub, jm, nil, nil, resolver, nil)
+
+	refreshedPool := ""
+	sm.SetRefreshPoolHook(func(poolName string) error {
+		refreshedPool = poolName
+		return nil
+	})
+
+	// 4. Triggering auto-sync on the subscriber (ON /sync {} triggers the same flow with
+	// the latest version) pulls once with resume support, refreshes the pool and more.
+	sm.OnItemUpdated(ctx, itemSub, "host-b")
+
+	jobList := jm.List()
+	if len(jobList) != 1 {
+		t.Fatalf("expected 1 sync job, got %d: %+v", len(jobList), jobList)
+	}
+	if jobList[0].Kind != "content-sync" {
+		t.Errorf("job kind = %q, want content-sync", jobList[0].Kind)
+	}
+	waitForJob(t, jm, jobList[0].ID)
+
+	// Transfer must have used the stable version ID in the download path
+	wantPath := DownloadPath(itemPub.ID, published.ID)
+	if p, _ := gotPath.Load().(string); p != wantPath {
+		t.Errorf("download path = %q, want %q", p, wantPath)
+	}
+
+	// 5. The subscriber holds the copy under the canonical name, checksum-verified
+	finalPath := filepath.Join(dirB, fmt.Sprintf("content-%s-v%s.%s", itemPub.Name, published.Version, published.Format))
+	got, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatalf("read synced file: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("synced content = %q, want %q", string(got), string(payload))
+	}
+	if refreshedPool != dirB {
+		t.Errorf("refreshedPool = %q, want %q", refreshedPool, dirB)
+	}
+
+	// 6. Subscriber host marked synced
+	it, ok := storeSub.GetItem(itemPub.ID)
+	if !ok {
+		t.Fatalf("item missing on subscriber")
+	}
+	foundSynced := false
+	for _, h := range it.Hosts {
+		if h.Host == "host-b" {
+			if h.State != "synced" {
+				t.Errorf("subscriber state = %q, want synced", h.State)
+			}
+			if h.Updated.IsZero() {
+				t.Errorf("subscriber state has no timestamp")
+			}
+			foundSynced = true
+		}
+	}
+	if !foundSynced {
+		t.Errorf("subscriber host state missing: %+v", it.Hosts)
+	}
+}
+
+// TestOnItemUpdatedSelectsLatestVersion verifies that automated sync picks the version with
+// the newest Created timestamp through the production code path (Item.LatestVersion and
+// SyncManager.OnItemUpdated), even when the versions slice is not ordered by time.
+func TestOnItemUpdatedSelectsLatestVersion(t *testing.T) {
+	st, err := Open("")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+
+	targetDir := t.TempDir()
+	selfID := "host-latest"
+	sourceHost := "host-src"
+	if err := st.SetHostConfig(HostConfig{HostID: selfID, TargetPool: targetDir}); err != nil {
+		t.Fatalf("SetHostConfig: %v", err)
+	}
+
+	newest := []byte("newest-version-payload")
+	oldest := []byte("oldest-version-payload")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.Itoa(len(newest)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(newest)
+	}))
+	defer server.Close()
+
+	peer := cluster.NewPeer(cluster.Node{ID: sourceHost, Address: server.URL}, server.Client())
+	now := time.Now().UTC()
+
+	item := Item{
+		ID:         "item-latest",
+		Name:       "unordered",
+		Type:       TypeImage,
+		SyncPolicy: SyncPolicy{Mode: SyncAll},
+		Versions: []ItemVersion{
+			// Slice order is newest-first: the last element is the OLDEST by Created.
+			{ID: "v-new", Version: "2.0", Format: "img", Size: int64(len(newest)), SHA256: sha256Hex(newest), SourceHost: sourceHost, Created: now},
+			{ID: "v-old", Version: "1.0", Format: "img", Size: int64(len(oldest)), SHA256: sha256Hex(oldest), SourceHost: sourceHost, Created: now.Add(-time.Hour)},
+		},
+	}
+
+	if got := item.LatestVersion(); got == nil || got.ID != "v-new" {
+		t.Fatalf("LatestVersion = %+v, want v-new", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	jm := jobs.New(ctx)
+	sm := NewSyncManager(st, jm, nil, nil, MapPeerResolver{sourceHost: peer}, nil)
+
+	sm.OnItemUpdated(ctx, item, selfID)
+
+	jobList := jm.List()
+	if len(jobList) != 1 {
+		t.Fatalf("expected 1 job, got %d: %+v", len(jobList), jobList)
+	}
+	if want := "Sync unordered (v2.0)"; jobList[0].Title != want {
+		t.Errorf("job title = %q, want %q (latest version must win)", jobList[0].Title, want)
+	}
+	waitForJob(t, jm, jobList[0].ID)
+
+	if _, err := os.Stat(filepath.Join(targetDir, "content-unordered-v2.0.img")); err != nil {
+		t.Errorf("newest version file was not synced: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "content-unordered-v1.0.img")); !os.IsNotExist(err) {
+		t.Errorf("older version file should not have been synced: %v", err)
+	}
+}
+
+// TestSyncJob_ChecksumMismatchFailsWithClearError verifies that a subscriber job whose
+// transfer produces a mismatched SHA-256 fails with a clear message, leaves no file
+// behind, and records host state failed.
+func TestSyncJob_ChecksumMismatchFailsWithClearError(t *testing.T) {
+	storeSub, err := Open("")
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+
+	dirB := t.TempDir()
+	if err := storeSub.SetHostConfig(HostConfig{HostID: "host-b", TargetPool: dirB}); err != nil {
+		t.Fatalf("SetHostConfig: %v", err)
+	}
+
+	corrupt := []byte("tampered-payload-same-size!")
+	expected := []byte("genuine-payload-same-size..")
+	if len(corrupt) != len(expected) {
+		t.Fatalf("test setup: payload sizes must match")
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.Itoa(len(corrupt)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(corrupt)
+	}))
+	defer ts.Close()
+
+	item, err := storeSub.CreateItem(Item{
+		ID:         "item-e2e-bad",
+		Name:       "bad-checksum",
+		Type:       TypeImage,
+		SyncPolicy: SyncPolicy{Mode: SyncAll},
+		Versions: []ItemVersion{
+			{
+				ID:         "ver-bad-1",
+				Version:    "1.0",
+				Format:     "img",
+				Size:       int64(len(expected)),
+				SHA256:     sha256Hex(expected),
+				SourceHost: "host-a",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	peer := cluster.NewPeer(cluster.Node{ID: "host-a", Address: ts.URL}, ts.Client())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	jm := jobs.New(ctx)
+	sm := NewSyncManager(storeSub, jm, nil, nil, MapPeerResolver{"host-a": peer}, nil)
+
+	sm.OnItemUpdated(ctx, item, "host-b")
+
+	jobList := jm.List()
+	if len(jobList) != 1 {
+		t.Fatalf("expected 1 sync job, got %d", len(jobList))
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var done jobs.Job
+	for time.Now().Before(deadline) {
+		if j, ok := jm.Get(jobList[0].ID); ok && j.State != jobs.Running {
+			done = j
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if done.State == jobs.Running {
+		t.Fatal("sync job timed out")
+	}
+	if done.State != jobs.Failed {
+		t.Errorf("job state = %q, want failed; message=%q", done.State, done.Message)
+	}
+	if !strings.Contains(done.Message, "checksum mismatch") {
+		t.Errorf("job message = %q, want containing 'checksum mismatch'", done.Message)
+	}
+
+	if _, err := os.Stat(filepath.Join(dirB, "content-bad-checksum-v1.0.img")); !os.IsNotExist(err) {
+		t.Errorf("partial/final file should not survive a checksum mismatch: %v", err)
+	}
+
+	it, _ := storeSub.GetItem(item.ID)
+	for _, h := range it.Hosts {
+		if h.Host == "host-b" && h.State != "failed" {
+			t.Errorf("host state = %q, want failed", h.State)
+		}
+	}
+}
+
+// TestPublisherDoesNotSelfDownload verifies that the host which already holds the
+// source volume never issues a download (to itself or to anyone) and marks itself
+// as in sync.
+func TestPublisherDoesNotSelfDownload(t *testing.T) {
+	storePub, err := Open("")
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+
+	dirA := t.TempDir()
+	if err := storePub.SetHostConfig(HostConfig{HostID: "host-a", TargetPool: dirA}); err != nil {
+		t.Fatalf("SetHostConfig: %v", err)
+	}
+
+	var hits atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	// Resolver even maps the publisher's own ID, so a broken self-download
+	// attempt would succeed in reaching a peer.
+	peer := cluster.NewPeer(cluster.Node{ID: "host-a", Address: ts.URL}, ts.Client())
+	resolver := MapPeerResolver{"host-a": peer}
+
+	item, err := storePub.CreateItem(Item{
+		ID:         "item-self",
+		Name:       "self-published",
+		Type:       TypeImage,
+		SyncPolicy: SyncPolicy{Mode: SyncAll},
+		Versions: []ItemVersion{
+			{
+				ID:         "ver-self-1",
+				Version:    "1.0",
+				Format:     "qcow2",
+				Size:       1234,
+				SHA256:     sha256Hex([]byte("self-published-payload")),
+				SourceHost: "host-a",
+				SourceVol:  "self-published.qcow2",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	jm := jobs.New(ctx)
+	sm := NewSyncManager(storePub, jm, nil, nil, resolver, nil)
+
+	sm.OnItemUpdated(ctx, item, "host-a")
+
+	time.Sleep(150 * time.Millisecond)
+	if n := hits.Load(); n != 0 {
+		t.Errorf("publisher issued %d self-download request(s), want 0", n)
+	}
+	if jobs := jm.List(); len(jobs) != 0 {
+		t.Errorf("expected no sync jobs on the publisher, got %+v", jobs)
+	}
+
+	it, ok := storePub.GetItem(item.ID)
+	if !ok {
+		t.Fatal("item missing after self-sync check")
+	}
+	found := false
+	for _, h := range it.Hosts {
+		if h.Host == "host-a" {
+			if h.State != "synced" {
+				t.Errorf("publisher host state = %q, want synced", h.State)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("publisher host state not recorded: %+v", it.Hosts)
 	}
 }

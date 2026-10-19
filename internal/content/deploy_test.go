@@ -707,6 +707,162 @@ func TestDeploy_ISODeployment(t *testing.T) {
 	}
 }
 
+// TestDeploy_WithoutLibvirt_DoesNotFakeSuccess verifies that deploying on a host without a
+// libvirt client fails with a clear error instead of returning a fake UUID as success.
+func TestDeploy_WithoutLibvirt_DoesNotFakeSuccess(t *testing.T) {
+	store, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	poolDir := t.TempDir()
+	selfHost := "node-local"
+	if err := store.SetHostConfig(HostConfig{HostID: selfHost, TargetPool: poolDir}); err != nil {
+		t.Fatal(err)
+	}
+
+	imgContent := []byte("standalone-image-without-libvirt")
+	imgPath := filepath.Join(poolDir, "content-standalone-v1.0.qcow2")
+	if err := os.WriteFile(imgPath, imgContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	item, err := store.CreateItem(Item{
+		ID:   "item-standalone",
+		Name: "standalone",
+		Type: TypeImage,
+		Versions: []ItemVersion{
+			{
+				ID:         "v1",
+				Version:    "1.0",
+				Format:     "qcow2",
+				Size:       int64(len(imgContent)),
+				SHA256:     sha256Hex(imgContent),
+				SourceHost: selfHost,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	// No deploy hooks and a nil client: Deploy must report failure, not a fabricated UUID.
+	uuid, err := Deploy(context.Background(), nil, store, nil, DeployRequest{
+		ItemID: item.ID,
+		Name:   "should-fail-vm",
+		Pool:   poolDir,
+	}, selfHost, nil)
+	if err == nil {
+		t.Fatalf("Deploy without a libvirt client returned uuid %q and nil error (fake success)", uuid)
+	}
+	if !strings.Contains(err.Error(), "libvirt client is required") {
+		t.Errorf("error = %v, want it to mention the missing libvirt client", err)
+	}
+}
+
+// TestDeploy_SubscriberUsesLocalSyncedCopy verifies that a subscriber host deploying
+// from an item it has already synced uses the local copy without contacting the
+// source host, even though the version's SourceHost is remote.
+func TestDeploy_SubscriberUsesLocalSyncedCopy(t *testing.T) {
+	store, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	poolDir := t.TempDir()
+	selfHost := "host-b"
+	remoteHost := "host-a"
+
+	if err := store.SetHostConfig(HostConfig{HostID: selfHost, TargetPool: poolDir}); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := []byte("subscriber-local-synced-copy-payload")
+	localPath := filepath.Join(poolDir, "content-cirros-lib-v1.0.img")
+	if err := os.WriteFile(localPath, payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	item, err := store.CreateItem(Item{
+		ID:   "item-e2e-deploy",
+		Name: "cirros-lib",
+		Type: TypeImage,
+		Versions: []ItemVersion{
+			{
+				ID:         "ver-e2e-1",
+				Version:    "1.0",
+				Format:     "img",
+				Size:       int64(len(payload)),
+				SHA256:     sha256Hex(payload),
+				SourceHost: remoteHost,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateItem failed: %v", err)
+	}
+
+	// Peer points at a closed port: any pull attempt would fail the deploy.
+	peer := cluster.NewPeer(cluster.Node{ID: remoteHost, Address: "http://127.0.0.1:9"}, nil)
+	peers := MapPeerResolver{remoteHost: peer}
+
+	var reports []string
+	reportFn := func(msg string) { reports = append(reports, msg) }
+
+	hooks := &deployHooks{
+		resolvePoolPath: func(ctx context.Context, client *virt.Client, pool string) (string, error) {
+			return poolDir, nil
+		},
+		cloneVolume: func(ctx context.Context, client *virt.Client, srcPath, poolName, dstName, format string, minBytes uint64) (string, func(), error) {
+			dest := filepath.Join(poolDir, dstName)
+			if err := copyArtifactFile(srcPath, dest); err != nil {
+				return "", nil, err
+			}
+			cleanup := func() { _ = os.Remove(dest) }
+			return dest, cleanup, nil
+		},
+		defineDomain: func(ctx context.Context, client *virt.Client, xmlDoc string) (string, any, error) {
+			var d libvirtxml.Domain
+			_ = d.Unmarshal(xmlDoc)
+			return d.UUID, nil, nil
+		},
+	}
+	ctx := WithDeployHooks(context.Background(), hooks)
+
+	req := DeployRequest{
+		ItemID: item.ID,
+		Name:   "subscriber-vm",
+		Pool:   poolDir,
+	}
+
+	uuid, err := Deploy(ctx, nil, store, peers, req, selfHost, reportFn)
+	if err != nil {
+		t.Fatalf("Deploy on subscriber failed: %v", err)
+	}
+	if uuid == "" {
+		t.Fatal("expected non-empty UUID")
+	}
+
+	localCopyUsed := false
+	for _, r := range reports {
+		if strings.Contains(r, "Using local synced copy") {
+			localCopyUsed = true
+			break
+		}
+	}
+	if !localCopyUsed {
+		t.Errorf("expected a report about using the local synced copy, got: %v", reports)
+	}
+
+	// The local library copy must still exist and the cloned VM disk must read from it
+	if _, err := os.Stat(localPath); err != nil {
+		t.Errorf("local synced copy missing after deploy: %v", err)
+	}
+	if st, err := os.Stat(filepath.Join(poolDir, "subscriber-vm.qcow2")); err != nil || st.Size() != int64(len(payload)) {
+		t.Errorf("expected cloned disk copied from the local synced copy, st=%+v err=%v", st, err)
+	}
+}
+
 // TestDeploy_LocalTemplate_WithCloudInit verifies that deploying a template with CloudInit
 // builds and uploads a seed ISO, attaches it as a CD-ROM, and grows the disk if DiskGiB is set.
 func TestDeploy_LocalTemplate_WithCloudInit(t *testing.T) {
@@ -934,4 +1090,3 @@ func TestDeploy_LocalTemplate_StaleSeedStripped(t *testing.T) {
 		}
 	}
 }
-
