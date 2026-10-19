@@ -138,6 +138,119 @@ class Client(object):
             s['memoryMiB'] = s['currentMemoryMiB'] = memory_mib
         self.call('PUT', '/api/v1/domains/%s/settings' % quote(uuid, safe=''), s)
 
+    # ---- networks --------------------------------------------------------------------
+    def networks(self):
+        return (self.call('GET', '/api/v1/networks') or {}).get('networks', [])
+
+    def network(self, name):
+        for n in self.networks():
+            if n.get('name') == name or n.get('uuid', '').lower() == name.lower():
+                return n
+        return None
+
+    def create_network(self, spec):
+        return self.call('POST', '/api/v1/networks', spec)
+
+    def delete_network(self, name):
+        return self.call('DELETE', '/api/v1/networks/' + quote(name, safe=''))
+
+    def start_network(self, name):
+        return self.call('POST', '/api/v1/networks/%s/actions/start' % quote(name, safe=''))
+
+    def stop_network(self, name):
+        return self.call('POST', '/api/v1/networks/%s/actions/stop' % quote(name, safe=''))
+
+    def set_network_autostart(self, name, enabled):
+        return self.call('PUT', '/api/v1/networks/%s/autostart' % quote(name, safe=''), {'enabled': bool(enabled)})
+
+    # ---- storage pools ---------------------------------------------------------------
+    def pools(self):
+        return (self.call('GET', '/api/v1/storage/pools') or {}).get('pools', [])
+
+    def pool(self, name):
+        for p in self.pools():
+            if p.get('name') == name or p.get('uuid', '').lower() == name.lower():
+                return p
+        return None
+
+    def create_pool(self, spec):
+        return self.call('POST', '/api/v1/storage/pools', spec)
+
+    def delete_pool(self, name):
+        return self.call('DELETE', '/api/v1/storage/pools/' + quote(name, safe=''))
+
+    def start_pool(self, name):
+        return self.call('POST', '/api/v1/storage/pools/%s/actions/start' % quote(name, safe=''))
+
+    def stop_pool(self, name):
+        return self.call('POST', '/api/v1/storage/pools/%s/actions/stop' % quote(name, safe=''))
+
+    def set_pool_autostart(self, name, enabled):
+        return self.call('PUT', '/api/v1/storage/pools/%s/autostart' % quote(name, safe=''), {'enabled': bool(enabled)})
+
+    # ---- projects (ADR-0060) ---------------------------------------------------------
+    def projects(self):
+        return (self.call('GET', '/api/v1/projects') or {}).get('projects', [])
+
+    def project(self, id_or_name):
+        for p in self.projects():
+            if p.get('id') == id_or_name or p.get('name') == id_or_name:
+                return p
+        return None
+
+    def create_project(self, spec):
+        res = self.call('POST', '/api/v1/projects', spec)
+        if isinstance(res, dict) and 'project' in res:
+            return res['project']
+        return res
+
+    def update_project(self, id, spec):
+        res = self.call('PUT', '/api/v1/projects/' + quote(id, safe=''), spec)
+        if isinstance(res, dict) and 'project' in res:
+            return res['project']
+        return res
+
+    def delete_project(self, id):
+        return self.call('DELETE', '/api/v1/projects/' + quote(id, safe=''))
+
+    # ---- placement rules (ADR-0062) ---------------------------------------------------
+    def placement_rules(self):
+        return (self.call('GET', '/api/v1/placement') or {}).get('rules', [])
+
+    def placement_rule(self, id_or_name):
+        for r in self.placement_rules():
+            if r.get('id') == id_or_name or r.get('name') == id_or_name:
+                return r
+        return None
+
+    def create_placement_rule(self, spec):
+        return self.call('POST', '/api/v1/placement/rules', spec)
+
+    def update_placement_rule(self, id, spec):
+        return self.call('PUT', '/api/v1/placement/rules/' + quote(id, safe=''), spec)
+
+    def delete_placement_rule(self, id):
+        return self.call('DELETE', '/api/v1/placement/rules/' + quote(id, safe=''))
+
+    # ---- snapshots -------------------------------------------------------------------
+    def snapshots(self, uuid):
+        return (self.call('GET', '/api/v1/domains/%s/snapshots' % quote(uuid, safe='')) or {}).get('snapshots', [])
+
+    def snapshot(self, uuid, name):
+        for s in self.snapshots(uuid):
+            if s.get('name') == name:
+                return s
+        return None
+
+    def create_snapshot(self, uuid, spec):
+        return self.call('POST', '/api/v1/domains/%s/snapshots' % quote(uuid, safe=''), spec)
+
+    def revert_snapshot(self, uuid, name):
+        return self.call('POST', '/api/v1/domains/%s/snapshots/%s/revert' % (quote(uuid, safe=''), quote(name, safe='')))
+
+    def delete_snapshot(self, uuid, name):
+        return self.call('DELETE', '/api/v1/domains/%s/snapshots/%s' % (quote(uuid, safe=''), quote(name, safe='')))
+
 
 def is_running(d):
     return d.get('state') not in (None, '', 'shutoff', 'crashed', 'pmsuspended')

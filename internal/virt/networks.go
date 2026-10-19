@@ -228,6 +228,8 @@ type NetworkSpec struct {
 	Mode   string `json:"mode"`
 	Subnet string `json:"subnet,omitempty"` // e.g. 192.168.100.0/24
 	DHCP   bool   `json:"dhcp"`
+	DHCPStart string `json:"dhcpStart,omitempty"`
+	DHCPEnd   string `json:"dhcpEnd,omitempty"`
 	Bridge string `json:"bridge,omitempty"` // host bridge, bridge mode only
 	// OVS: the host bridge is an Open vSwitch bridge (bridge mode). VLAN tags every
 	// machine on this network (bridge mode with OVS); 0 = untagged.
@@ -239,6 +241,8 @@ type NetworkSpec struct {
 	// both) is needed. In nat mode IPv6 is translated too (NAT66, libvirt ≥ 6.5).
 	Subnet6 string `json:"subnet6,omitempty"`
 	DHCP6   bool   `json:"dhcp6,omitempty"`
+	DHCP6Start string `json:"dhcp6Start,omitempty"`
+	DHCP6End   string `json:"dhcp6End,omitempty"`
 	// VXLAN: the VNI (1 – 16777215, the same on every host) and the other hosts' IP
 	// addresses. With a subnet this host is the overlay's gateway (NAT, DHCP); without one
 	// the network is plain layer 2 here, served by the gateway elsewhere.
@@ -299,6 +303,9 @@ func buildNetwork(spec NetworkSpec) (*libvirtxml.Network, error) {
 		return nil, invalidf("Give the network an IPv4 subnet, an IPv6 subnet, or both.")
 	}
 	if spec.Subnet != "" {
+		if (spec.DHCPStart != "" || spec.DHCPEnd != "") && !spec.DHCP {
+			spec.DHCP = true
+		}
 		ip, err := ipv4Net(spec)
 		if err != nil {
 			return nil, err
@@ -308,6 +315,9 @@ func buildNetwork(spec NetworkSpec) (*libvirtxml.Network, error) {
 		return nil, invalidf("DHCP (IPv4) needs an IPv4 subnet.")
 	}
 	if spec.Subnet6 != "" {
+		if (spec.DHCP6Start != "" || spec.DHCP6End != "") && !spec.DHCP6 {
+			spec.DHCP6 = true
+		}
 		ip, err := ipv6Net(spec)
 		if err != nil {
 			return nil, err
@@ -343,7 +353,26 @@ func ipv6Net(spec NetworkSpec) (libvirtxml.NetworkIP, error) {
 	}
 	ip := libvirtxml.NetworkIP{Family: "ipv6", Address: at(0, 1).String(), Prefix: 64}
 	if spec.DHCP6 {
-		ip.DHCP = &libvirtxml.NetworkDHCP{Ranges: []libvirtxml.NetworkDHCPRange{{Start: at(1, 0).String(), End: at(0xff, 0xff).String()}}}
+		start := at(1, 0)
+		end := at(0xff, 0xff)
+		if spec.DHCP6Start != "" {
+			s, err := netip.ParseAddr(spec.DHCP6Start)
+			if err != nil || !s.Is6() || !pfx.Contains(s) {
+				return libvirtxml.NetworkIP{}, invalidf("dhcp6Start must be a valid IPv6 address in subnet %s.", spec.Subnet6)
+			}
+			start = s
+		}
+		if spec.DHCP6End != "" {
+			e, err := netip.ParseAddr(spec.DHCP6End)
+			if err != nil || !e.Is6() || !pfx.Contains(e) {
+				return libvirtxml.NetworkIP{}, invalidf("dhcp6End must be a valid IPv6 address in subnet %s.", spec.Subnet6)
+			}
+			end = e
+		}
+		if end.Less(start) {
+			return libvirtxml.NetworkIP{}, invalidf("DHCPv6 start address %s must be before end address %s.", start, end)
+		}
+		ip.DHCP = &libvirtxml.NetworkDHCP{Ranges: []libvirtxml.NetworkDHCPRange{{Start: start.String(), End: end.String()}}}
 	}
 	return ip, nil
 }
@@ -362,8 +391,25 @@ func ipv4Net(spec NetworkSpec) (libvirtxml.NetworkIP, error) {
 	if spec.DHCP {
 		last := lastUsable(pfx)
 		start := gw.Next()
-		if !start.Less(last) {
+		if spec.DHCPStart != "" {
+			s, err := netip.ParseAddr(spec.DHCPStart)
+			if err != nil || !s.Is4() || !pfx.Contains(s) {
+				return libvirtxml.NetworkIP{}, invalidf("dhcpStart must be a valid IPv4 address in subnet %s.", spec.Subnet)
+			}
+			start = s
+		}
+		if spec.DHCPEnd != "" {
+			e, err := netip.ParseAddr(spec.DHCPEnd)
+			if err != nil || !e.Is4() || !pfx.Contains(e) {
+				return libvirtxml.NetworkIP{}, invalidf("dhcpEnd must be a valid IPv4 address in subnet %s.", spec.Subnet)
+			}
+			last = e
+		}
+		if !start.Less(last) && start != last {
 			return libvirtxml.NetworkIP{}, invalidf("The subnet is too small for DHCP.")
+		}
+		if last.Less(start) {
+			return libvirtxml.NetworkIP{}, invalidf("DHCP start address %s must be before end address %s.", start, last)
 		}
 		ip.DHCP = &libvirtxml.NetworkDHCP{Ranges: []libvirtxml.NetworkDHCPRange{{Start: start.String(), End: last.String()}}}
 	}

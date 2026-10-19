@@ -2,9 +2,24 @@ namespace: onurbaydas
 name: virtomir
 version: 0.8.1
 readme: README.md
-authors: [Onur Baydas <onurbaydas1@gmail.com>]
-description: Manage KVM/QEMU/libvirt machines through VirtoMir.
-license: [GPL-3.0-or-later]
-tags: [virtualization, kvm, libvirt, cloud]
+authors:
+  - Onur Baydaş <onurbaydas1@gmail.com>
+description: Manage KVM/QEMU/libvirt machines, virtual networks, storage pools, multi-tenant projects, placement rules, and snapshots through VirtoMir.
+license:
+  - GPL-3.0-or-later
+tags:
+  - virtualization
+  - kvm
+  - libvirt
+  - cloud
+  - infrastructure
+  - multitenancy
+  - storage
+  - networking
 repository: https://github.com/onurbaydas/VirtoMir
-build_ignore: ['*.tar.gz', tests]
+documentation: https://github.com/onurbaydas/VirtoMir
+homepage: https://github.com/onurbaydas/VirtoMir
+issues: https://github.com/onurbaydas/VirtoMir/issues
+build_ignore:
+  - '*.tar.gz'
+  - tests

@@ -84,7 +84,7 @@ func (p *virtomirProvider) Configure(ctx context.Context, req provider.Configure
 }
 
 func (p *virtomirProvider) Resources(context.Context) []func() resource.Resource {
-	return []func() resource.Resource{newMachine, newNetwork, newPool}
+	return []func() resource.Resource{newMachine, newNetwork, newPool, newProject, newPlacementRule}
 }
 
 func (p *virtomirProvider) DataSources(context.Context) []func() datasource.DataSource {
