@@ -166,8 +166,19 @@ func CheckSSHEmptyPasswords(ctx context.Context, r *Reader) CheckResult {
 }
 
 // CheckLibvirtSecurityDriver: CIS/STIG sVirt requirement for virtualization hosts.
-// Reads /etc/libvirt/qemu.conf for security_driver. Checks for 'apparmor' or 'selinux'.
-// Fail if 'none'. Verifies kernel status at /sys/kernel/security/apparmor or /sys/fs/selinux/enforce.
+//
+// Pass when MAC isolation is actually active:
+//   - SELinux is enforcing and every running qemu-system process runs with an
+//     svirt_t / svirt_tcg_t context, or
+//   - AppArmor is enabled and every running qemu-system process is confined by a
+//     'libvirt-<uuid> (enforce)' profile, or
+//   - no VM is running while AppArmor (or enforcing SELinux) is enabled and
+//     qemu.conf does not disable sVirt.
+//
+// Fail when security_driver = "none", no MAC system is enabled, or running qemu
+// processes run unconfined / in complain mode (the offenders are reported in Detail).
+// All facts are read from files under Reader.Root; nothing is probed via external
+// commands (aa-status, getenforce, sysctl may be absent on minimal hosts).
 func CheckLibvirtSecurityDriver(ctx context.Context, r *Reader) CheckResult {
 	const (
 		id          = "stig-svirt-mac-isolation"
@@ -178,115 +189,195 @@ func CheckLibvirtSecurityDriver(ctx context.Context, r *Reader) CheckResult {
 		benchmark   = "CIS Linux 2.0 / STIG"
 	)
 
+	mk := func(status Status, detail string) CheckResult {
+		return CheckResult{
+			ID:          id,
+			Title:       title,
+			Category:    cat,
+			Severity:    sev,
+			Status:      status,
+			Detail:      detail,
+			Remediation: remediation,
+			Benchmark:   benchmark,
+		}
+	}
+
+	driverVal, driverFound := parseSecurityDriver(r)
+	if driverFound && strings.Contains(driverVal, "none") {
+		return mk(StatusFail, "security_driver is explicitly set to 'none' in /etc/libvirt/qemu.conf (sVirt isolation disabled)")
+	}
+	if driverFound && !strings.Contains(driverVal, "apparmor") && !strings.Contains(driverVal, "selinux") {
+		return mk(StatusFail, fmt.Sprintf("security_driver %q in /etc/libvirt/qemu.conf does not enable AppArmor or SELinux", driverVal))
+	}
+
+	selinuxEnforcing := r.read("sys/fs/selinux/enforce") == "1"
+	apparmorEnabled, apparmorDesc := appArmorEnabled(r)
+
+	// If qemu.conf pins one backend, that backend must actually be active (the
+	// libvirt default is the enabled MAC system when no security_driver line exists).
+	if driverFound {
+		if strings.Contains(driverVal, "apparmor") && !apparmorEnabled {
+			return mk(StatusFail, "AppArmor configured in qemu.conf but kernel AppArmor support is not detected ("+apparmorDesc+")")
+		}
+		if strings.Contains(driverVal, "selinux") && !selinuxEnforcing {
+			return mk(StatusFail, "SELinux configured in qemu.conf but kernel SELinux is not in enforcing mode (/sys/fs/selinux/enforce)")
+		}
+	}
+
+	if !apparmorEnabled && !selinuxEnforcing {
+		return mk(StatusFail, "No MAC isolation system is enabled (AppArmor support not detected and SELinux not enforcing)")
+	}
+
+	backend := "apparmor"
+	if driverFound {
+		if strings.Contains(driverVal, "apparmor") {
+			backend = "apparmor"
+		} else {
+			backend = "selinux"
+		}
+	} else if selinuxEnforcing && !apparmorEnabled {
+		backend = "selinux"
+	}
+
+	procs := qemuProcesses(r)
+	if len(procs) == 0 {
+		name := "AppArmor"
+		if backend == "selinux" {
+			name = "SELinux enforcing"
+		}
+		return mk(StatusPass, "sVirt ready: "+name+" is active and security_driver is not disabled; no VM is currently running")
+	}
+
+	var offenders []string
+	for _, p := range procs {
+		label := p.label
+		switch {
+		case label == "" || label == "unconfined" || strings.HasPrefix(label, "unconfined "):
+			offenders = append(offenders, fmt.Sprintf("process %s runs unconfined (attr/current = %q)", p.pid, label))
+		case strings.Contains(label, "(complain)"):
+			offenders = append(offenders, fmt.Sprintf("process %s is in complain mode (attr/current = %q)", p.pid, label))
+		case backend == "apparmor":
+			if !libvirtAppArmorConfined(label) {
+				offenders = append(offenders, fmt.Sprintf("process %s is not confined by a libvirt profile (attr/current = %q)", p.pid, label))
+			}
+		default:
+			if !strings.Contains(label, "svirt_t") {
+				offenders = append(offenders, fmt.Sprintf("process %s has no sVirt SELinux context (attr/current = %q)", p.pid, label))
+			}
+		}
+	}
+
+	if len(offenders) > 0 {
+		return mk(StatusFail, "sVirt MAC isolation not fully active: "+strings.Join(offenders, "; "))
+	}
+
+	if backend == "apparmor" {
+		return mk(StatusPass, fmt.Sprintf("sVirt MAC isolation active: AppArmor enabled (%s) and all %d running qemu processes confined by libvirt-<uuid> profiles in enforce mode", apparmorDesc, len(procs)))
+	}
+	return mk(StatusPass, fmt.Sprintf("sVirt MAC isolation active: SELinux enforcing and all %d running qemu processes run with an svirt_t/svirt_tcg_t context", len(procs)))
+}
+
+// parseSecurityDriver reads security_driver from /etc/libvirt/qemu.conf.
+func parseSecurityDriver(r *Reader) (val string, found bool) {
 	qemuConf := r.read("etc/libvirt/qemu.conf")
-	var driverVal string
-	var found bool
-	if qemuConf != "" {
-		for _, line := range strings.Split(qemuConf, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
+	if qemuConf == "" {
+		return "", false
+	}
+	for _, line := range strings.Split(qemuConf, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 && strings.TrimSpace(parts[0]) == "security_driver" {
+			v := strings.TrimSpace(parts[1])
+			if idx := strings.Index(v, "#"); idx != -1 {
+				v = strings.TrimSpace(v[:idx])
 			}
-			parts := strings.SplitN(line, "=", 2)
-			if len(parts) == 2 && strings.TrimSpace(parts[0]) == "security_driver" {
-				val := strings.TrimSpace(parts[1])
-				if idx := strings.Index(val, "#"); idx != -1 {
-					val = strings.TrimSpace(val[:idx])
-				}
-				driverVal = strings.ToLower(val)
-				found = true
-				break
-			}
+			return strings.ToLower(v), true
 		}
 	}
+	return "", false
+}
 
-	if !found {
-		return CheckResult{
-			ID:          id,
-			Title:       title,
-			Category:    cat,
-			Severity:    sev,
-			Status:      StatusFail,
-			Detail:      "security_driver is not configured in /etc/libvirt/qemu.conf",
-			Remediation: remediation,
-			Benchmark:   benchmark,
-		}
+// appArmorEnabled reports whether kernel AppArmor support is active, plus a short
+// human-readable description of the evidence. Only files under Reader.Root are
+// consulted: /sys/module/apparmor/parameter/enabled ("Y" = module enabled) and the
+// /sys/kernel/security/apparmor securityfs interface (aa-status may not be installed).
+func appArmorEnabled(r *Reader) (ok bool, desc string) {
+	switch param := r.read("sys/module/apparmor/parameter/enabled"); {
+	case param == "Y" || param == "y":
+		return true, "kernel AppArmor module enabled"
+	case param != "":
+		return false, "kernel AppArmor module disabled"
 	}
+	if r.exists("sys/kernel/security/apparmor") {
+		if profiles := r.read("sys/kernel/security/apparmor/profiles"); profiles != "" {
+			return true, fmt.Sprintf("AppArmor securityfs interface present with %d loaded profile entries", len(strings.Fields(profiles)))
+		}
+		return true, "AppArmor securityfs interface present"
+	}
+	return false, "kernel AppArmor support not detected"
+}
 
-	if strings.Contains(driverVal, "none") {
-		return CheckResult{
-			ID:          id,
-			Title:       title,
-			Category:    cat,
-			Severity:    sev,
-			Status:      StatusFail,
-			Detail:      "security_driver is explicitly set to 'none' (sVirt isolation disabled)",
-			Remediation: remediation,
-			Benchmark:   benchmark,
-		}
-	}
+// qemuProcess is a running qemu-system process and its MAC label.
+type qemuProcess struct {
+	pid   string
+	label string // /proc/<pid>/attr/current ("" if unreadable)
+}
 
-	if strings.Contains(driverVal, "apparmor") {
-		if r.exists("sys/kernel/security/apparmor") {
-			return CheckResult{
-				ID:          id,
-				Title:       title,
-				Category:    cat,
-				Severity:    sev,
-				Status:      StatusPass,
-				Detail:      "sVirt MAC isolation active: AppArmor configured in qemu.conf and enabled in kernel",
-				Remediation: remediation,
-				Benchmark:   benchmark,
-			}
-		}
-		return CheckResult{
-			ID:          id,
-			Title:       title,
-			Category:    cat,
-			Severity:    sev,
-			Status:      StatusFail,
-			Detail:      "AppArmor configured in qemu.conf but kernel AppArmor support is not detected at /sys/kernel/security/apparmor",
-			Remediation: remediation,
-			Benchmark:   benchmark,
-		}
+// qemuProcesses lists running qemu-system processes by scanning /proc numeric
+// directories whose cmdline mentions qemu-system; no external process listing
+// helper (ps, pgrep) is required. label is /proc/<pid>/attr/current.
+func qemuProcesses(r *Reader) []qemuProcess {
+	entries, err := os.ReadDir(r.path("proc"))
+	if err != nil {
+		return nil
 	}
+	var procs []qemuProcess
+	for _, e := range entries {
+		if !e.IsDir() || !isPid(e.Name()) {
+			continue
+		}
+		cmd, err := os.ReadFile(r.path(filepath.Join("proc", e.Name(), "cmdline")))
+		if err != nil || !strings.Contains(string(cmd), "qemu-system") {
+			continue
+		}
+		procs = append(procs, qemuProcess{
+			pid:   e.Name(),
+			label: r.read(filepath.Join("proc", e.Name(), "attr", "current")),
+		})
+	}
+	return procs
+}
 
-	if strings.Contains(driverVal, "selinux") {
-		enforce := r.read("sys/fs/selinux/enforce")
-		if enforce == "1" {
-			return CheckResult{
-				ID:          id,
-				Title:       title,
-				Category:    cat,
-				Severity:    sev,
-				Status:      StatusPass,
-				Detail:      "sVirt MAC isolation active: SELinux configured in qemu.conf and enforcing in kernel",
-				Remediation: remediation,
-				Benchmark:   benchmark,
-			}
-		}
-		return CheckResult{
-			ID:          id,
-			Title:       title,
-			Category:    cat,
-			Severity:    sev,
-			Status:      StatusFail,
-			Detail:      "SELinux configured in qemu.conf but kernel SELinux is not in enforcing mode (/sys/fs/selinux/enforce)",
-			Remediation: remediation,
-			Benchmark:   benchmark,
+// isPid reports whether name consists of digits only (a /proc process directory).
+func isPid(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, c := range name {
+		if c < '0' || c > '9' {
+			return false
 		}
 	}
+	return true
+}
 
-	return CheckResult{
-		ID:          id,
-		Title:       title,
-		Category:    cat,
-		Severity:    sev,
-		Status:      StatusFail,
-		Detail:      fmt.Sprintf("security_driver %q in qemu.conf does not enable AppArmor or SELinux", driverVal),
-		Remediation: remediation,
-		Benchmark:   benchmark,
+// libvirtAppArmorConfined reports whether a /proc/<pid>/attr/current value shows a
+// process confined by a per-VM libvirt profile ('libvirt-<uuid> (enforce)'). A bare
+// 'libvirt-<uuid>' (without mode annotation, older kernels) also counts as confined;
+// complain mode does not.
+func libvirtAppArmorConfined(label string) bool {
+	label = strings.TrimSpace(label)
+	if !strings.HasPrefix(label, "libvirt-") {
+		return false
 	}
+	idx := strings.Index(label, " (")
+	if idx == -1 {
+		return true
+	}
+	return strings.Contains(label[idx:], "(enforce)")
 }
 
 // CheckHostFirewall: CIS 3.5.1. Checks /proc/net/ip_tables_names or executes
@@ -336,8 +427,8 @@ func CheckHostFirewall(ctx context.Context, r *Reader) CheckResult {
 	// 2. Unit files in systemd directory
 	firewallUnits := []string{"nftables.service", "ufw.service", "firewalld.service"}
 	for _, unit := range firewallUnits {
-		if r.exists("etc/systemd/system/multi-user.target.wants/" + unit) ||
-			r.exists("etc/systemd/system/" + unit) {
+		if r.exists("etc/systemd/system/multi-user.target.wants/"+unit) ||
+			r.exists("etc/systemd/system/"+unit) {
 			return CheckResult{
 				ID:          id,
 				Title:       title,

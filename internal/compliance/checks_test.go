@@ -34,17 +34,17 @@ func hardenedFiles() map[string]string {
 			"PermitRootLogin prohibit-password",
 			"PermitEmptyPasswords no",
 		}, "\n"),
-		"etc/libvirt/qemu.conf": `security_driver = "apparmor"`,
-		"sys/kernel/security/apparmor/profiles": "default (enforce)",
-		"proc/net/ip_tables_names": "filter\nmangle\nnat",
-		"etc/apt/apt.conf.d/20auto-upgrades": `APT::Periodic::Update-Package-Lists "1";` + "\n" + `APT::Periodic::Unattended-Upgrade "1";`,
+		"etc/libvirt/qemu.conf":                                                `security_driver = "apparmor"`,
+		"sys/kernel/security/apparmor/profiles":                                "default (enforce)",
+		"proc/net/ip_tables_names":                                             "filter\nmangle\nnat",
+		"etc/apt/apt.conf.d/20auto-upgrades":                                   `APT::Periodic::Update-Package-Lists "1";` + "\n" + `APT::Periodic::Unattended-Upgrade "1";`,
 		"etc/systemd/system/multi-user.target.wants/systemd-timesyncd.service": "# timesyncd enabled",
-		"proc/sys/kernel/kptr_restrict": "1",
-		"proc/sys/kernel/dmesg_restrict": "1",
-		"proc/sys/net/ipv4/conf/all/rp_filter": "1",
-		"etc/inetd.conf": "# all legacy services disabled",
-		"proc/sys/fs/suid_dumpable": "0",
-		"etc/security/limits.conf": "* hard core 0",
+		"proc/sys/kernel/kptr_restrict":                                        "1",
+		"proc/sys/kernel/dmesg_restrict":                                       "1",
+		"proc/sys/net/ipv4/conf/all/rp_filter":                                 "1",
+		"etc/inetd.conf":                                                       "# all legacy services disabled",
+		"proc/sys/fs/suid_dumpable":                                            "0",
+		"etc/security/limits.conf":                                             "* hard core 0",
 	}
 }
 
@@ -98,17 +98,17 @@ func TestHardenedHostFixture(t *testing.T) {
 func TestNonHardenedHostFixture(t *testing.T) {
 	ctx := context.Background()
 	files := map[string]string{
-		"etc/ssh/sshd_config": "PermitRootLogin yes\nPermitEmptyPasswords no",
+		"etc/ssh/sshd_config":           "PermitRootLogin yes\nPermitEmptyPasswords no",
 		"proc/sys/kernel/kptr_restrict": "0",
-		"etc/libvirt/qemu.conf": `security_driver = "none"`,
+		"etc/libvirt/qemu.conf":         `security_driver = "none"`,
 		// No firewall: proc/net/ip_tables_names is omitted
-		"etc/apt/apt.conf.d/20auto-upgrades": `APT::Periodic::Unattended-Upgrade "1";`,
+		"etc/apt/apt.conf.d/20auto-upgrades":                                   `APT::Periodic::Unattended-Upgrade "1";`,
 		"etc/systemd/system/multi-user.target.wants/systemd-timesyncd.service": "# unit",
-		"proc/sys/kernel/dmesg_restrict": "1",
-		"proc/sys/net/ipv4/conf/all/rp_filter": "1",
-		"etc/inetd.conf": "# clean",
-		"proc/sys/fs/suid_dumpable": "0",
-		"etc/security/limits.conf": "* hard core 0",
+		"proc/sys/kernel/dmesg_restrict":                                       "1",
+		"proc/sys/net/ipv4/conf/all/rp_filter":                                 "1",
+		"etc/inetd.conf":                                                       "# clean",
+		"proc/sys/fs/suid_dumpable":                                            "0",
+		"etc/security/limits.conf":                                             "* hard core 0",
 	}
 
 	root := tree(t, files)
@@ -239,7 +239,7 @@ func TestCheckSSHVariations(t *testing.T) {
 	// Drop-in directory priority
 	t.Run("DropInPriority", func(t *testing.T) {
 		root := tree(t, map[string]string{
-			"etc/ssh/sshd_config": "PermitRootLogin yes\nPermitEmptyPasswords yes",
+			"etc/ssh/sshd_config":                    "PermitRootLogin yes\nPermitEmptyPasswords yes",
 			"etc/ssh/sshd_config.d/01-override.conf": "PermitRootLogin no\nPermitEmptyPasswords no",
 		})
 		r := NewReader(root)
@@ -283,7 +283,7 @@ func TestCheckLibvirtSecurityDriverSELinux(t *testing.T) {
 
 	t.Run("SELinuxEnforcing", func(t *testing.T) {
 		root := tree(t, map[string]string{
-			"etc/libvirt/qemu.conf": `security_driver = ["selinux"]`,
+			"etc/libvirt/qemu.conf":  `security_driver = ["selinux"]`,
 			"sys/fs/selinux/enforce": "1",
 		})
 		r := NewReader(root)
@@ -295,7 +295,7 @@ func TestCheckLibvirtSecurityDriverSELinux(t *testing.T) {
 
 	t.Run("SELinuxPermissive", func(t *testing.T) {
 		root := tree(t, map[string]string{
-			"etc/libvirt/qemu.conf": `security_driver = "selinux"`,
+			"etc/libvirt/qemu.conf":  `security_driver = "selinux"`,
 			"sys/fs/selinux/enforce": "0",
 		})
 		r := NewReader(root)
@@ -304,6 +304,176 @@ func TestCheckLibvirtSecurityDriverSELinux(t *testing.T) {
 			t.Errorf("got %s, want fail for permissive SELinux", res.Status)
 		}
 	})
+}
+
+// TestCheckSVirtMACIsolationDetection covers the full	sVirt detection matrix for
+// stig-svirt-mac-isolation: SELinux process contexts, AppArmor confinement of running
+// qemu processes, the 'no VM running' shortcut, and the failure modes (security_driver
+// 'none', no MAC system enabled, unconfined / complain-mode processes).
+func TestCheckSVirtMACIsolationDetection(t *testing.T) {
+	ctx := context.Background()
+	const vmUUID = "b7e40a1d-0000-0000-0000-def012345678"
+
+	debian13Like := map[string]string{ // real Debian 13 host: no security_driver line, libvirt default = AppArmor
+		"etc/libvirt/qemu.conf":                 "# security_driver line intentionally absent\nvnc_listen = \"0.0.0.0\"",
+		"sys/module/apparmor/parameter/enabled": "Y",
+	}
+
+	cases := []struct {
+		name   string
+		files  map[string]string
+		want   Status
+		detail string // substring expected in Detail (optional)
+	}{
+		{
+			name: "AppArmorDefaultConfinedProcesses",
+			files: merge(debian13Like, map[string]string{
+				"proc/412/cmdline":      "qemu-system\x00-x86_64\x00-name\x00guest-1",
+				"proc/412/attr/current": "libvirt-" + vmUUID + " (enforce)",
+			}),
+			want:   StatusPass,
+			detail: "confined by libvirt-<uuid> profiles in enforce mode",
+		},
+		{
+			name:  "AppArmorEnabledNoVMRunning",
+			files: debian13Like,
+			want:  StatusPass,
+		},
+		{
+			name: "AppArmorSecurityfsFallback",
+			files: merge(debian13Like, map[string]string{ // no parameter file, securityfs proves enablement
+				"sys/module/apparmor/parameter/enabled": "",
+				"sys/kernel/security/apparmor/profiles": "libvirt-" + vmUUID + " (enforce)",
+				"proc/412/cmdline":                      "qemu-system\x00-x86_64",
+				"proc/412/attr/current":                 "libvirt-" + vmUUID + " (enforce)",
+			}),
+			want: StatusPass,
+		},
+		{
+			name: "SELinuxNoDriverLineSVirtContext",
+			files: map[string]string{
+				"sys/fs/selinux/enforce": "1",
+				"proc/55/cmdline":        "qemu-system\x00-x86_64",
+				"proc/55/attr/current":   "system_u:system_r:svirt_t:s0:c123,c456",
+			},
+			want: StatusPass,
+		},
+		{
+			name: "SELinuxExplicitDriverTCGType",
+			files: map[string]string{
+				"etc/libvirt/qemu.conf":  `security_driver = "selinux"`,
+				"sys/fs/selinux/enforce": "1",
+				"proc/55/cmdline":        "qemu-system\x00-x86_64",
+				"proc/55/attr/current":   "system_u:system_r:svirt_tcg_t:s0",
+			},
+			want: StatusPass,
+		},
+		{
+			name: "SecurityDriverNoneAlwaysFails",
+			files: merge(debian13Like, map[string]string{
+				"etc/libvirt/qemu.conf": `security_driver = "none"`,
+				"proc/412/cmdline":      "qemu-system\x00-x86_64",
+				"proc/412/attr/current": "libvirt-" + vmUUID + " (enforce)",
+			}),
+			want:   StatusFail,
+			detail: "explicitly set to 'none'",
+		},
+		{
+			name:  "NoMACSystemEnabled",
+			files: map[string]string{"etc/libvirt/qemu.conf": "# nothing"},
+			want:  StatusFail,
+		},
+		{
+			name: "AppArmorComplainModeProcess",
+			files: merge(debian13Like, map[string]string{
+				"proc/412/cmdline":      "qemu-system\x00-x86_64",
+				"proc/412/attr/current": "libvirt-" + vmUUID + " (complain)",
+			}),
+			want:   StatusFail,
+			detail: "complain mode",
+		},
+		{
+			name: "AppArmorUnconfinedProcess",
+			files: merge(debian13Like, map[string]string{
+				"proc/412/cmdline":      "qemu-system\x00-x86_64",
+				"proc/412/attr/current": "unconfined",
+			}),
+			want:   StatusFail,
+			detail: "unconfined",
+		},
+		{
+			name: "AppArmorProcessWithoutLibvirtProfile",
+			files: merge(debian13Like, map[string]string{
+				"proc/412/cmdline":      "qemu-system\x00-x86_64",
+				"proc/412/attr/current": "docker-default (enforce)",
+			}),
+			want:   StatusFail,
+			detail: "not confined by a libvirt profile",
+		},
+		{
+			name: "MixedProcessesOneUnconfined",
+			files: merge(debian13Like, map[string]string{
+				"proc/412/cmdline":      "qemu-system\x00-x86_64",
+				"proc/412/attr/current": "libvirt-" + vmUUID + " (enforce)",
+				"proc/708/cmdline":      "qemu-system\x00-x86_64",
+				"proc/708/attr/current": "unconfined",
+			}),
+			want:   StatusFail,
+			detail: "708",
+		},
+		{
+			name: "SecurityDriverApparmorNotEnabled",
+			files: map[string]string{
+				"etc/libvirt/qemu.conf": `security_driver = "apparmor"`,
+			},
+			want:   StatusFail,
+			detail: "not detected",
+		},
+		{
+			name: "SELinuxEnforcingUnconfinedProcess",
+			files: map[string]string{
+				"sys/fs/selinux/enforce": "1",
+				"proc/55/cmdline":        "qemu-system\x00-x86_64",
+				"proc/55/attr/current":   "unconfined",
+			},
+			want:   StatusFail,
+			detail: "unconfined",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The merge helper may produce empty values for the securityfs fallback case;
+			// tree() writes every entry, so delete zero-value keys to model absence.
+			files := make(map[string]string, len(tc.files))
+			for k, v := range tc.files {
+				if v == "" {
+					continue
+				}
+				files[k] = v
+			}
+			r := NewReader(tree(t, files))
+			res := CheckLibvirtSecurityDriver(ctx, r)
+			if res.Status != tc.want {
+				t.Errorf("status = %s (%s), want %s", res.Status, res.Detail, tc.want)
+			}
+			if tc.detail != "" && !strings.Contains(res.Detail, tc.detail) {
+				t.Errorf("detail = %q, want substring %q", res.Detail, tc.detail)
+			}
+		})
+	}
+}
+
+// merge returns a combined fixture map.
+func merge(a, b map[string]string) map[string]string {
+	out := make(map[string]string, len(a)+len(b))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
 }
 
 func TestCheckUnneededServices(t *testing.T) {
@@ -352,7 +522,7 @@ func TestCheckCoreDumpsRestricted(t *testing.T) {
 	t.Run("SuidDumpable2WithLimits", func(t *testing.T) {
 		root := tree(t, map[string]string{
 			"proc/sys/fs/suid_dumpable": "2",
-			"etc/security/limits.conf": "* hard core 0",
+			"etc/security/limits.conf":  "* hard core 0",
 		})
 		r := NewReader(root)
 		res := CheckCoreDumpsRestricted(ctx, r)
@@ -364,7 +534,7 @@ func TestCheckCoreDumpsRestricted(t *testing.T) {
 	t.Run("MissingLimits", func(t *testing.T) {
 		root := tree(t, map[string]string{
 			"proc/sys/fs/suid_dumpable": "0",
-			"etc/security/limits.conf": "* soft nofile 65536",
+			"etc/security/limits.conf":  "* soft nofile 65536",
 		})
 		r := NewReader(root)
 		res := CheckCoreDumpsRestricted(ctx, r)
