@@ -284,7 +284,8 @@ func parse(s string) (ver, bool) {
 	main, pre, _ := strings.Cut(strings.ReplaceAll(s, "-", "~"), "~")
 	v.pre = pre
 	parts := strings.Split(main, ".")
-	if len(parts) == 0 || len(parts) > 3 {
+	// Releases are always major.minor.patch; anything else (a commit hash like 1328635-pam) is a dev build.
+	if len(parts) != 3 {
 		return v, false
 	}
 	for i, p := range parts {

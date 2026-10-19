@@ -166,3 +166,15 @@ func TestBinaryChecksumMismatchInstallsNothing(t *testing.T) {
 		t.Fatalf("err = %v, want checksum mismatch", err)
 	}
 }
+
+func TestDevBuildVersionsAreNotReleases(t *testing.T) {
+	// A dev build named after its commit must not depend on whether the hash starts with a digit.
+	for _, dev := range []string{"1328635-pam", "da0817d-pam", "1328635", "dev"} {
+		if !Newer("0.8.1", dev) {
+			t.Errorf("Newer(0.8.1, %q) = false; a release should be offered over a dev build", dev)
+		}
+	}
+	if Newer("0.8.1", "0.9.0") || !Newer("0.9.0", "0.8.1") {
+		t.Error("release ordering broken")
+	}
+}
