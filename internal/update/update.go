@@ -1,8 +1,9 @@
 // Package update finds newer VirtoMir releases on GitHub and installs them (ADR-0036): it
-// downloads the release's .deb for this architecture, checks it against the published
-// SHA-256 and hands it to apt in a transient systemd unit, so the upgrade survives the
-// restart of virtomird itself. Only hosts that installed VirtoMir from the .deb update this
-// way; others get instructions.
+// downloads the release file that matches how this host installed VirtoMir and checks it
+// against the published SHA-256. A .deb goes to apt and an .rpm to dnf in a transient systemd
+// unit, so the upgrade survives the restart of virtomird itself; any other install (tarball,
+// install.sh, a binary run from anywhere) gets the binary from the release tarball swapped in
+// place and the daemon restarted.
 package update
 
 import (
@@ -33,10 +34,21 @@ type Release struct {
 	Notes     string    `json:"notes"`
 	URL       string    `json:"url"` // release page
 	Published time.Time `json:"published"`
-	// Package is the .deb for this architecture ("" when the release has none).
+	// Package is the file this host installs (.deb, .rpm or tarball; "" when the release has none).
 	Package string `json:"package,omitempty"`
 	pkgURL  string
 	shaURL  string
+	assets  map[string]string // every release file name -> download URL
+}
+
+// pick selects the release file for an install method.
+func (r *Release) pick(method string) {
+	name := assetFor(method, r)
+	r.Package, r.pkgURL, r.shaURL = "", "", ""
+	if u, ok := r.assets[name]; ok {
+		r.Package, r.pkgURL = name, u
+	}
+	r.shaURL = r.assets[name+".sha256"]
 }
 
 // AutoConfig defines automatic background update behavior (ADR-0036).
@@ -56,7 +68,9 @@ type Status struct {
 	Repo      string   `json:"repo"`
 	Latest    *Release `json:"latest,omitempty"`
 	Available bool     `json:"available"` // Latest is newer than Current
-	// Installable: this host runs the .deb package, so it can update itself.
+	// Method is how this host installed VirtoMir: deb, rpm or binary.
+	Method string `json:"method"`
+	// Installable: this host can update itself with its install method.
 	Installable bool       `json:"installable"`
 	Reason      string     `json:"reason,omitempty"` // why not installable
 	CheckedAt   time.Time  `json:"checkedAt"`
@@ -71,9 +85,14 @@ type Checker struct {
 	Token   string // optional, for private repositories
 	API     string // https://api.github.com (tests replace it)
 	HTTP    *http.Client
-	// Installed reports whether the virtomir package is installed (dpkg); tests replace it.
-	Installed    func() (bool, string)
-	RunInstaller func(ctx context.Context, debPath string) (string, error)
+	// Installed reports whether this host can update itself; tests replace it.
+	Installed func() (bool, string)
+	// Method reports how VirtoMir was installed (MethodDeb, MethodRPM, MethodBinary); tests replace it.
+	Method          func() string
+	RunInstaller    func(ctx context.Context, debPath string) (string, error)
+	RunRPMInstaller func(ctx context.Context, rpmPath string) (string, error)
+	// Restart restarts the daemon after a binary update; tests replace it.
+	Restart func(exe string) (string, error)
 
 	mu       sync.Mutex
 	cached   Status
@@ -97,13 +116,15 @@ func defaultRunInstaller(ctx context.Context, debPath string) (string, error) {
 // New returns a checker for repo, running version current.
 func New(repo, current, token string) *Checker {
 	return &Checker{
-		Repo:         repo,
-		Current:      current,
-		Token:        token,
-		API:          "https://api.github.com",
-		HTTP:         &http.Client{Timeout: 30 * time.Second},
-		Installed:    debInstalled,
-		RunInstaller: defaultRunInstaller,
+		Repo:            repo,
+		Current:         current,
+		Token:           token,
+		API:             "https://api.github.com",
+		HTTP:            &http.Client{Timeout: 30 * time.Second},
+		Installed:       canInstall,
+		Method:          detectMethod,
+		RunInstaller:    defaultRunInstaller,
+		RunRPMInstaller: defaultRunRPMInstaller,
 		autoCfg: AutoConfig{
 			Enabled:       true,
 			AutoInstall:   false,
@@ -127,7 +148,7 @@ func (c *Checker) Check(ctx context.Context, force bool) Status {
 	}
 	c.mu.Unlock()
 
-	st := Status{Current: c.Current, Repo: c.Repo, CheckedAt: time.Now().UTC()}
+	st := Status{Current: c.Current, Repo: c.Repo, CheckedAt: time.Now().UTC(), Method: c.method()}
 	st.Installable, st.Reason = c.Installed()
 	if c.Repo == "" {
 		st.Error = "updates are turned off (-update-repo \"\")"
@@ -138,10 +159,11 @@ func (c *Checker) Check(ctx context.Context, force bool) Status {
 	if err != nil {
 		st.Error = err.Error()
 	} else {
+		rel.pick(st.Method)
 		st.Latest = rel
 		st.Available = Newer(rel.Version, c.Current)
 		if st.Available && rel.Package == "" && st.Installable {
-			st.Installable, st.Reason = false, "this release has no .deb for "+debArch()
+			st.Installable, st.Reason = false, "this release has no "+kindOf(st.Method)+" for "+runtime.GOARCH
 		}
 	}
 	c.mu.Lock()
@@ -199,20 +221,16 @@ func (c *Checker) latest(ctx context.Context) (*Release, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&r); err != nil {
 		return nil, fmt.Errorf("unexpected answer from GitHub: %w", err)
 	}
-	rel := &Release{Tag: r.TagName, Version: DebVersion(r.TagName), Name: r.Name, Notes: r.Body, URL: r.HTMLURL, Published: r.PublishedAt}
-	want := fmt.Sprintf("virtomir_%s_%s.deb", rel.Version, debArch())
+	rel := &Release{Tag: r.TagName, Version: DebVersion(r.TagName), Name: r.Name, Notes: r.Body, URL: r.HTMLURL, Published: r.PublishedAt,
+		assets: map[string]string{}}
 	for _, a := range r.Assets {
 		u := a.Web
 		if c.Token != "" {
 			u = a.URL
 		}
-		switch a.Name {
-		case want:
-			rel.Package, rel.pkgURL = a.Name, u
-		case want + ".sha256":
-			rel.shaURL = u
-		}
+		rel.assets[a.Name] = u
 	}
+	rel.pick(MethodDeb)
 	return rel, nil
 }
 
@@ -279,24 +297,6 @@ func parse(s string) (ver, bool) {
 	return v, true
 }
 
-// debInstalled: the running binary is the packaged one and dpkg knows the package.
-func debInstalled() (bool, string) {
-	if runtime.GOOS != "linux" {
-		return false, "updates install on Linux hosts only"
-	}
-	if exe, _ := os.Executable(); exe != "/usr/bin/virtomird" {
-		return false, "this virtomird was not installed from the .deb package (it runs from " + exe + "); install the package or use install.sh --download"
-	}
-	out, err := exec.Command("dpkg-query", "-W", "-f=${Status}", "virtomir").Output()
-	if err != nil || !strings.Contains(string(out), "install ok installed") {
-		return false, "the virtomir package is not installed (dpkg)"
-	}
-	if _, err := exec.LookPath("systemd-run"); err != nil {
-		return false, "systemd-run is missing"
-	}
-	return true, ""
-}
-
 // Install downloads the latest release's package into dir, checks its SHA-256 and starts
 // apt in a transient unit. It returns once apt has been started: virtomird is restarted by
 // the package's postinst a few seconds later.
@@ -350,6 +350,15 @@ func (c *Checker) Install(ctx context.Context, dir string, report func(string)) 
 	}
 	report("Checksum verified; installing")
 	installer := c.RunInstaller
+	switch st.Method {
+	case MethodBinary:
+		return c.installBinary(path, rel, report)
+	case MethodRPM:
+		installer = c.RunRPMInstaller
+		if installer == nil {
+			installer = defaultRunRPMInstaller
+		}
+	}
 	if installer == nil {
 		installer = defaultRunInstaller
 	}

@@ -52,6 +52,7 @@ func TestCheckFindsThePackage(t *testing.T) {
 	c := New("onur/vm", "0.2.0", "")
 	c.API = srv.URL
 	c.Installed = func() (bool, string) { return true, "" }
+	c.Method = func() string { return MethodDeb }
 	st := c.Check(context.Background(), false)
 	if st.Error != "" || !st.Available || st.Latest.Package != "virtomir_0.3.0_"+debArch()+".deb" || !strings.HasSuffix(st.Latest.shaURL, "/sha") {
 		t.Fatalf("status = %+v latest = %+v", st, st.Latest)
@@ -82,6 +83,7 @@ func TestInstallRefusesBadChecksum(t *testing.T) {
 	c := New("o/v", "0.2.0", "")
 	c.API = srv.URL
 	c.Installed = func() (bool, string) { return true, "" }
+	c.Method = func() string { return MethodDeb }
 	_, err := c.Install(context.Background(), t.TempDir(), func(string) {})
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("err = %v", err)
@@ -91,6 +93,7 @@ func TestInstallRefusesBadChecksum(t *testing.T) {
 func TestNotInstallable(t *testing.T) {
 	c := New("", "0.2.0", "")
 	c.Installed = func() (bool, string) { return false, "not from the package" }
+	c.Method = func() string { return MethodDeb }
 	st := c.Check(context.Background(), true)
 	if st.Installable || st.Error == "" {
 		t.Errorf("status = %+v", st)
@@ -149,6 +152,7 @@ func TestAutoUpdateFlow(t *testing.T) {
 	c := New("onur/vm", "0.2.0", "")
 	c.API = srv.URL
 	c.Installed = func() (bool, string) { return true, "" }
+	c.Method = func() string { return MethodDeb }
 	installedPath := ""
 	c.RunInstaller = func(ctx context.Context, debPath string) (string, error) {
 		installedPath = debPath
@@ -212,6 +216,7 @@ func TestAutoInstallDoesNotDeadlock(t *testing.T) {
 	c := New("o/v", "0.2.0", "")
 	c.API = srv.URL
 	c.Installed = func() (bool, string) { return true, "" }
+	c.Method = func() string { return MethodDeb }
 	ran := false
 	c.RunInstaller = func(context.Context, string) (string, error) { ran = true; return "unit", nil }
 	dir := t.TempDir()
