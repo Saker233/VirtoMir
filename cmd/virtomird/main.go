@@ -182,11 +182,12 @@ func run(c config, log *slog.Logger) error {
 	defer func() { <-hubDone }()
 
 	fipsInfo := compliance.GetFIPSInfo("/", fipsEnforce)
+	compScanner := compliance.NewScanner(compliance.NewReader("/"))
 
 	opts := api.Options{
 		Backend: client, Live: hub, Jobs: jobManager, Auth: authMgr, Schedules: scheduler,
 		UI: web.Dist(), Version: version, Log: log, History: hist, Tokens: tokens, Activity: acts, Alerts: alertEngine,
-		FIPSInfo: fipsInfo,
+		FIPSInfo: fipsInfo, ComplianceScanner: compScanner,
 	}
 	if err := setupCluster(c, tlsConf, &opts); err != nil {
 		log.Warn("cluster", "err", err)

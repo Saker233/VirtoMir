@@ -437,6 +437,21 @@ func (l *Log) Verify() (VerificationResult, error) {
 	return res, nil
 }
 
+// sanitizeCSVCell neutralizes spreadsheet formula injection in exported audit
+// cells: values starting with =, +, -, @, tab or CR would execute as formulas
+// when the CSV is opened in Excel or LibreOffice, so they get a leading
+// apostrophe (TAP / CVE-2023-23917 style mitigation).
+func sanitizeCSVCell(v string) string {
+	if v == "" {
+		return v
+	}
+	switch v[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + v
+	}
+	return v
+}
+
 // Export streams all disk entries in either "jsonl" or "csv" format with full Seq,
 // PrevHash, Hash fields, and header comments/metadata indicating chain status.
 func (l *Log) Export(w io.Writer, format string) error {
@@ -483,13 +498,13 @@ func (l *Log) Export(w io.Writer, format string) error {
 				e.PrevHash,
 				e.Hash,
 				e.Time.UTC().Format(time.RFC3339Nano),
-				e.User,
-				e.Token,
-				e.Remote,
-				e.Method,
-				e.Path,
+				sanitizeCSVCell(e.User),
+				sanitizeCSVCell(e.Token),
+				sanitizeCSVCell(e.Remote),
+				sanitizeCSVCell(e.Method),
+				sanitizeCSVCell(e.Path),
 				strconv.Itoa(e.Status),
-				e.Error,
+				sanitizeCSVCell(e.Error),
 			}
 			if err := cw.Write(row); err != nil {
 				return err

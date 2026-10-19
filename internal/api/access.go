@@ -103,6 +103,8 @@ func requiredRole(method, path string) auth.Role {
 		return auth.NoAccess // host-to-host protocol; the handlers check the peer or the join secret
 	case strings.HasPrefix(path, "/api/v1/tokens"), strings.HasPrefix(path, "/api/v1/account/"):
 		return auth.Viewer // everyone manages their own tokens and second factor (handlers check ownership)
+	case path == "/api/v1/activity/verify", path == "/api/v1/compliance/checks/run":
+		return auth.Operator
 	case strings.HasPrefix(path, "/api/v1/activity"), path == "/api/v1/signin-config", path == "/api/v1/quotas",
 		strings.HasPrefix(path, "/api/v1/twofactor/"),
 		path == "/api/v1/host/capture", // other people's network traffic

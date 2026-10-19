@@ -179,6 +179,10 @@ type Server struct {
 	schedules         *schedule.Scheduler
 	fipsInfo          compliance.FIPSInfo
 	complianceScanner *compliance.Scanner
+	scannerOnce       sync.Once
+	auditVerifyMu     sync.Mutex
+	auditVerified     bool
+	auditVerifyAt     time.Time
 
 	confighist   *confighist.Store
 	quotas       *quota.Store
@@ -447,6 +451,10 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, v any) {
 
 // maxBody limits JSON and XML request bodies (uploads have their own path).
 const maxBody = 2 << 20
+
+// auditVerifyTTL caches Verify() results on the summary path: the audit log is
+// only re-walked when a caller asks after the TTL expires.
+const auditVerifyTTL = 30 * time.Second
 
 // decode reads a JSON body into v; on failure it has already answered 400.
 func (s *Server) decode(w http.ResponseWriter, r *http.Request, v any) bool {

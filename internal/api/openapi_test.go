@@ -19,6 +19,9 @@ func TestOpenAPI(t *testing.T) {
 			Description string
 			Parameters  []struct{ Name, In string }
 		}
+		Components struct {
+			Schemas map[string]any `json:"schemas"`
+		} `json:"components"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
 		t.Fatal(err)
@@ -49,6 +52,11 @@ func TestOpenAPI(t *testing.T) {
 	}
 	if d := doc.Paths["/api/v1/vmware/import"]["post"].Description; d != "Needs role: admin." {
 		t.Errorf("POST vmware import role: %q", d)
+	}
+	for _, s := range []string{"complianceResult", "hostCompliance", "fipsInfo", "auditVerification"} {
+		if _, ok := doc.Components.Schemas[s]; !ok {
+			t.Errorf("schema %q missing from components.schemas", s)
+		}
 	}
 }
 

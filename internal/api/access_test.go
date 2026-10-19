@@ -65,6 +65,13 @@ func TestRequiredRole(t *testing.T) {
 		{"GET", "/api/v1/vmware/connection", auth.Admin},
 		{"PUT", "/api/v1/vmware/connection", auth.Admin},
 		{"GET", "/api/v1/vmware/waves", auth.Admin},
+		{"GET", "/api/v1/compliance/checks", auth.Viewer},
+		{"POST", "/api/v1/compliance/checks/run", auth.Operator},
+		{"GET", "/api/v1/compliance/fips", auth.Viewer},
+		{"GET", "/api/v1/compliance/summary", auth.Viewer},
+		{"GET", "/api/v1/cluster/compliance", auth.Viewer},
+		{"POST", "/api/v1/activity/verify", auth.Operator},
+		{"GET", "/api/v1/activity/export", auth.Admin},
 	}
 	for _, c := range cases {
 		if got := requiredRole(c.method, c.path); got != c.want {
