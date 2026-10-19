@@ -220,6 +220,9 @@ func (s *Store) CreateProtectionGroup(g ProtectionGroup) (ProtectionGroup, error
 	}
 	now := time.Now().UTC()
 	g.Created, g.Updated, g.Status = now, now, StatusProtected
+	if g.ActiveHost == "" {
+		g.ActiveHost = g.SourceHost
+	}
 	s.groups[g.ID] = &g
 	if err := s.saveLocked(); err != nil {
 		delete(s.groups, g.ID)
@@ -247,6 +250,9 @@ func (s *Store) UpdateProtectionGroup(g ProtectionGroup) error {
 	}
 	prev := cur.clone()
 	next := g.clone()
+	if next.ActiveHost == "" {
+		next.ActiveHost = cur.ActiveHost
+	}
 	next.Created, next.Updated, next.Status = cur.Created, time.Now().UTC(), cur.Status
 	*cur = next
 	if err := s.saveLocked(); err != nil {
@@ -270,6 +276,29 @@ func (s *Store) setStatus(id, status string) error {
 	}
 	prev := g.clone()
 	g.Status, g.Updated = status, time.Now().UTC()
+	if err := s.saveLocked(); err != nil {
+		*g = prev
+		return err
+	}
+	return nil
+}
+
+// SetGroupActiveHost updates a protection group's active host and status.
+func (s *Store) SetGroupActiveHost(id, activeHost, status string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.groups[id]
+	if !ok {
+		return fmt.Errorf("%w: protection group %q", ErrNotFound, id)
+	}
+	prev := g.clone()
+	if activeHost != "" {
+		g.ActiveHost = activeHost
+	}
+	if status != "" {
+		g.Status = status
+	}
+	g.Updated = time.Now().UTC()
 	if err := s.saveLocked(); err != nil {
 		*g = prev
 		return err

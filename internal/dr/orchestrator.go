@@ -47,13 +47,16 @@ type Orchestrator struct {
 	xmlCache   map[string]string
 }
 
+// DefaultOrchestrator is the orchestrator used by package-level ExecuteRealFailover and ExecuteFailback.
+var DefaultOrchestrator *Orchestrator
+
 // NewOrchestrator wires an orchestrator over the store and its ZFS, libvirt
 // and hook runners; stateDir is where a run's seed ISO lands ("" if nowhere).
 func NewOrchestrator(store *Store, zfs ZFSRunner, virt VirtController, hooks HookRunner, log *slog.Logger, stateDir string) *Orchestrator {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Orchestrator{
+	o := &Orchestrator{
 		store:      store,
 		zfs:        zfs,
 		virt:       virt,
@@ -63,6 +66,8 @@ func NewOrchestrator(store *Store, zfs ZFSRunner, virt VirtController, hooks Hoo
 		stateDir:   stateDir,
 		xmlCache:   map[string]string{},
 	}
+	DefaultOrchestrator = o
+	return o
 }
 
 // ExecuteTestFailover runs the plan as a test: it verifies every machine of
@@ -590,6 +595,37 @@ func (o *Orchestrator) resolveDomainXML(uuid string) (string, error) {
 		return cached, nil
 	}
 	return "", err
+}
+
+// resolveDomainXMLWith fetches a domain's XML using preferred virt controller,
+// falls back to xmlCache, then fallback virt controller, and finally o.resolveDomainXML.
+func (o *Orchestrator) resolveDomainXMLWith(uuid string, preferred, fallback VirtController) (string, error) {
+	if preferred != nil {
+		if doc, err := preferred.GetDomainXML(uuid); err == nil {
+			o.mu.Lock()
+			o.xmlCache[uuid] = doc
+			o.mu.Unlock()
+			return doc, nil
+		}
+	}
+	o.mu.Lock()
+	cached, ok := o.xmlCache[uuid]
+	o.mu.Unlock()
+	if ok {
+		return cached, nil
+	}
+	if fallback != nil {
+		if doc, err := fallback.GetDomainXML(uuid); err == nil {
+			o.mu.Lock()
+			o.xmlCache[uuid] = doc
+			o.mu.Unlock()
+			return doc, nil
+		}
+	}
+	if o.virt != nil {
+		return o.resolveDomainXML(uuid)
+	}
+	return "", fmt.Errorf("%w: domain XML for %s", ErrNotFound, uuid)
 }
 
 // validatePlanAgainstGroup rejects plans whose machines are not all in their

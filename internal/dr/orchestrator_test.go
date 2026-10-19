@@ -155,6 +155,8 @@ func (z *zfsSim) handle(_ string, args []string) ([]byte, error) {
 			}
 		}
 		z.clones = kept
+	case "get":
+		return []byte("on\n"), nil
 	}
 	return nil, nil
 }

@@ -46,6 +46,7 @@ type ProtectionGroup struct {
 	Description         string    `json:"description,omitempty"`
 	SourceHost          string    `json:"sourceHost"`
 	TargetHost          string    `json:"targetHost"`
+	ActiveHost          string    `json:"activeHost,omitempty"`
 	TargetPool          string    `json:"targetPool"`
 	VMUUIDs             []string  `json:"vmUuids"`
 	RPOMinutes          int       `json:"rpoMinutes"`
