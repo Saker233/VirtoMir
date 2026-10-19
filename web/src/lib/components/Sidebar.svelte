@@ -18,6 +18,7 @@
   import FileText from '@lucide/svelte/icons/file-text'
   import ShieldCheck from '@lucide/svelte/icons/shield-check'
   import FolderKanban from '@lucide/svelte/icons/folder-kanban'
+  import BookOpen from '@lucide/svelte/icons/book-open'
   import { cluster } from '../cluster.svelte'
   import { alerts } from '../alerts.svelte'
   import { session } from '../session.svelte'
@@ -41,6 +42,7 @@
     { name: 'overview', href: '/', label: t('Overview'), icon: LayoutDashboard, role: 'viewer' },
     { name: 'machines', href: '/machines', label: t('Machines'), icon: Boxes, role: 'viewer' },
     { name: 'storage', href: '/storage', label: t('Storage'), icon: HardDrive, role: 'viewer' },
+    { name: 'library', href: '/library', label: t('Content Library'), icon: BookOpen, role: 'viewer' },
     { name: 'networks', href: '/networks', label: t('Networks'), icon: Network, role: 'viewer' },
     { name: 'hardware', href: '/hardware', label: t('Hardware'), icon: CircuitBoard, role: 'viewer' },
     { name: 'backups', href: '/backups', label: t('Backups'), icon: Archive, role: 'viewer' },

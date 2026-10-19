@@ -179,8 +179,57 @@ func (p *Peer) Send(ctx context.Context, method, path string, body io.Reader, si
 	return do(p.client, req, out)
 }
 
+// Download sends an HTTP GET request to the peer at path, applying optional extra headers
+// (e.g. Range) and peer authorization credentials. It returns the active HTTP response;
+// the caller must close resp.Body.
+func (p *Peer) Download(ctx context.Context, path string, headers map[string]string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.Node.Address+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	p.authorize(req)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	c := p.client
+	if c == nil {
+		c = http.DefaultClient
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, reachError(req.URL, err)
+	}
+	return resp, nil
+}
+
+// NewPeer creates a Peer pointing to node using the provided HTTP client (useful for tests).
+// Optional auth arguments can specify selfID and key (and optionally user).
+func NewPeer(n Node, client *http.Client, auth ...string) *Peer {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	p := &Peer{Node: n, client: client}
+	if len(auth) >= 2 {
+		p.selfID = auth[0]
+		p.key = auth[1]
+	}
+	if len(auth) >= 3 {
+		p.user = auth[2]
+	}
+	return p
+}
+
+// WithCredentials returns a copy of p configured with peer authentication credentials.
+func (p *Peer) WithCredentials(selfID, key string) *Peer {
+	q := *p
+	q.selfID, q.key = selfID, key
+	return &q
+}
+
 func (p *Peer) authorize(req *http.Request) {
-	req.Header.Set("Authorization", AuthScheme+p.selfID+"."+p.key)
+	if p.selfID != "" || p.key != "" {
+		req.Header.Set("Authorization", AuthScheme+p.selfID+"."+p.key)
+	}
 	if p.user != "" {
 		req.Header.Set(HeaderUser, p.user)
 		req.Header.Set(HeaderRole, p.role)

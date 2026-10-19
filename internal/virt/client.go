@@ -66,6 +66,21 @@ func (c *Client) conn() (*libvirt.Libvirt, error) {
 	return l, nil
 }
 
+// Conn returns a live connection, (re)connecting if needed.
+func (c *Client) Conn() (*libvirt.Libvirt, error) {
+	return c.conn()
+}
+
+// NameTaken reports whether a machine or container named name exists.
+func (c *Client) NameTaken(name string) (bool, error) {
+	l, err := c.conn()
+	if err != nil {
+		return false, err
+	}
+	return c.nameTaken(l, name), nil
+}
+
+
 func (c *Client) Close() error {
 	c.closeLXC()
 	c.mu.Lock()

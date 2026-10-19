@@ -25,6 +25,7 @@
   import OrphanedDisksModal from '../components/OrphanedDisksModal.svelte'
   import IsoDownloadModal from '../components/IsoDownloadModal.svelte'
   import ZfsReplicationModal from '../components/ZfsReplicationModal.svelte'
+  import BookOpen from '@lucide/svelte/icons/book-open'
 
   let { pool: selected }: { pool: string } = $props()
 
@@ -258,6 +259,9 @@
     <p class="lead">{t('Disk images and installation media live in storage pools, usually directories on this host.')}</p>
   </div>
   <div class="head-right">
+    <a class="ui-btn" href={router.scoped('/library')} onclick={router.link} title={t('Browse cluster-wide content library')}>
+      <BookOpen size={15} /> {t('From Content Library')}
+    </a>
     <button class="ui-btn" onclick={() => (orphanedOpen = true)} title={t('Find disks not attached to any VM')}>
       <HardDrive size={15} /> {t('Unused disks')}
     </button>

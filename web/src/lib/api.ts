@@ -1092,6 +1092,107 @@ interface OpenAPIDoc {
   paths: Record<string, Record<string, { summary?: string; description?: string }>>
 }
 
+// Content Library (ADR-0063)
+export type ContentItemType = 'template' | 'iso' | 'image'
+export type ContentSyncStatus = 'ready' | 'syncing' | 'missing'
+
+export interface ContentVersion {
+  id: string
+  version: string
+  description?: string
+  sha256: string
+  size: number
+  format: string
+  sourceHost: string
+  sourcePool?: string
+  sourceVol?: string
+  templateXml?: string
+  created: string
+}
+
+export interface ContentSyncPolicy {
+  mode: 'all' | 'selected' | 'manual'
+  hosts?: string[]
+}
+
+export interface ContentItem {
+  id: string
+  name: string
+  type: ContentItemType
+  description?: string
+  sourceHost: string
+  keepVersions: number
+  syncPolicy: ContentSyncPolicy
+  created: string
+  updated: string
+  versions?: ContentVersion[]
+  versionCount?: number
+  latestVersion?: ContentVersion
+  syncStatus?: ContentSyncStatus | string
+}
+
+export interface ContentHostConfig {
+  hostId?: string
+  targetPool: string
+  autoSync: boolean
+}
+
+export interface ContentDeploySpec {
+  itemId?: string
+  versionId?: string
+  name: string
+  pool: string
+  network?: string
+  vcpus?: number
+  memoryMiB?: number
+  diskGiB?: number
+  cloudInit?: {
+    hostname?: string
+    user: string
+    password?: string
+    sshKeys?: string[]
+    packages?: string[]
+    userData?: string
+  }
+  start?: boolean
+}
+
+export interface PublishContentReq {
+  templateUuid?: string
+  pool?: string
+  volume?: string
+  id?: string
+  name?: string
+  type?: ContentItemType
+  description?: string
+  version?: string
+  keepVersions?: number
+  syncPolicy?: ContentSyncPolicy
+  sourceHost?: string
+  sourcePool?: string
+  sourceVol?: string
+  sha256?: string
+  size?: number
+  format?: string
+  templateXml?: string
+}
+
+export interface PublishContentVersionReq {
+  templateUuid?: string
+  pool?: string
+  volume?: string
+  id?: string
+  version?: string
+  description?: string
+  sha256?: string
+  size?: number
+  format?: string
+  sourceHost?: string
+  sourcePool?: string
+  sourceVol?: string
+  templateXml?: string
+}
+
 export const api = {
   streamURL: () => scoped('/api/v1/stream'),
 
@@ -1330,6 +1431,30 @@ export const api = {
   vmwareCreateWave: (spec: VMwareWaveSpec, host?: string) => request<Job>('POST', at(host, '/api/v1/vmware/waves'), spec),
   vmwareRetry: (id: string, spec?: VMwareRetrySpec, host?: string) =>
     request<Job>('POST', at(host, `/api/v1/vmware/waves/${enc(id)}/retry`), spec ?? {}),
+
+  // Content Library (ADR-0063)
+  contentItems: async (host?: string) =>
+    (await request<{ items: ContentItem[] }>('GET', at(host, '/api/v1/content/items'))).items,
+  contentItem: (id: string, host?: string) =>
+    request<ContentItem>('GET', at(host, `/api/v1/content/items/${enc(id)}`)),
+  publishContent: (req: PublishContentReq, host?: string) =>
+    request<{ item: ContentItem; results?: { host: string; ok: boolean; error?: string }[] }>('POST', at(host, '/api/v1/content/items'), req),
+  updateContent: (id: string, req: Partial<ContentItem>, host?: string) =>
+    request<{ item: ContentItem; results?: { host: string; ok: boolean; error?: string }[] }>('PUT', at(host, `/api/v1/content/items/${enc(id)}`), req),
+  deleteContent: (id: string, host?: string) =>
+    request<void>('DELETE', at(host, `/api/v1/content/items/${enc(id)}`)),
+  publishContentVersion: (id: string, req: PublishContentVersionReq, host?: string) =>
+    request<{ item: ContentItem; version: ContentVersion; results?: { host: string; ok: boolean; error?: string }[] }>('POST', at(host, `/api/v1/content/items/${enc(id)}/versions`), req),
+  deleteContentVersion: (id: string, vid: string, host?: string) =>
+    request<void>('DELETE', at(host, `/api/v1/content/items/${enc(id)}/versions/${enc(vid)}`)),
+  syncContent: (id: string, vid?: string, host?: string) =>
+    request<Job>('POST', at(host, `/api/v1/content/items/${enc(id)}/sync`), { versionId: vid }),
+  contentConfig: (host?: string) =>
+    request<ContentHostConfig>('GET', at(host, '/api/v1/content/config')),
+  saveContentConfig: (cfg: ContentHostConfig, host?: string) =>
+    request<ContentHostConfig>('PUT', at(host, '/api/v1/content/config'), cfg),
+  deployFromContent: (id: string, spec: ContentDeploySpec, host?: string) =>
+    request<Job>('POST', at(host, `/api/v1/content/items/${enc(id)}/deploy`), spec),
 }
 
 /** Human message for any error thrown by api calls. */

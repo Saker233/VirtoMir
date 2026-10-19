@@ -20,6 +20,7 @@
   import MachinePage from './lib/pages/MachinePage.svelte'
   import NewMachine from './lib/pages/NewMachine.svelte'
   import StoragePage from './lib/pages/StoragePage.svelte'
+  import ContentLibraryPage from './lib/pages/ContentLibraryPage.svelte'
   import NetworksPage from './lib/pages/NetworksPage.svelte'
   import ProjectsPage from './lib/pages/ProjectsPage.svelte'
   import NotFound from './lib/pages/NotFound.svelte'
@@ -136,6 +137,8 @@
           <VMwareImportPage />
         {:else if route.name === 'storage'}
           <StoragePage pool={route.pool} />
+        {:else if route.name === 'library'}
+          <ContentLibraryPage />
         {:else if route.name === 'networks'}
           <NetworksPage />
         {:else if route.name === 'backups'}

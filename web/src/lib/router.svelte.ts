@@ -24,11 +24,13 @@ export type Route =
   | { name: 'reports' }
   | { name: 'compliance' }
   | { name: 'setup' }
+  | { name: 'library' }
   | { name: 'not-found' }
 
 function parse(path: string, hash: string): Route {
   path = path.replace(/\/+$/, '') || '/'
   if (path === '/') return { name: 'overview' }
+  if (path === '/library') return { name: 'library' }
   if (path === '/machines') return { name: 'machines' }
   if (path === '/machines/new') return { name: 'new' }
   if (path === '/machines/import') return { name: 'import' }
@@ -91,7 +93,7 @@ class Router {
 
   /** Shows the same kind of page for another member (machine pages fall back to its overview). */
   switchHost(id: string | null) {
-    const keep = ['overview', 'machines', 'storage', 'networks', 'backups', 'alerts', 'activity', 'reports', 'compliance', 'projects'].includes(this.route.name)
+    const keep = ['overview', 'machines', 'storage', 'networks', 'backups', 'alerts', 'activity', 'reports', 'compliance', 'projects', 'library'].includes(this.route.name)
     const path = keep ? splitHost(here()).path : '/'
     history.pushState(null, '', based(withHost(id, path)))
     this.#sync()
