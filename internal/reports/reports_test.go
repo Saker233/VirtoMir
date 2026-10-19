@@ -1,10 +1,15 @@
 package reports
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/onurbaydas/virtomir/internal/compliance"
 )
 
 func facts(now time.Time) Facts {
@@ -157,3 +162,160 @@ func TestSchedulesDueAndRetention(t *testing.T) {
 		t.Errorf("monthly next = %v", n)
 	}
 }
+
+func TestComplianceScheduleIntegration(t *testing.T) {
+	s, now := open(t)
+
+	// Create a report schedule with kind="compliance"
+	sc, err := s.PutSchedule(Schedule{
+		Name:     "Nightly security scan",
+		Kind:     Compliance,
+		Format:   HTML,
+		Every:    "daily",
+		At:       "02:00",
+		Enabled:  true,
+		KeepDays: 14,
+	})
+	if err != nil {
+		t.Fatalf("failed to create compliance schedule: %v", err)
+	}
+
+	if sc.Kind != Compliance {
+		t.Errorf("schedule Kind = %q, want %q", sc.Kind, Compliance)
+	}
+
+	// Create test facts with compliance information
+	f := Facts{
+		Compliance: []compliance.HostCompliance{
+			{
+				HostID:       "host-alpha",
+				HostName:     "alpha.cluster.local",
+				EvaluatedAt:  now,
+				Score:        100,
+				PassedCount:  5,
+				FailedCount:  0,
+				WarningCount: 0,
+				TotalCount:   5,
+				Results: []compliance.CheckResult{
+					{
+						ID:          "ssh-root-login",
+						Title:       "Disable SSH Root Login",
+						Category:    "SSH",
+						Severity:    compliance.SeverityCritical,
+						Status:      compliance.StatusPass,
+						Detail:      "PermitRootLogin is prohibit-password",
+						Remediation: "Set PermitRootLogin prohibit-password",
+						Benchmark:   "CIS Linux 5.2.5",
+					},
+				},
+			},
+			{
+				HostID:       "host-beta",
+				HostName:     "beta.cluster.local",
+				EvaluatedAt:  now,
+				Score:        50,
+				PassedCount:  1,
+				FailedCount:  1,
+				WarningCount: 0,
+				TotalCount:   2,
+				Results: []compliance.CheckResult{
+					{
+						ID:          "host-firewall",
+						Title:       "Host Firewall Enabled",
+						Category:    "Firewall",
+						Severity:    compliance.SeverityHigh,
+						Status:      compliance.StatusFail,
+						Detail:      "No active ruleset",
+						Remediation: "systemctl enable --now nftables",
+						Benchmark:   "CIS Linux 3.5.1",
+					},
+					{
+						ID:          "kernel-kptr",
+						Title:       "Restrict Kernel Pointer Leaks",
+						Category:    "Kernel",
+						Severity:    compliance.SeverityMedium,
+						Status:      compliance.StatusPass,
+						Detail:      "kernel.kptr_restrict = 1",
+						Remediation: "sysctl -w kernel.kptr_restrict=1",
+						Benchmark:   "CIS Linux 1.5.1",
+					},
+				},
+			},
+		},
+	}
+
+	// Generate report through reports.Store
+	m, err := s.Generate(Compliance, HTML, f, "schedule: "+sc.Name, sc.ID)
+	if err != nil {
+		t.Fatalf("Generate(Compliance, HTML) failed: %v", err)
+	}
+
+	// Validate stored metadata
+	if m.Kind != Compliance {
+		t.Errorf("m.Kind = %q, want %q", m.Kind, Compliance)
+	}
+	if m.Format != HTML {
+		t.Errorf("m.Format = %q, want %q", m.Format, HTML)
+	}
+	if m.ScheduleID != sc.ID {
+		t.Errorf("m.ScheduleID = %q, want %q", m.ScheduleID, sc.ID)
+	}
+	if m.By != "schedule: "+sc.Name {
+		t.Errorf("m.By = %q, want %q", m.By, "schedule: "+sc.Name)
+	}
+	// Total checks: 5 + 2 = 7; passed: 5 + 1 = 6 -> (6 * 100) / 7 = 85%
+	if !strings.Contains(m.Summary, "2 hosts · 85% compliance score · 7 checks: 6 passed, 1 failed, 0 warnings") {
+		t.Errorf("m.Summary = %q", m.Summary)
+	}
+
+	// Validate report retrieval from Store
+	gotMeta, body, err := s.Get(m.ID)
+	if err != nil {
+		t.Fatalf("s.Get(%q) failed: %v", m.ID, err)
+	}
+	if gotMeta.ID != m.ID {
+		t.Errorf("gotMeta.ID = %q, want %q", gotMeta.ID, m.ID)
+	}
+	if len(body) == 0 {
+		t.Fatal("empty report body returned by s.Get")
+	}
+
+	// Validate file on disk
+	expectedFile := filepath.Join(s.dir, m.ID+".html")
+	diskBytes, err := os.ReadFile(expectedFile)
+	if err != nil {
+		t.Fatalf("failed to read report file from disk: %v", err)
+	}
+	if !bytes.Equal(diskBytes, body) {
+		t.Error("file on disk does not match body returned by Store.Get")
+	}
+
+	// Check HTML content
+	if !strings.Contains(string(diskBytes), "Host Hardening &amp; Security Compliance Report") {
+		t.Error("report HTML missing header title")
+	}
+	if !strings.Contains(string(diskBytes), "alpha.cluster.local") {
+		t.Error("host alpha not found in HTML report")
+	}
+	if !strings.Contains(string(diskBytes), "beta.cluster.local") {
+		t.Error("host beta not found in HTML report")
+	}
+
+	// Also verify CSV and JSON formats can be generated through Store
+	mCSV, err := s.Generate(Compliance, CSV, f, "admin", "")
+	if err != nil {
+		t.Fatalf("Generate(Compliance, CSV) failed: %v", err)
+	}
+	if _, csvBody, err := s.Get(mCSV.ID); err != nil || len(csvBody) == 0 {
+		t.Fatalf("failed to get CSV report: %v", err)
+	}
+
+	mJSON, err := s.Generate(Compliance, JSON, f, "admin", "")
+	if err != nil {
+		t.Fatalf("Generate(Compliance, JSON) failed: %v", err)
+	}
+	if _, jsonBody, err := s.Get(mJSON.ID); err != nil || len(jsonBody) == 0 {
+		t.Fatalf("failed to get JSON report: %v", err)
+	}
+}
+

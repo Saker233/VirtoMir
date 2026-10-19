@@ -41,6 +41,14 @@ func (s *Scanner) Cached() (HostCompliance, bool) {
 	return s.cached, true
 }
 
+// SetCached overrides the cached compliance result for testing or manual injection.
+func (s *Scanner) SetCached(comp HostCompliance) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cached = comp
+	s.lastScan = time.Now().UTC()
+}
+
 // Scan executes all compliance checks sequentially, aggregates counts, computes
 // the compliance score percentage ((PassedCount * 100) / TotalCount), caches the result,
 // and returns HostCompliance. If force is true, cached results are bypassed.

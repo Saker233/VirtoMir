@@ -21,14 +21,17 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/onurbaydas/virtomir/internal/compliance"
 )
 
 type Kind string
 
 const (
-	Capacity  Kind = "capacity"
-	Inventory Kind = "inventory"
-	BackupSLA Kind = "backup_sla"
+	Capacity   Kind = "capacity"
+	Inventory  Kind = "inventory"
+	BackupSLA  Kind = "backup_sla"
+	Compliance Kind = "compliance"
 )
 
 type Format string
@@ -41,9 +44,16 @@ const (
 
 // Kinds and formats a request may name.
 var (
-	kindTitles = map[Kind]string{Capacity: "Capacity", Inventory: "Machine inventory", BackupSLA: "Backup compliance"}
-	formats    = map[Format]bool{HTML: true, CSV: true, JSON: true}
+	kindTitles = map[Kind]string{
+		Capacity:   "Capacity",
+		Inventory:  "Machine inventory",
+		BackupSLA:  "Backup compliance",
+		Compliance: "Security compliance",
+	}
+	formats = map[Format]bool{HTML: true, CSV: true, JSON: true}
 )
+
+type HostCompliance = compliance.HostCompliance
 
 // Meta describes one stored report.
 type Meta struct {
@@ -83,7 +93,7 @@ func (sc Schedule) validate() error {
 		return errors.New("the schedule needs a name")
 	}
 	if _, ok := kindTitles[sc.Kind]; !ok {
-		return fmt.Errorf("unknown report %q (capacity, inventory or backup_sla)", sc.Kind)
+		return fmt.Errorf("unknown report %q (capacity, inventory, backup_sla or compliance)", sc.Kind)
 	}
 	if !formats[sc.Format] {
 		return fmt.Errorf("unknown format %q (html, csv or json)", sc.Format)
@@ -119,16 +129,18 @@ type Facts struct {
 	Hosts []HostFacts `json:"hosts"`
 	// Missing names members that did not answer; their machines are not in the report.
 	Missing []string `json:"missing,omitempty"`
+	Compliance []HostCompliance `json:"compliance,omitempty"`
 }
 
 type HostFacts struct {
-	Name      string           `json:"name"`
-	CPUs      int              `json:"cpus"`
-	MemoryKiB uint64           `json:"memoryKiB"`
-	Machines  []Machine        `json:"machines"`
-	Pools     []Pool           `json:"pools"`
-	Backups   []Backup         `json:"backups"`
-	Schedules []BackupSchedule `json:"schedules"`
+	Name       string           `json:"name"`
+	CPUs       int              `json:"cpus"`
+	MemoryKiB  uint64           `json:"memoryKiB"`
+	Machines   []Machine        `json:"machines"`
+	Pools      []Pool           `json:"pools"`
+	Backups    []Backup         `json:"backups"`
+	Schedules  []BackupSchedule `json:"schedules"`
+	Compliance *HostCompliance  `json:"compliance,omitempty"`
 }
 
 type Machine struct {
@@ -278,6 +290,8 @@ func (s *Store) Generate(kind Kind, format Format, f Facts, by, scheduleID strin
 		m.Summary, body, err = inventory(f, format, m.Title)
 	case BackupSLA:
 		m.Summary, body, err = backupSLA(f, format, m.Title, now)
+	case Compliance:
+		m.Summary, body, err = complianceReport(f, format, m.Title, now, by)
 	}
 	if err != nil {
 		return Meta{}, err
@@ -718,6 +732,23 @@ func backupSLA(f Facts, format Format, title string, now time.Time) (string, []b
 	b.WriteString(`</tbody></table><p class="note">OK: newest backup younger than 1.5× the machine's backup interval · late: up to 3× · overdue: older.</p>`)
 	b.WriteString(missingNote(f))
 	return summary, []byte(page(title, summary, b.String())), nil
+}
+
+func complianceReport(f Facts, format Format, title string, now time.Time, by string) (string, []byte, error) {
+	summary := compliance.Summarize(f.Compliance).String()
+
+	var body []byte
+	switch format {
+	case HTML:
+		body = compliance.RenderHTML(f.Compliance, now, by)
+	case CSV:
+		body = compliance.RenderCSV(f.Compliance)
+	case JSON:
+		body = compliance.RenderJSON(f.Compliance, now)
+	default:
+		return "", nil, fmt.Errorf("unknown format %q", format)
+	}
+	return summary, body, nil
 }
 
 func orDash(s string) string {

@@ -160,22 +160,25 @@ type Options struct {
 	ZFSRep *zfsrep.Manager
 	// FIPSInfo holds kernel FIPS mode and TLS enforcement details (ADR-0064).
 	FIPSInfo compliance.FIPSInfo
+	// ComplianceScanner nil: standard scanner rooted at "/" is used (ADR-0064).
+	ComplianceScanner *compliance.Scanner
 }
 
 type Server struct {
-	backend   Backend
-	live      Live
-	jobs      *jobs.Manager
-	auth      *auth.Manager
-	ui        fs.FS
-	version   string
-	log       *slog.Logger
-	history   HistoryQuerier
-	tokens    *auth.Tokens
-	activity  *activity.Log
-	alerts    *alerts.Engine
-	schedules *schedule.Scheduler
-	fipsInfo  compliance.FIPSInfo
+	backend           Backend
+	live              Live
+	jobs              *jobs.Manager
+	auth              *auth.Manager
+	ui                fs.FS
+	version           string
+	log               *slog.Logger
+	history           HistoryQuerier
+	tokens            *auth.Tokens
+	activity          *activity.Log
+	alerts            *alerts.Engine
+	schedules         *schedule.Scheduler
+	fipsInfo          compliance.FIPSInfo
+	complianceScanner *compliance.Scanner
 
 	confighist   *confighist.Store
 	quotas       *quota.Store
@@ -240,8 +243,13 @@ func NewServer(o Options) *Server {
 			vc = c
 		}
 	}
+	cs := o.ComplianceScanner
+	if cs == nil {
+		cs = compliance.NewScanner(nil)
+	}
 	return &Server{backend: o.Backend, live: o.Live, jobs: o.Jobs, auth: o.Auth, ui: o.UI, version: o.Version, log: o.Log,
 		history: o.History, tokens: o.Tokens, activity: o.Activity, alerts: o.Alerts, schedules: o.Schedules, fipsInfo: o.FIPSInfo,
+		complianceScanner: cs,
 		cluster: o.Cluster, fingerprint: o.Fingerprint, hostName: o.HostName, listenPort: o.ListenPort,
 		confighist: o.ConfigHistory, quotas: o.Quotas, groupsOf: o.GroupsOf,
 		ha: o.HA, reports: o.Reports, respools: o.Respools, hostinfo: o.HostInfo, updater: o.Updater, stateDir: o.StateDir, hostnet: o.HostNet, offsite: o.Offsite,
