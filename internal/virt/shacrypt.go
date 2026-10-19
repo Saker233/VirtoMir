@@ -102,6 +102,29 @@ func b64(w *strings.Builder, v uint, n int) {
 	}
 }
 
+// HashPassword returns a glibc-style $6$ SHA-512 password hash for the given
+// plaintext password, using a random 16-character salt. The result is in the
+// format cloud-init expects for its hashed_passwd field.
+func HashPassword(password string) (string, error) {
+	if password == "" {
+		return "", nil
+	}
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return "", err
+	}
+	for i := range salt {
+		salt[i] = cryptAlphabet[int(salt[i])%len(cryptAlphabet)]
+	}
+	return sha512Crypt([]byte(password), salt), nil
+}
+
+// IsCryptHash reports whether s looks like a glibc crypt password hash
+// ($1$ MD5, $5$ SHA-256, $6$ SHA-512).
+func IsCryptHash(s string) bool {
+	return strings.HasPrefix(s, "$1$") || strings.HasPrefix(s, "$5$") || strings.HasPrefix(s, "$6$")
+}
+
 // setRootPassword writes root's password hash into rootfs/etc/shadow.
 func setRootPassword(rootfs, password string) error {
 	salt := make([]byte, 16)

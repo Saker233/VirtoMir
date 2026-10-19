@@ -2,7 +2,25 @@
 // from world.ts; the common changes (power actions, snapshots, new machines, clones, rename,
 // delete, schedules, alerts) are applied to it, everything else answers "done" without effect.
 
-import type { ContentHostConfig, ContentItem, ContentVersion, CreateSpec, DeploySpec, DomainState, Job, Project, ScheduleInfo, SnapshotInfo, VMwareConnection, VMwareInventory, VMwareWave } from '../api'
+import type {
+  Blueprint,
+  CatalogRequest,
+  ContentHostConfig,
+  ContentItem,
+  ContentVersion,
+  CreateSpec,
+  DeploySpec,
+  DomainState,
+  Job,
+  PricingConfig,
+  Project,
+  ScheduleInfo,
+  ShowbackReport,
+  SnapshotInfo,
+  VMwareConnection,
+  VMwareInventory,
+  VMwareWave,
+} from '../api'
 import type { PlacementRule, PlacementViolation } from '../enterprise'
 import * as w from './world'
 
@@ -20,10 +38,184 @@ const DEMO_ONLY = 'Not available in the demo: this needs a real host.'
 
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString()
 
+// ---- Catalog (ADR-0065) helpers -------------------------------------------------------------
+
+/** Really create the ordered machine + lease (used by instant orders and by the approve job). */
+function provision(r: CatalogRequest, bp?: Blueprint) {
+  const b = bp ?? w.catalogBlueprints.find((x) => x.id === r.blueprintId)
+  if (!b) {
+    r.status = 'failed'
+    r.errorMessage = `the blueprint ${r.blueprintId} was deleted before this order could be provisioned`
+    return
+  }
+  r.status = 'provisioning'
+  const m = addMachine(w.SELF.id, {
+    name: r.vmName,
+    os: 'ubuntu',
+    state: 'running',
+    vcpus: r.vcpus,
+    memoryMiB: r.memoryMiB,
+    diskGiB: r.diskGiB,
+    profile: b.sourceType === 'image' ? 'db' : 'web',
+    network: r.network || 'default',
+    project: r.projectId,
+  })
+  r.machineUuid = m.uuid
+  w.catalogLeases.push({
+    requestId: r.id,
+    machineUuid: m.uuid,
+    projectId: r.projectId,
+    expiry: new Date(Date.now() + (r.leaseDays || b.defaultLeaseDays || 30) * 86400e3).toISOString(),
+    state: 'active',
+    reminderSent: false,
+    lastStateChange: new Date().toISOString(),
+  })
+  r.status = 'active'
+}
+
+const MONTH_HOURS = 732
+
+/** A stable 0…1 fraction per machine uuid, so demo showback numbers don't jump between renders. */
+function uuidFraction(uuid: string): number {
+  let h = 0
+  for (const ch of uuid) h = (h * 31 + ch.charCodeAt(0)) >>> 0
+  return (h % 1000) / 1000
+}
+
+/** Rough per-machine usage estimate: running machines all month, idle ones a fraction. */
+function runtimeHours(m: w.DemoMachine): number {
+  const f = uuidFraction(m.uuid)
+  return m.state === 'running' || m.state === 'blocked' || m.state === 'paused'
+    ? MONTH_HOURS * (0.55 + 0.4 * f)
+    : MONTH_HOURS * 0.2 * (0.4 + f)
+}
+
+const round2 = (v: number) => Math.round(v * 100) / 100
+
+/** Escape untrusted text before it goes into the exported HTML (XSS). */
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+
+/** One CSV cell: quoted RFC 4180 style, and a value that would start a spreadsheet formula
+ *  (= + - @ tab CR) is prefixed with an apostrophe so it can only be read as text. */
+const csvCell = (v: string | number) => {
+  let s = String(v)
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
+  return `"${s.replace(/"/g, '""')}"`
+}
+
+/** Password-type answers never leave the API: every request response carries them masked,
+ *  exactly like the real host renders its other secrets back to the UI. */
+function maskedRequest(r: CatalogRequest): CatalogRequest {
+  const fields = w.catalogBlueprints.find((x) => x.id === r.blueprintId)?.cloudInitFields ?? []
+  if (!r.fieldValues || !fields.some((f) => f.type === 'password' && r.fieldValues![f.key] !== undefined)) return r
+  const values: Record<string, string> = {}
+  for (const [k, v] of Object.entries(r.fieldValues)) values[k] = fields.find((x) => x.key === k)?.type === 'password' ? '••••••••' : v
+  return { ...r, fieldValues: values }
+}
+
+/** The checks every stored blueprint passes, so ordering can always resolve a size preset. */
+function validateBlueprint(next: Blueprint): string | null {
+  if (!next?.name?.trim()) return 'a blueprint needs a name'
+  if (!next?.presets?.length) return 'a blueprint needs at least one size preset'
+  if (next.presets.some((p) => !p?.id || !p?.name?.trim() || !(p.vcpus > 0) || !(p.memoryMiB > 0) || !(p.diskGiB > 0)))
+    return 'every preset needs a name, vCPUs, memory and disk'
+  if (next.defaultPresetId && !next.presets.some((p) => p.id === next.defaultPresetId))
+    return 'the default preset must be one of the presets'
+  if (next.maxLeaseDays && next.defaultLeaseDays && next.defaultLeaseDays > next.maxLeaseDays)
+    return 'default lease days cannot exceed the maximum lease days'
+  return null
+}
+
+/** The monthly showback report, computed from the demo world. */
+function showback(q: URLSearchParams): Reply {
+  const year = Number(q.get('year')) || new Date().getFullYear()
+  const month = Number(q.get('month')) || new Date().getMonth() + 1
+  const onlyProject = q.get('project') || ''
+  const pc = w.pricing
+
+  const machines = w.machines.filter((m) => !m.template && (!onlyProject || m.project === onlyProject))
+  const byProject = new Map<string, w.DemoMachine[]>()
+  for (const m of machines) {
+    const list = byProject.get(m.project ?? '') ?? []
+    list.push(m)
+    byProject.set(m.project ?? '', list)
+  }
+
+  const projects = [...byProject.entries()].map(([pid, list]) => {
+    const ms = list.map((m) => {
+      const hours = runtimeHours(m)
+      const vcpuCost = round2(hours * m.vcpus * pc.vcpuHour)
+      const ramCost = round2(hours * (m.memoryMiB / 1024) * pc.ramGiBHour)
+      const diskCost = round2(m.diskGiB * pc.diskGiBMonth)
+      return {
+        uuid: m.uuid,
+        name: m.name,
+        projectId: pid,
+        vcpus: m.vcpus,
+        memoryMiB: m.memoryMiB,
+        diskGiB: m.diskGiB,
+        state: m.state,
+        runtimeHours: Math.round(hours),
+        vcpuCost,
+        ramCost,
+        diskCost,
+        totalCost: round2(vcpuCost + ramCost + diskCost),
+      }
+    })
+    const sum = (pick: (x: (typeof ms)[number]) => number) => round2(ms.reduce((acc, x) => acc + pick(x), 0))
+    return {
+      projectId: pid,
+      projectName: w.projects.find((p) => p.id === pid)?.name ?? (pid || 'No project'),
+      machineCount: ms.length,
+      totalVcpus: ms.reduce((acc, x) => acc + x.vcpus, 0),
+      totalMemoryMiB: ms.reduce((acc, x) => acc + x.memoryMiB, 0),
+      totalDiskGiB: sum((x) => x.diskGiB),
+      vcpuCost: sum((x) => x.vcpuCost),
+      ramCost: sum((x) => x.ramCost),
+      diskCost: sum((x) => x.diskCost),
+      totalCost: sum((x) => x.totalCost),
+      machines: ms,
+    }
+  })
+  const rep: ShowbackReport = {
+    period: `${year}-${String(month).padStart(2, '0')}`,
+    year,
+    month,
+    generatedAt: new Date().toISOString(),
+    currency: pc.currency,
+    pricing: pc,
+    totalCost: round2(projects.reduce((acc, p) => acc + p.totalCost, 0)),
+    totalMachines: machines.length,
+    projects,
+  }
+
+  const format = (q.get('format') || 'json').toLowerCase()
+  // Money formatted with the configured pricing currency symbol, not a fixed USD locale.
+  const money = (v: number) => `${escapeHtml(pc.currency)}${v.toFixed(2)}`
+  if (format === 'csv') {
+    const lines = ['project,machine,project name,vcpus,memory MiB,disk GiB,state,runtime hours,vCPU cost,ram cost,disk cost,total cost']
+    for (const p of rep.projects) for (const m of p.machines) lines.push([p.projectId, m.name, p.projectName, m.vcpus, m.memoryMiB, m.diskGiB, m.state, m.runtimeHours, m.vcpuCost, m.ramCost, m.diskCost, m.totalCost].map(csvCell).join(','))
+    const csv = lines.join('\n')
+    return { status: 200, body: csv, type: 'text/csv; charset=utf-8' }
+  }
+  if (format === 'html') {
+    const rows = rep.projects
+      .map((p) => `<tr><td>${escapeHtml(p.projectName)}</td><td>${p.machineCount}</td><td>${money(p.totalCost)}</td></tr>`)
+      .join('')
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Showback ${escapeHtml(rep.period)}</title></head>
+<body style="font:14px system-ui;margin:2rem"><h1>Showback ${escapeHtml(rep.period)}</h1><p>${rep.totalMachines} machines · total ${money(rep.totalCost)}</p>
+<table border="1" cellpadding="6" style="border-collapse:collapse"><tr><th>Project</th><th>Machines</th><th>Cost</th></tr>${rows}</table></body></html>`
+    return { status: 200, body: html, type: 'text/html; charset=utf-8' }
+  }
+  return json(rep)
+}
+
 // ---- Background jobs ------------------------------------------------------------------------
 
 const jobs = new Map<string, Job>()
 let jobSeq = 0
+let reqSeq = 0
 
 /** A job that finishes after ms, running done() at the end (e.g. adding the cloned machine). */
 function job(kind: string, title: string, ms: number, done?: () => string | void): Job {
@@ -824,6 +1016,78 @@ export function handle(method: string, url: URL, body: any): Reply {
     case 'GET /api/v1/networks':
       return json({ networks: w.networks })
 
+    // Catalog (ADR-0065)
+    case 'GET /api/v1/catalog/blueprints': {
+      const pj = q.get('project')
+      return json({
+        blueprints: w.catalogBlueprints.filter((b) => !pj || !b.allowedProjects?.length || b.allowedProjects.includes(pj)),
+      })
+    }
+    case 'POST /api/v1/catalog/blueprints': {
+      const bp = body as Blueprint
+      if (!bp?.id?.trim() || !bp?.name?.trim()) return json({ error: 'a blueprint needs an ID and a name' }, 422)
+      if (w.catalogBlueprints.some((x) => x.id === bp.id)) return json({ error: `a blueprint named ${bp.id} exists already` }, 409)
+      const invalid = validateBlueprint(bp)
+      if (invalid) return json({ error: invalid }, 422)
+      const created = { ...bp, defaultPresetId: bp.defaultPresetId || bp.presets[0].id, created: new Date().toISOString(), updated: new Date().toISOString() }
+      w.catalogBlueprints.push(created)
+      return json({ blueprint: created }, 201)
+    }
+    case 'GET /api/v1/catalog/requests': {
+      const st = q.get('status')
+      const pj = q.get('project')
+      const reqUser = q.get('requester')
+      return json({
+        requests: w.catalogRequests.filter((r) => (!st || r.status === st) && (!pj || r.projectId === pj) && (!reqUser || r.requester === reqUser)).map(maskedRequest),
+      })
+    }
+    case 'POST /api/v1/catalog/requests': {
+      const req = body as CatalogRequest
+      const bp = w.catalogBlueprints.find((x) => x.id === req?.blueprintId)
+      if (!bp) return json({ error: `no blueprint ${req?.blueprintId}` }, 404)
+      const proj = w.projects.find((x) => x.id === req?.projectId)
+      if (!proj) return json({ error: `no project ${req?.projectId}` }, 404)
+      for (const f of bp.cloudInitFields ?? []) {
+        if (f.required && !String(req?.fieldValues?.[f.key] ?? '').trim()) {
+          return json({ error: `field "${f.label || f.key}" is required` }, 422)
+        }
+      }
+      const preset = bp.presets.find((p) => p.id === req?.presetId) ?? bp.presets[0]
+      if (bp.allowedProjects?.length && !bp.allowedProjects.includes(proj.id)) return json({ error: `project ${proj.id} may not order ${bp.id}` }, 422)
+      if (req?.network && bp.allowedNetworks?.length && !bp.allowedNetworks.includes(req.network)) return json({ error: `network ${req.network} not allowed by ${bp.id}` }, 422)
+      const days: number = req?.leaseDays || bp.defaultLeaseDays || 30
+      if (bp.maxLeaseDays && days > bp.maxLeaseDays) return json({ error: `lease of ${days} days exceeds the ${bp.id} maximum of ${bp.maxLeaseDays}` }, 422)
+      const created: CatalogRequest = {
+        ...req,
+        // The suffix keeps IDs unique: two orders in the same millisecond must not collide.
+        id: `req-${Date.now().toString(36)}-${++reqSeq}`,
+        requester: session.user ?? 'demo',
+        presetId: preset.id,
+        vcpus: preset.vcpus,
+        memoryMiB: preset.memoryMiB,
+        diskGiB: preset.diskGiB,
+        leaseDays: days,
+        status: bp.requireApproval ? 'pending_approval' : 'active',
+        createdAt: new Date().toISOString(),
+      }
+      w.catalogRequests.push(created)
+      if (created.status === 'active') provision(created, bp)
+      return json(maskedRequest(created), 201)
+    }
+    case 'GET /api/v1/catalog/pricing':
+      return json(w.pricing)
+    case 'PUT /api/v1/catalog/pricing': {
+      const pc = body as PricingConfig
+      if (![pc?.vcpuHour, pc?.ramGiBHour, pc?.diskGiBMonth].every((v) => Number.isFinite(v) && (v as number) >= 0)) return json({ error: 'rates must be non-negative numbers' }, 422)
+      const currency = pc.currency?.trim() || w.pricing.currency
+      if (!currency || !/^[\p{Sc}\p{L}]{1,6}$/u.test(currency)) return json({ error: 'currency must be 1 to 6 letters or currency symbols' }, 422)
+      const next: PricingConfig = { vcpuHour: pc.vcpuHour, ramGiBHour: pc.ramGiBHour, diskGiBMonth: pc.diskGiBMonth, currency }
+      w.setPricing(next)
+      return json({ pricing: next })
+    }
+    case 'GET /api/v1/catalog/showback':
+      return showback(q)
+
     // Backups and schedules
     case 'GET /api/v1/backups': {
       const d = q.get('domain')
@@ -1203,6 +1467,76 @@ export function handle(method: string, url: URL, body: any): Reply {
         for (const m of w.machines) if (m.project === parts[1]) m.project = undefined
       }
       return none()
+    }
+  }
+  if (parts[0] === 'catalog' && parts[1] === 'blueprints' && parts.length === 3) {
+    const i = w.catalogBlueprints.findIndex((p) => p.id === parts[2])
+    if (method === 'GET') return i >= 0 ? json(w.catalogBlueprints[i]) : notFound(`no blueprint ${parts[2]}`)
+    if (method === 'PUT') {
+      if (i < 0) return notFound(`no blueprint ${parts[2]}`)
+      const next = body as Blueprint
+      const invalid = validateBlueprint(next)
+      if (invalid) return json({ error: invalid }, 422)
+      w.catalogBlueprints[i] = { ...next, id: w.catalogBlueprints[i].id, defaultPresetId: next.defaultPresetId || next.presets[0].id, created: w.catalogBlueprints[i].created, updated: new Date().toISOString() }
+      return json({ blueprint: w.catalogBlueprints[i] })
+    }
+    if (method === 'DELETE') {
+      if (i >= 0) w.catalogBlueprints.splice(i, 1)
+      return none()
+    }
+  }
+  if (parts[0] === 'catalog' && parts[1] === 'requests' && parts.length >= 3) {
+    const r = w.catalogRequests.find((x) => x.id === parts[2])
+    if (!r) return notFound(`no request ${parts[2]}`)
+    if (parts.length === 3) {
+      if (method === 'GET') {
+        const lease = w.catalogLeases.find((l) => l.requestId === r.id)
+        const out = maskedRequest(r)
+        return json(lease ? { request: out, lease } : { request: out })
+      }
+      if (method === 'DELETE') {
+        w.catalogRequests.splice(w.catalogRequests.indexOf(r), 1)
+        return none()
+      }
+    }
+    if (method === 'POST' && parts[3] === 'approve') {
+      if (r.status !== 'pending_approval') return json({ error: `request ${r.id} is ${r.status}, not pending_approval` }, 422)
+      r.status = 'approved'
+      r.reviewedAt = new Date().toISOString()
+      r.reviewedBy = session.user ?? 'demo'
+      const bp = w.catalogBlueprints.find((x) => x.id === r.blueprintId)
+      const j = job('catalog-provision', `Provision ${r.vmName} from ${r.blueprintId}`, 4000, () => {
+        provision(r, bp)
+        return r.machineUuid ?? ''
+      })
+      return json(j, 202)
+    }
+    if (method === 'POST' && parts[3] === 'reject') {
+      if (r.status !== 'pending_approval') return json({ error: `request ${r.id} is ${r.status}, not pending_approval` }, 422)
+      r.status = 'rejected'
+      r.reviewedAt = new Date().toISOString()
+      r.reviewedBy = session.user ?? 'demo'
+      r.reviewComment = body?.comment ?? ''
+      return json(maskedRequest(r))
+    }
+    if (method === 'POST' && parts[3] === 'extend') {
+      const lease = w.catalogLeases.find((l) => l.requestId === r.id)
+      if (!lease) return json({ error: `request ${r.id} has no lease to extend` }, 422)
+      const days = Number(body?.days)
+      if (!Number.isFinite(days) || days <= 0) return json({ error: 'days must be a positive number' }, 422)
+      // The total lease, counted from the order, can never exceed the blueprint maximum —
+      // otherwise repeated extensions would bypass the cap ordering enforces.
+      const bp = w.catalogBlueprints.find((x) => x.id === r.blueprintId)
+      if (bp?.maxLeaseDays) {
+        const newExpiry = Math.max(Date.parse(lease.expiry), Date.now()) + days * 86400e3
+        const maxExpiry = (Date.parse(r.createdAt) || Date.now()) + bp.maxLeaseDays * 86400e3
+        if (newExpiry > maxExpiry + 1000 || (r.leaseDays > 0 && r.leaseDays + days > bp.maxLeaseDays))
+          return json({ error: `total lease duration exceeds the ${bp.id} maximum of ${bp.maxLeaseDays} days` }, 422)
+      }
+      lease.expiry = new Date(Math.max(Date.parse(lease.expiry), Date.now()) + days * 86400e3).toISOString()
+      lease.lastStateChange = new Date().toISOString()
+      r.leaseDays += days
+      return json(lease)
     }
   }
   if (parts[0] === 'networks' && parts.length >= 2) {

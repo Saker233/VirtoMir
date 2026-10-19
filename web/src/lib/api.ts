@@ -860,6 +860,144 @@ export interface VMwareRetrySpec {
   virtioIso?: string
 }
 
+// Catalog (ADR-0065): blueprints, orders, leases, pricing and showback.
+export interface SizePreset {
+  id: string
+  name: string
+  vcpus: number
+  memoryMiB: number
+  diskGiB: number
+}
+
+export interface InputField {
+  key: string
+  label: string
+  type: 'string' | 'password' | 'ssh_key' | 'number' | 'select'
+  required: boolean
+  default?: string
+  options?: string[]
+}
+
+export interface Blueprint {
+  id: string
+  name: string
+  description?: string
+  /** Icon key rendered next to the name (globe, database, terminal …). */
+  icon?: string
+  sourceType: 'template' | 'image'
+  sourceRef: string
+  targetPool?: string
+  presets: SizePreset[]
+  defaultPresetId?: string
+  allowedNetworks?: string[]
+  cloudInitTemplate?: string
+  cloudInitFields?: InputField[]
+  /** SSH public keys injected into every machine provisioned from this image blueprint. */
+  defaultSshKeys?: string[]
+  allowedProjects?: string[]
+  requireApproval: boolean
+  defaultLeaseDays?: number
+  maxLeaseDays?: number
+  created: string
+  updated: string
+}
+
+export type CatalogRequestStatus =
+  | 'pending_approval'
+  | 'approved'
+  | 'rejected'
+  | 'provisioning'
+  | 'active'
+  | 'expired'
+  | 'failed'
+
+export interface CatalogRequest {
+  id: string
+  blueprintId: string
+  projectId: string
+  requester: string
+  vmName: string
+  presetId: string
+  vcpus: number
+  memoryMiB: number
+  diskGiB: number
+  network?: string
+  /** Answers to the blueprint's cloud-init questions; password answers are masked in responses. */
+  fieldValues?: Record<string, string>
+  /** Public SSH keys for cloud-init sign-in (one per element). */
+  sshKeys?: string[]
+  /** Plaintext password for cloud image blueprints; accepted on POST, never stored or returned. */
+  password?: string
+  leaseDays: number
+  status: CatalogRequestStatus
+  createdAt: string
+  reviewedAt?: string
+  reviewedBy?: string
+  reviewComment?: string
+  machineUuid?: string
+  errorMessage?: string
+}
+
+/** The lease of a provisioned catalog machine (distinct from DHCP leases). */
+export interface CatalogLease {
+  requestId: string
+  machineUuid: string
+  projectId: string
+  expiry: string
+  graceExpiry?: string
+  state: 'active' | 'reminder_sent' | 'grace_period' | 'terminated'
+  reminderSent: boolean
+  lastStateChange: string
+}
+
+export interface PricingConfig {
+  vcpuHour: number
+  ramGiBHour: number
+  diskGiBMonth: number
+  currency: string
+}
+
+export interface VMCost {
+  uuid: string
+  name: string
+  projectId: string
+  vcpus: number
+  memoryMiB: number
+  diskGiB: number
+  state: string
+  runtimeHours: number
+  vcpuCost: number
+  ramCost: number
+  diskCost: number
+  totalCost: number
+}
+
+export interface ProjectCost {
+  projectId: string
+  projectName: string
+  machineCount: number
+  totalVcpus: number
+  totalMemoryMiB: number
+  totalDiskGiB: number
+  vcpuCost: number
+  ramCost: number
+  diskCost: number
+  totalCost: number
+  machines: VMCost[]
+}
+
+export interface ShowbackReport {
+  period: string
+  year: number
+  month: number
+  generatedAt: string
+  currency: string
+  pricing: PricingConfig
+  totalCost: number
+  totalMachines: number
+  projects: ProjectCost[]
+}
+
 export interface HostPCI {
   name: string
   address: string
@@ -1416,6 +1554,61 @@ export const api = {
   addDHCPHost: (name: string, h: DHCPHost) => request<void>('POST', `${netPath(name)}/dhcp-hosts`, h),
   deleteDHCPHost: (name: string, mac: string) => request<void>('DELETE', `${netPath(name)}/dhcp-hosts/${enc(mac)}`),
   leases: async (name: string) => (await request<{ leases: Lease[] }>('GET', `${netPath(name)}/leases`)).leases,
+
+  // Catalog (ADR-0065)
+  catalogBlueprints: async (project?: string): Promise<Blueprint[] & { blueprints: Blueprint[] }> => {
+    const res = await request<{ blueprints: Blueprint[] }>('GET', `/api/v1/catalog/blueprints${project ? `?project=${enc(project)}` : ''}`)
+    const list = res.blueprints as Blueprint[] & { blueprints: Blueprint[] }
+    list.blueprints = res.blueprints
+    return list
+  },
+  createBlueprint: async (bp: Partial<Blueprint>) =>
+    (await request<{ blueprint: Blueprint }>('POST', '/api/v1/catalog/blueprints', bp)).blueprint,
+  updateBlueprint: async (id: string, bp: Partial<Blueprint>) => {
+    await request<{ blueprint: Blueprint }>('PUT', `/api/v1/catalog/blueprints/${enc(id)}`, bp)
+  },
+  deleteBlueprint: (id: string) => request<void>('DELETE', `/api/v1/catalog/blueprints/${enc(id)}`),
+  catalogRequests: async (params: { project?: string; status?: string; requester?: string } = {}): Promise<CatalogRequest[] & { requests: CatalogRequest[] }> => {
+    const p = new URLSearchParams()
+    if (params.project) p.set('project', params.project)
+    if (params.status) p.set('status', params.status)
+    if (params.requester) p.set('requester', params.requester)
+    const q = p.toString()
+    const res = await request<{ requests: CatalogRequest[] }>('GET', `/api/v1/catalog/requests${q ? `?${q}` : ''}`)
+    const list = res.requests as CatalogRequest[] & { requests: CatalogRequest[] }
+    list.requests = res.requests
+    return list
+  },
+  /** One request, with its lease when the machine is provisioned. */
+  catalogRequest: (id: string) => request<{ request: CatalogRequest; lease?: CatalogLease }>('GET', `/api/v1/catalog/requests/${enc(id)}`),
+  createCatalogRequest: (req: Partial<CatalogRequest>) => request<CatalogRequest>('POST', '/api/v1/catalog/requests', req),
+  /** Approving starts the catalog-provision job (202). */
+  approveCatalogRequest: async (id: string, comment?: string): Promise<Job & { jobId: string }> => {
+    const j = await request<Job>('POST', `/api/v1/catalog/requests/${enc(id)}/approve`, { comment })
+    return Object.assign(j, { jobId: j.id })
+  },
+  rejectCatalogRequest: (id: string, comment: string) =>
+    request<void>('POST', `/api/v1/catalog/requests/${enc(id)}/reject`, { comment }),
+  extendCatalogLease: (id: string, days: number) =>
+    request<CatalogLease>('POST', `/api/v1/catalog/requests/${enc(id)}/extend`, { days }),
+  /** Cancels a pending order (requester) or deletes the record (admin). */
+  deleteCatalogRequest: (id: string) => request<void>('DELETE', `/api/v1/catalog/requests/${enc(id)}`),
+  catalogPricing: () => request<PricingConfig>('GET', '/api/v1/catalog/pricing'),
+  saveCatalogPricing: (cfg: PricingConfig) => request<void>('PUT', '/api/v1/catalog/pricing', cfg),
+  catalogShowback: async (params: { year?: number; month?: number; project?: string; format?: 'json' | 'csv' | 'html' } = {}) => {
+    const p = new URLSearchParams()
+    if (params.year !== undefined) p.set('year', String(params.year))
+    if (params.month !== undefined) p.set('month', String(params.month))
+    if (params.project) p.set('project', params.project)
+    if (params.format && params.format !== 'json') p.set('format', params.format)
+    const q = p.toString()
+    const path = `/api/v1/catalog/showback${q ? `?${q}` : ''}`
+    if (params.format === 'csv' || params.format === 'html') {
+      const res = await send('GET', path, { accept: params.format === 'csv' ? 'text/csv' : 'text/html' })
+      return await res.text()
+    }
+    return await request<ShowbackReport>('GET', path)
+  },
 
   // VMware migration (ADR-0061)
   vmwareConnection: (host?: string) => request<VMwareConnection>('GET', at(host, '/api/v1/vmware/connection')),

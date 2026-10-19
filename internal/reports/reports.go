@@ -31,6 +31,7 @@ const (
 	Capacity   Kind = "capacity"
 	Inventory  Kind = "inventory"
 	BackupSLA  Kind = "backup_sla"
+	Showback   Kind = "showback"
 	Compliance Kind = "compliance"
 )
 
@@ -48,6 +49,7 @@ var (
 		Capacity:   "Capacity",
 		Inventory:  "Machine inventory",
 		BackupSLA:  "Backup compliance",
+		Showback:   "Project showback",
 		Compliance: "Security compliance",
 	}
 	formats = map[Format]bool{HTML: true, CSV: true, JSON: true}
@@ -93,7 +95,7 @@ func (sc Schedule) validate() error {
 		return errors.New("the schedule needs a name")
 	}
 	if _, ok := kindTitles[sc.Kind]; !ok {
-		return fmt.Errorf("unknown report %q (capacity, inventory, backup_sla or compliance)", sc.Kind)
+		return fmt.Errorf("unknown report %q (capacity, inventory, backup_sla, showback or compliance)", sc.Kind)
 	}
 	if !formats[sc.Format] {
 		return fmt.Errorf("unknown format %q (html, csv or json)", sc.Format)
@@ -128,7 +130,7 @@ func (sc Schedule) Next(t time.Time) time.Time {
 type Facts struct {
 	Hosts []HostFacts `json:"hosts"`
 	// Missing names members that did not answer; their machines are not in the report.
-	Missing []string `json:"missing,omitempty"`
+	Missing    []string         `json:"missing,omitempty"`
 	Compliance []HostCompliance `json:"compliance,omitempty"`
 }
 
@@ -197,6 +199,21 @@ type Store struct {
 	meta      []Meta
 	schedules []Schedule
 	now       func() time.Time
+	// showback builds a showback report body (ADR-0065) when the API sets it; the
+	// other kinds are made from Facts, showback needs the catalog's project store.
+	showback ShowbackBuilder
+}
+
+// ShowbackBuilder builds a showback report body for one period. The API layer wires
+// one up from the catalog package so schedules can name the showback kind like any
+// other report.
+type ShowbackBuilder func(format Format) (summary string, body []byte, err error)
+
+// SetShowbackBuilder registers (or clears, with nil) the showback builder.
+func (s *Store) SetShowbackBuilder(fn ShowbackBuilder) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.showback = fn
 }
 
 func Open(dir string) (*Store, error) {
@@ -290,6 +307,14 @@ func (s *Store) Generate(kind Kind, format Format, f Facts, by, scheduleID strin
 		m.Summary, body, err = inventory(f, format, m.Title)
 	case BackupSLA:
 		m.Summary, body, err = backupSLA(f, format, m.Title, now)
+	case Showback:
+		s.mu.Lock()
+		fn := s.showback
+		s.mu.Unlock()
+		if fn == nil {
+			return Meta{}, errors.New("showback reports are not configured on this host")
+		}
+		m.Summary, body, err = fn(format)
 	case Compliance:
 		m.Summary, body, err = complianceReport(f, format, m.Title, now, by)
 	}

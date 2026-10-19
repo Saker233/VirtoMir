@@ -21,6 +21,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/alerts"
 	"github.com/onurbaydas/virtomir/internal/api"
 	"github.com/onurbaydas/virtomir/internal/auth"
+	"github.com/onurbaydas/virtomir/internal/catalog"
 	"github.com/onurbaydas/virtomir/internal/cluster"
 	"github.com/onurbaydas/virtomir/internal/compliance"
 	"github.com/onurbaydas/virtomir/internal/confighist"
@@ -267,6 +268,24 @@ func run(c config, log *slog.Logger) error {
 	} else {
 		opts.Placement = plStore
 	}
+	// Self-service catalog (ADR-0065): blueprints, requests and showback in
+	// -state-dir/catalog.json; the lease runner powers expired machines off.
+	if catStore, err := catalog.Open(filepath.Join(c.stateDir, "catalog.json")); err != nil {
+		log.Warn("catalog", "err", err)
+	} else {
+		opts.Catalog = catStore
+		var notifier catalog.AlertNotifier
+		if alertEngine != nil {
+			notifier = leaseAlerts{alertEngine}
+		}
+		leaseOpts := []catalog.LeaseOption{}
+		if pjStore != nil {
+			leaseOpts = append(leaseOpts, catalog.WithProjectStore(pjStore))
+		}
+		mgr := catalog.NewLeaseManager(catStore, leaseCtrl{client}, notifier, log, leaseOpts...)
+		opts.LeaseMgr = mgr
+		go mgr.Run(ctx)
+	}
 	apiServer := api.NewServer(opts)
 	go syncCluster(ctx, apiServer)
 	go apiServer.RunReportSchedules(ctx)
@@ -482,6 +501,30 @@ func syncCluster(ctx context.Context, s *api.Server) {
 			s.SyncMembers(ctx)
 		}
 	}
+}
+
+// leaseCtrl adapts virt.Client to the lease runner's machine lifecycle (ADR-0065):
+// grace the guest a shutdown, then pull the plug, then delete the machine and its disks.
+type leaseCtrl struct{ c *virt.Client }
+
+func (l leaseCtrl) ShutdownDomain(uuid string) error {
+	return l.c.DomainAction(uuid, virt.ActionShutdown)
+}
+func (l leaseCtrl) DestroyDomain(uuid string) error {
+	return l.c.DomainAction(uuid, virt.ActionForceOff)
+}
+
+func (l leaseCtrl) DeleteDomain(uuid string) error {
+	_, err := l.c.Delete(uuid, true) // the leased machine's whole storage goes with it
+	return err
+}
+
+// leaseAlerts sends lease events to the alert channels: the engine's subject is the
+// summary, the message carries the details.
+type leaseAlerts struct{ e *alerts.Engine }
+
+func (a leaseAlerts) Notice(domain, title, message string) {
+	a.e.Notice(title+" ("+domain+")", message)
 }
 
 // sweepConfig notices definition changes made outside VirtoMir (virsh, other tools).
