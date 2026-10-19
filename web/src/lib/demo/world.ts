@@ -6,15 +6,22 @@ import type {
   ActivityEntry,
   Alert,
   AlertConfig,
-  Blueprint,
+  AuditVerification,
   BackupInfo,
+  Blueprint,
   CatalogLease,
   CatalogRequest,
+  ComplianceCheck,
   ConfigVersion,
+  ContentHostConfig,
+  ContentItem,
+  ContentVersion,
   Device,
   Domain,
   DomainDetail,
   DomainState,
+  FIPSInfo,
+  HostCompliance,
   HostHardware,
   HostInfo,
   Lease,
@@ -1115,3 +1122,248 @@ export const catalogLeases: CatalogLease[] = [
     lastStateChange: ago(12 * D),
   },
 ]
+
+// ---- Compliance, FIPS and audit verification (ADR-0064) -------------------------------------
+
+const BENCH = 'CIS Linux 2.0 / STIG'
+
+type CheckInput = Pick<ComplianceCheck, 'id' | 'title' | 'category' | 'severity'> & {
+  status: ComplianceCheck['status']
+  detail: string
+  remediation: string
+}
+
+const chk = (c: CheckInput): ComplianceCheck => ({ benchmark: BENCH, ...c })
+
+const baseChecks: CheckInput[] = [
+  {
+    id: 'cis-5.2.5-ssh-root-login', title: 'SSH Root Login', category: 'SSH', severity: 'high', status: 'pass',
+    detail: 'PermitRootLogin is configured to "prohibit-password"',
+    remediation: 'Set PermitRootLogin prohibit-password in /etc/ssh/sshd_config and reload sshd via systemctl reload ssh.',
+  },
+  {
+    id: 'cis-5.2.6-ssh-empty-passwords', title: 'SSH Empty Passwords', category: 'SSH', severity: 'high', status: 'pass',
+    detail: "PermitEmptyPasswords is set to 'no'",
+    remediation: "Set PermitEmptyPasswords no in /etc/ssh/sshd_config and reload sshd via systemctl reload ssh.",
+  },
+  {
+    id: 'cis-5.1.1-svirt-isolation', title: 'sVirt MAC Isolation (AppArmor / SELinux)', category: 'Virtualization', severity: 'high', status: 'pass',
+    detail: 'sVirt MAC isolation active: AppArmor configured in qemu.conf and enabled in kernel',
+    remediation: "Set security_driver apparmor in /etc/libvirt/qemu.conf and restart libvirtd via systemctl restart libvirtd.",
+  },
+  {
+    id: 'cis-3.4.1-host-firewall', title: 'Host Firewall', category: 'Firewall', severity: 'medium', status: 'pass',
+    detail: 'Firewall daemon firewalld is active',
+    remediation: 'Enable a host firewall: `systemctl enable --now nftables`, firewalld or ufw, and allow SSH and libvirt traffic.',
+  },
+  {
+    id: 'cis-9.1.1-unattended-updates', title: 'Unattended Security Updates', category: 'System', severity: 'medium', status: 'pass',
+    detail: 'Automatic security updates enabled via unattended-upgrades',
+    remediation: 'Install unattended-upgrades and enable security updates: `apt install unattended-upgrades`.',
+  },
+  {
+    id: 'cis-2.1.1-time-sync', title: 'Network Time Synchronization', category: 'System', severity: 'medium', status: 'pass',
+    detail: 'Time synchronization service unit enabled: systemd-timesyncd',
+    remediation: 'Enable a time synchronization service: `systemctl enable --now systemd-timesyncd` (or chrony/ntp).',
+  },
+  {
+    id: 'cis-1.2.1-kptr-restrict', title: 'Kernel Pointer Restriction (kptr_restrict)', category: 'Kernel', severity: 'low', status: 'pass',
+    detail: 'kernel.kptr_restrict is 2 (>= 1)',
+    remediation: 'Add kernel.kptr_restrict=2 to /etc/sysctl.d/99-hardening.conf and run sysctl --system.',
+  },
+  {
+    id: 'cis-1.2.2-dmesg-restrict', title: 'Kernel dmesg Restriction (dmesg_restrict)', category: 'Kernel', severity: 'low', status: 'pass',
+    detail: 'kernel.dmesg_restrict is 1',
+    remediation: 'Add kernel.dmesg_restrict=1 to /etc/sysctl.d/99-hardening.conf and run sysctl --system.',
+  },
+  {
+    id: 'cis-1.2.3-rp-filter', title: 'Reverse Path Filtering (rp_filter)', category: 'Kernel', severity: 'low', status: 'pass',
+    detail: 'net.ipv4.conf.all.rp_filter is 1',
+    remediation: 'Add net.ipv4.conf.all.rp_filter=1 and net.ipv4.conf.default.rp_filter=1 to /etc/sysctl.d/99-hardening.conf and run sysctl --system.',
+  },
+  {
+    id: 'cis-9.2.1-legacy-services', title: 'Legacy Insecure Services', category: 'System', severity: 'high', status: 'pass',
+    detail: 'No legacy insecure services (telnet, rsh, rlogin, tftp, vsftpd) detected',
+    remediation: 'Remove legacy services: `apt purge telnetd rsh-server rsh-client tftpd vsftpd` (or the DNF equivalents).',
+  },
+  {
+    id: 'cis-5.1.2-core-dumps', title: 'Core Dumps Restricted', category: 'System', severity: 'medium', status: 'pass',
+    detail: "Core dumps restricted: fs.suid_dumpable=0 and '* hard core 0' configured in limits",
+    remediation: "Add fs.suid_dumpable=0 to /etc/sysctl.d/99-hardening.conf (sysctl --system) and '* hard core 0' to /etc/security/limits.conf.",
+  },
+]
+
+const withStatus = (id: string, status: ComplianceCheck['status'], detail: string, remediation?: string): (c: CheckInput) => CheckInput =>
+  (c) => (c.id === id ? { ...c, status, detail, remediation: remediation ?? c.remediation } : c)
+
+/** Per host: hv-01 is hardened, hv-02 slips a bit, hv-03 must be fixed. */
+export function compliance(hostID: string, refresh = false): HostCompliance {
+  let cs = baseChecks
+  if (hostID === HOSTS[1].id)
+    cs = baseChecks
+      .map(withStatus('cis-3.4.1-host-firewall', 'fail', 'No active firewall rules or active firewall daemon (nftables, firewalld, ufw) detected', 'Enable a host firewall: `systemctl enable --now firewalld` and allow SSH and libvirt traffic.'))
+      .map(withStatus('cis-1.2.3-rp-filter', 'fail', 'net.ipv4.conf.all.rp_filter is 0 (expected 1)', 'Add net.ipv4.conf.all.rp_filter=1 to /etc/sysctl.d/99-hardening.conf and run sysctl --system.'))
+      .map(withStatus('cis-9.1.1-unattended-updates', 'warn', 'Automatic updates enabled in /etc/apt/apt.conf.d/50unattended-upgrades but security-only: apply_updates is off'))
+  if (hostID === HOSTS[2].id)
+    cs = baseChecks
+      .map(withStatus('cis-5.2.5-ssh-root-login', 'fail', 'PermitRootLogin directive is missing in sshd configuration'))
+      .map(withStatus('cis-3.4.1-host-firewall', 'fail', 'No active firewall rules or active firewall daemon (nftables, firewalld, ufw) detected', 'Enable a host firewall: `systemctl enable --now nftables`, firewalld or ufw, and allow SSH and libvirt traffic.'))
+      .map(withStatus('cis-9.1.1-unattended-updates', 'fail', 'Automatic security updates are not configured in APT or DNF', 'Install unattended-upgrades and enable security updates: `apt install unattended-upgrades`.'))
+      .map(withStatus('cis-5.1.2-core-dumps', 'fail', 'Core dumps are allowed: fs.suid_dumpable=2 and no \'* hard core 0\' limit'))
+  const passed = cs.filter((c) => c.status === 'pass').length
+  const failed = cs.filter((c) => c.status === 'fail').length
+  const warned = cs.filter((c) => c.status === 'warn').length
+  return {
+    hostId: hostID,
+    hostName: hostByID(hostID)?.name ?? hostID,
+    evaluatedAt: refresh ? new Date().toISOString() : ago(25 * 60_000),
+    score: Math.round((passed * 100) / cs.length),
+    passedCount: passed,
+    failedCount: failed,
+    warningCount: warned,
+    totalCount: cs.length,
+    results: cs.map(chk),
+  }
+}
+
+export const demoFIPS: FIPSInfo = {
+  kernelEnabled: true,
+  enforced: true,
+  tlsMinVersion: 'TLS 1.2',
+  cipherSuites: [
+    'TLS_AES_128_GCM_SHA256',
+    'TLS_AES_256_GCM_SHA384',
+    'TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256',
+    'TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384',
+    'TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256',
+    'TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384',
+  ],
+  curves: ['P-256', 'P-384', 'P-521'],
+  description: 'FIPS mode enabled: restricting TLS to FIPS 140 approved cipher suites (experimental, not tested on hardware)',
+}
+
+/** hv-03's audit log was edited by hand; its chain check fails there. */
+export const demoAuditVerification: Record<string, AuditVerification> = {
+  [HOSTS[0].id]: {
+    valid: true,
+    verifiedCount: 246,
+    firstSeq: 1,
+    lastSeq: 246,
+    headHash: '9f2b6b4c5f0a1d3e7c8b9a2f4d6e8a0c1b3d5f7e9a0b2c4d6e8f0a1c3b5d7e9f',
+  },
+  [HOSTS[1].id]: {
+    valid: true,
+    verifiedCount: 198,
+    firstSeq: 1,
+    lastSeq: 198,
+    headHash: '3d5f7e9a0b2c4d6e8f0a1c3b5d7e9f1b2a4c6e8d0a2b4c6e8f0a2c4e6d8b0a2c4',
+  },
+  [HOSTS[2].id]: {
+    valid: false,
+    verifiedCount: 120,
+    firstSeq: 1,
+    lastSeq: 246,
+    headHash: '7e9a0b2c4d6e8f0a1c3b5d7e9f1b2a4c6e8d0a2b4c6e8f0a2c4e6d8b0a2c4e6d',
+    tamperedSeq: 121,
+    tamperedIndex: 41,
+    reason: 'entry 121 hash does not follow from the previous entry (expected SHA-256 de4f01…, found 1a2b33…)',
+  },
+}
+// Content Library (ADR-0063)
+export let contentConfig: ContentHostConfig = {
+  hostId: HOSTS[0].id,
+  targetPool: 'default',
+  autoSync: true,
+}
+
+export let contentItems: ContentItem[] = [
+  {
+    id: 'ci-ubuntu-2404',
+    name: 'Ubuntu 24.04 LTS Cloud Image',
+    type: 'image',
+    description: 'Official Noble Numbat cloud-init ready qcow2 image with VirtIO drivers',
+    sourceHost: HOSTS[0].id,
+    keepVersions: 3,
+    syncPolicy: { mode: 'all' },
+    created: ago(30 * D),
+    updated: ago(2 * D),
+    versions: [
+      {
+        id: 'ver-u2404-10',
+        version: '24.04.0',
+        description: 'Initial Noble Numbat cloud base image',
+        sha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        size: 654311424,
+        format: 'qcow2',
+        sourceHost: HOSTS[0].id,
+        sourcePool: 'default',
+        sourceVol: 'ubuntu-24.04-base.qcow2',
+        created: ago(30 * D),
+      },
+      {
+        id: 'ver-u2404-11',
+        version: '24.04.1',
+        description: 'Point release 2024.1 with updated kernel and security patches',
+        sha256: 'a93b4f5263d893f41295db283bf3e7b1652f19069bfa780d6fce7c01bbf53b92',
+        size: 681574400,
+        format: 'qcow2',
+        sourceHost: HOSTS[0].id,
+        sourcePool: 'default',
+        sourceVol: 'ubuntu-noble-cloudimg.qcow2',
+        created: ago(2 * D),
+      },
+    ],
+  },
+  {
+    id: 'ci-debian-13-netinst',
+    name: 'Debian 13 Minimal Netinst ISO',
+    type: 'iso',
+    description: 'Debian 13 (Trixie) official minimal network installer ISO',
+    sourceHost: HOSTS[0].id,
+    keepVersions: 3,
+    syncPolicy: { mode: 'selected', hosts: [HOSTS[0].id, HOSTS[1].id] },
+    created: ago(60 * D),
+    updated: ago(10 * D),
+    versions: [
+      {
+        id: 'ver-deb13-10',
+        version: '13.0',
+        description: 'Debian 13.0 netinst x86_64 bootable installer',
+        sha256: '3a42c98d672be119435b89a812304918efbc75a3089d54e5b2257d018693bb47',
+        size: 419430400,
+        format: 'iso',
+        sourceHost: HOSTS[0].id,
+        sourcePool: 'default',
+        sourceVol: 'debian-13-netinst.iso',
+        created: ago(10 * D),
+      },
+    ],
+  },
+  {
+    id: 'ci-k8s-worker-tpl',
+    name: 'Kubernetes Worker Node Template',
+    type: 'template',
+    description: 'Pre-configured Kubernetes v1.31 worker node with containerd and Cilium CNI',
+    sourceHost: HOSTS[1].id,
+    keepVersions: 3,
+    syncPolicy: { mode: 'all' },
+    created: ago(15 * D),
+    updated: ago(1 * D),
+    versions: [
+      {
+        id: 'ver-k8s-12',
+        version: '1.31.2',
+        description: 'Updated containerd to 1.7.20 and Cilium to 1.16.1',
+        sha256: 'f4b88235e16f3d99432f81156828a2a7d451270274092b34a9b6c08d1326c9aa',
+        size: 8589934592,
+        format: 'qcow2',
+        sourceHost: HOSTS[1].id,
+        sourcePool: 'default',
+        sourceVol: 'k8s-node-v131.qcow2',
+        templateXml: `<domain type='kvm'><name>k8s-worker-template</name><memory unit='KiB'>4194304</memory><vcpu placement='static'>4</vcpu><os><type arch='x86_64' machine='q35'>hvm</type></os></domain>`,
+        created: ago(1 * D),
+      },
+    ],
+  },
+]
+

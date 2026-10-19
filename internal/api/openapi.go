@@ -233,6 +233,113 @@ func catalogSchemas() map[string]any {
 	}
 }
 
+func complianceResultSchema() map[string]any {
+	str := func() map[string]any { return map[string]any{"type": "string"} }
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":          str(),
+			"title":       str(),
+			"category":    str(),
+			"severity":    map[string]any{"type": "string", "enum": []string{"critical", "high", "medium", "low"}},
+			"status":      map[string]any{"type": "string", "enum": []string{"pass", "fail", "warn", "error"}},
+			"detail":      str(),
+			"remediation": str(),
+			"benchmark":   str(),
+		},
+	}
+}
+
+// contentItemSchema describes a content library item (ADR-0063) in OpenAPI.
+func contentItemSchema() map[string]any {
+	str := func() map[string]any { return map[string]any{"type": "string"} }
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id":           str(),
+			"name":         str(),
+			"type":         map[string]any{"type": "string", "description": "template, iso, or image"},
+			"description":  str(),
+			"sourceHost":   str(),
+			"keepVersions": map[string]any{"type": "integer"},
+			"syncPolicy": map[string]any{"type": "object", "properties": map[string]any{
+				"mode":  map[string]any{"type": "string", "description": "all, selected, or manual"},
+				"hosts": map[string]any{"type": "array", "items": str()},
+			}},
+			"created": str(),
+			"updated": str(),
+			"versions": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{
+				"id":          str(),
+				"version":     str(),
+				"description": str(),
+				"sha256":      str(),
+				"size":        map[string]any{"type": "integer"},
+				"format":      str(),
+				"sourceHost":  str(),
+				"sourcePool":  str(),
+				"sourceVol":   str(),
+				"created":     str(),
+			}}},
+		},
+	}
+}
+
+func hostComplianceSchema() map[string]any {
+	str := func() map[string]any { return map[string]any{"type": "string"} }
+	num := func() map[string]any { return map[string]any{"type": "integer"} }
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"hostId":       str(),
+			"hostName":     str(),
+			"evaluatedAt":  map[string]any{"type": "string", "format": "date-time"},
+			"score":        num(),
+			"passedCount":  num(),
+			"failedCount":  num(),
+			"warningCount": num(),
+			"totalCount":   num(),
+			"results": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"$ref": "#/components/schemas/complianceResult"},
+			},
+		},
+	}
+}
+
+func fipsInfoSchema() map[string]any {
+	str := func() map[string]any { return map[string]any{"type": "string"} }
+	boolean := func() map[string]any { return map[string]any{"type": "boolean"} }
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"kernelEnabled": boolean(),
+			"enforced":      boolean(),
+			"tlsMinVersion": str(),
+			"cipherSuites":  map[string]any{"type": "array", "items": str()},
+			"curves":        map[string]any{"type": "array", "items": str()},
+			"description":   str(),
+		},
+	}
+}
+
+func auditVerificationSchema() map[string]any {
+	str := func() map[string]any { return map[string]any{"type": "string"} }
+	num := func() map[string]any { return map[string]any{"type": "integer"} }
+	boolean := func() map[string]any { return map[string]any{"type": "boolean"} }
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"valid":         boolean(),
+			"verifiedCount": num(),
+			"firstSeq":      num(),
+			"lastSeq":       num(),
+			"headHash":      str(),
+			"tamperedSeq":   num(),
+			"tamperedIndex": num(),
+			"reason":        str(),
+		},
+	}
+}
 // openAPI builds an OpenAPI 3.1 document of the registered routes: path, method, parameters,
 // the role each needs and how to authenticate. Bodies are JSON unless noted; the types are
 // the ones in web/src/lib/api.ts.
@@ -285,6 +392,9 @@ func (s *Server) openAPI(routes []route) map[string]any {
 				// Projects (ADR-0060): bodies are whole Project objects.
 				body = map[string]any{"$ref": "#/components/schemas/Project"}
 			}
+			if strings.HasPrefix(p, "/api/v1/content/items") {
+				body = map[string]any{"$ref": "#/components/schemas/ContentItem"}
+			}
 			if strings.HasPrefix(p, "/api/v1/domains/") && strings.HasSuffix(p, "/project") {
 				body = map[string]any{"type": "object", "properties": map[string]any{"project": map[string]any{"type": "string", "description": "the project the machine moves into; empty makes it global again"}}}
 			}
@@ -335,8 +445,17 @@ func (s *Server) openAPI(routes []route) map[string]any {
 				"session": map[string]any{"type": "apiKey", "in": "cookie", "name": auth.CookieName},
 			},
 			"schemas": map[string]any{
-				"Error":   map[string]any{"type": "object", "properties": map[string]any{"error": map[string]any{"type": "string"}}},
-				"Project": projectSchema(),
+				"Error":             map[string]any{"type": "object", "properties": map[string]any{"error": map[string]any{"type": "string"}}},
+				"Project":           projectSchema(),
+				"ContentItem":       contentItemSchema(),
+				"complianceResult":  complianceResultSchema(),
+				"ComplianceResult":  complianceResultSchema(),
+				"hostCompliance":    hostComplianceSchema(),
+				"HostCompliance":    hostComplianceSchema(),
+				"fipsInfo":          fipsInfoSchema(),
+				"FIPSInfo":          fipsInfoSchema(),
+				"auditVerification": auditVerificationSchema(),
+				"AuditVerification": auditVerificationSchema(),
 			},
 		},
 		"security": []any{map[string]any{"token": []any{}}, map[string]any{"session": []any{}}},

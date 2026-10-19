@@ -58,3 +58,9 @@ func checkName(what, name string) error {
 	}
 	return nil
 }
+
+// CheckName validates machine, volume, pool, or network names.
+func CheckName(what, name string) error {
+	return checkName(what, name)
+}
+

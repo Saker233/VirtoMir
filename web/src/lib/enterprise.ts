@@ -172,7 +172,7 @@ export interface PoolView extends ResourcePool {
 
 // ---- Reports --------------------------------------------------------------------------------
 
-export type ReportKind = 'capacity' | 'inventory' | 'backup_sla'
+export type ReportKind = 'capacity' | 'inventory' | 'backup_sla' | 'compliance'
 export type ReportFormat = 'html' | 'csv' | 'json'
 
 export interface ReportMeta {

@@ -465,6 +465,61 @@ export interface SIEMConfig {
 }
 
 
+// ---- Compliance & audit integrity (mirror internal/compliance, internal/activity) ----
+
+/** Severity expresses the security impact of a compliance finding. */
+export type CheckSeverity = 'critical' | 'high' | 'medium' | 'low'
+
+/** The evaluation outcome of an individual compliance check. */
+export type CheckStatus = 'pass' | 'fail' | 'warn' | 'error'
+
+export interface ComplianceCheck {
+  id: string
+  title: string
+  /** "SSH", "Virtualization", "Firewall", "Kernel", "System". */
+  category: string
+  severity: CheckSeverity
+  status: CheckStatus
+  detail: string
+  remediation: string
+  benchmark: string
+}
+
+export interface HostCompliance {
+  hostId: string
+  hostName: string
+  evaluatedAt: string
+  /** 0–100 percentage; -1 when a cluster peer could not be reached. */
+  score: number
+  passedCount: number
+  failedCount: number
+  warningCount: number
+  totalCount: number
+  results: ComplianceCheck[]
+}
+
+/** Host kernel FIPS state and the daemon's TLS restriction profile. Evaluation is experimental. */
+export interface FIPSInfo {
+  kernelEnabled: boolean
+  enforced: boolean
+  tlsMinVersion: string
+  cipherSuites: string[]
+  curves: string[]
+  description: string
+}
+
+/** Tamper-evident audit log verification: the hash chain across activity.jsonl. */
+export interface AuditVerification {
+  valid: boolean
+  verifiedCount: number
+  firstSeq?: number
+  lastSeq?: number
+  headHash?: string
+  tamperedSeq?: number
+  tamperedIndex?: number
+  reason?: string
+}
+
 export interface Job {
   id: string
   kind: string
@@ -1169,6 +1224,107 @@ interface OpenAPIDoc {
   paths: Record<string, Record<string, { summary?: string; description?: string }>>
 }
 
+// Content Library (ADR-0063)
+export type ContentItemType = 'template' | 'iso' | 'image'
+export type ContentSyncStatus = 'ready' | 'syncing' | 'missing'
+
+export interface ContentVersion {
+  id: string
+  version: string
+  description?: string
+  sha256: string
+  size: number
+  format: string
+  sourceHost: string
+  sourcePool?: string
+  sourceVol?: string
+  templateXml?: string
+  created: string
+}
+
+export interface ContentSyncPolicy {
+  mode: 'all' | 'selected' | 'manual'
+  hosts?: string[]
+}
+
+export interface ContentItem {
+  id: string
+  name: string
+  type: ContentItemType
+  description?: string
+  sourceHost: string
+  keepVersions: number
+  syncPolicy: ContentSyncPolicy
+  created: string
+  updated: string
+  versions?: ContentVersion[]
+  versionCount?: number
+  latestVersion?: ContentVersion
+  syncStatus?: ContentSyncStatus | string
+}
+
+export interface ContentHostConfig {
+  hostId?: string
+  targetPool: string
+  autoSync: boolean
+}
+
+export interface ContentDeploySpec {
+  itemId?: string
+  versionId?: string
+  name: string
+  pool: string
+  network?: string
+  vcpus?: number
+  memoryMiB?: number
+  diskGiB?: number
+  cloudInit?: {
+    hostname?: string
+    user: string
+    password?: string
+    sshKeys?: string[]
+    packages?: string[]
+    userData?: string
+  }
+  start?: boolean
+}
+
+export interface PublishContentReq {
+  templateUuid?: string
+  pool?: string
+  volume?: string
+  id?: string
+  name?: string
+  type?: ContentItemType
+  description?: string
+  version?: string
+  keepVersions?: number
+  syncPolicy?: ContentSyncPolicy
+  sourceHost?: string
+  sourcePool?: string
+  sourceVol?: string
+  sha256?: string
+  size?: number
+  format?: string
+  templateXml?: string
+}
+
+export interface PublishContentVersionReq {
+  templateUuid?: string
+  pool?: string
+  volume?: string
+  id?: string
+  version?: string
+  description?: string
+  sha256?: string
+  size?: number
+  format?: string
+  sourceHost?: string
+  sourcePool?: string
+  sourceVol?: string
+  templateXml?: string
+}
+
 export const api = {
   streamURL: () => scoped('/api/v1/stream'),
 
@@ -1224,6 +1380,17 @@ export const api = {
   },
   siemConfig: () => request<SIEMConfig>('GET', '/api/v1/activity/siem'),
   saveSiemConfig: (cfg: SIEMConfig) => request<SIEMConfig>('PUT', '/api/v1/activity/siem', cfg),
+  /** Re-runs the tamper-evident chain check over the whole audit log (operator). */
+  verifyAuditLog: () => request<AuditVerification>('POST', '/api/v1/activity/verify'),
+  /** Where to download the audit trail (GET; an admin download). */
+  exportAuditLogURL: (format: 'jsonl' | 'csv') => scoped(`/api/v1/activity/export?format=${format}`),
+
+  // Compliance & hardening (ADR-0064)
+  complianceChecks: (refresh = false) => request<HostCompliance>('GET', `/api/v1/compliance/checks${refresh ? '?refresh=1' : ''}`),
+  runComplianceScan: () => request<HostCompliance>('POST', '/api/v1/compliance/checks/run'),
+  complianceFIPS: () => request<FIPSInfo>('GET', '/api/v1/compliance/fips'),
+  /** The host's own posture first, then every reachable cluster member's (score -1 = unreachable). */
+  clusterCompliance: () => request<HostCompliance[]>('GET', '/api/v1/cluster/compliance'),
 
 
   alerts: async (host?: string) => (await request<{ alerts: Alert[] }>('GET', at(host, '/api/v1/alerts'))).alerts,
@@ -1451,6 +1618,30 @@ export const api = {
   vmwareCreateWave: (spec: VMwareWaveSpec, host?: string) => request<Job>('POST', at(host, '/api/v1/vmware/waves'), spec),
   vmwareRetry: (id: string, spec?: VMwareRetrySpec, host?: string) =>
     request<Job>('POST', at(host, `/api/v1/vmware/waves/${enc(id)}/retry`), spec ?? {}),
+
+  // Content Library (ADR-0063)
+  contentItems: async (host?: string) =>
+    (await request<{ items: ContentItem[] }>('GET', at(host, '/api/v1/content/items'))).items,
+  contentItem: (id: string, host?: string) =>
+    request<ContentItem>('GET', at(host, `/api/v1/content/items/${enc(id)}`)),
+  publishContent: (req: PublishContentReq, host?: string) =>
+    request<{ item: ContentItem; results?: { host: string; ok: boolean; error?: string }[] }>('POST', at(host, '/api/v1/content/items'), req),
+  updateContent: (id: string, req: Partial<ContentItem>, host?: string) =>
+    request<{ item: ContentItem; results?: { host: string; ok: boolean; error?: string }[] }>('PUT', at(host, `/api/v1/content/items/${enc(id)}`), req),
+  deleteContent: (id: string, host?: string) =>
+    request<void>('DELETE', at(host, `/api/v1/content/items/${enc(id)}`)),
+  publishContentVersion: (id: string, req: PublishContentVersionReq, host?: string) =>
+    request<{ item: ContentItem; version: ContentVersion; results?: { host: string; ok: boolean; error?: string }[] }>('POST', at(host, `/api/v1/content/items/${enc(id)}/versions`), req),
+  deleteContentVersion: (id: string, vid: string, host?: string) =>
+    request<void>('DELETE', at(host, `/api/v1/content/items/${enc(id)}/versions/${enc(vid)}`)),
+  syncContent: (id: string, vid?: string, host?: string) =>
+    request<Job>('POST', at(host, `/api/v1/content/items/${enc(id)}/sync`), { versionId: vid }),
+  contentConfig: (host?: string) =>
+    request<ContentHostConfig>('GET', at(host, '/api/v1/content/config')),
+  saveContentConfig: (cfg: ContentHostConfig, host?: string) =>
+    request<ContentHostConfig>('PUT', at(host, '/api/v1/content/config'), cfg),
+  deployFromContent: (id: string, spec: ContentDeploySpec, host?: string) =>
+    request<Job>('POST', at(host, `/api/v1/content/items/${enc(id)}/deploy`), spec),
 }
 
 /** Human message for any error thrown by api calls. */

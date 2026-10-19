@@ -20,6 +20,7 @@
   import MachinePage from './lib/pages/MachinePage.svelte'
   import NewMachine from './lib/pages/NewMachine.svelte'
   import StoragePage from './lib/pages/StoragePage.svelte'
+  import ContentLibraryPage from './lib/pages/ContentLibraryPage.svelte'
   import NetworksPage from './lib/pages/NetworksPage.svelte'
   import ProjectsPage from './lib/pages/ProjectsPage.svelte'
   import CatalogPage from './lib/pages/CatalogPage.svelte'
@@ -27,6 +28,7 @@
   import ActivityPage from './lib/pages/ActivityPage.svelte'
   import AccountPage from './lib/pages/AccountPage.svelte'
   import ReportsPage from './lib/pages/ReportsPage.svelte'
+  import CompliancePage from './lib/pages/CompliancePage.svelte'
   import SetupPage from './lib/pages/SetupPage.svelte'
   import { api } from './lib/api'
   import ConsolePage from './lib/pages/ConsolePage.svelte'
@@ -136,6 +138,8 @@
           <VMwareImportPage />
         {:else if route.name === 'storage'}
           <StoragePage pool={route.pool} />
+        {:else if route.name === 'library'}
+          <ContentLibraryPage />
         {:else if route.name === 'networks'}
           <NetworksPage />
         {:else if route.name === 'backups'}
@@ -152,6 +156,8 @@
           <SetupPage />
         {:else if route.name === 'reports'}
           <ReportsPage />
+        {:else if route.name === 'compliance'}
+          <CompliancePage />
         {:else if route.name === 'cluster'}
           <ClusterPage />
         {:else if route.name === 'projects'}

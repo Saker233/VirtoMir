@@ -15,6 +15,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/onurbaydas/virtomir/internal/content"
 	"github.com/onurbaydas/virtomir/internal/placement"
 	"github.com/onurbaydas/virtomir/internal/project"
 	"github.com/onurbaydas/virtomir/internal/virt"
@@ -236,13 +237,17 @@ func TestStream(t *testing.T) {
 	}
 }
 
-func TestServerWiringProjectsVMwareAndPlacement(t *testing.T) {
+func TestServerWiringProjectsVMwarePlacementAndContent(t *testing.T) {
 	tempDir := t.TempDir()
 	pj, err := project.Open(filepath.Join(tempDir, "projects.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	pl, err := placement.Open(filepath.Join(tempDir, "placement.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cnt, err := content.Open(filepath.Join(tempDir, "content.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,6 +258,7 @@ func TestServerWiringProjectsVMwareAndPlacement(t *testing.T) {
 		Projects:    pj,
 		VMwareStore: vmStore,
 		Placement:   pl,
+		Content:     cnt,
 	})
 	if s.projects != pj {
 		t.Errorf("expected projects to be wired in Server struct")
@@ -262,6 +268,9 @@ func TestServerWiringProjectsVMwareAndPlacement(t *testing.T) {
 	}
 	if s.placement != pl {
 		t.Errorf("expected placement to be wired in Server struct")
+	}
+	if s.content != cnt {
+		t.Errorf("expected content to be wired in Server struct")
 	}
 	recProj := httptest.NewRecorder()
 	s.Handler().ServeHTTP(recProj, httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil))
@@ -279,6 +288,12 @@ func TestServerWiringProjectsVMwareAndPlacement(t *testing.T) {
 	s.Handler().ServeHTTP(recPlace, httptest.NewRequest(http.MethodGet, "/api/v1/placement", nil))
 	if recPlace.Code != http.StatusOK {
 		t.Errorf("GET /api/v1/placement status = %d, want 200", recPlace.Code)
+	}
+
+	recCnt := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recCnt, httptest.NewRequest(http.MethodGet, "/api/v1/content/items", nil))
+	if recCnt.Code != http.StatusOK {
+		t.Errorf("GET /api/v1/content/items status = %d, want 200", recCnt.Code)
 	}
 }
 

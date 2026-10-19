@@ -23,7 +23,9 @@ import (
 	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/catalog"
 	"github.com/onurbaydas/virtomir/internal/cluster"
+	"github.com/onurbaydas/virtomir/internal/compliance"
 	"github.com/onurbaydas/virtomir/internal/confighist"
+	"github.com/onurbaydas/virtomir/internal/content"
 	"github.com/onurbaydas/virtomir/internal/drs"
 	"github.com/onurbaydas/virtomir/internal/ha"
 	"github.com/onurbaydas/virtomir/internal/history"
@@ -56,6 +58,7 @@ type config struct {
 	viewerGroup              string
 	pamService               string
 	tlsMode, tlsCert, tlsKey string
+	fipsMode                 string
 	stateDir                 string
 	name                     string
 	updateRepo               string
@@ -73,6 +76,7 @@ func main() {
 	flag.StringVar(&c.tlsMode, "tls", "auto", `"auto" (self-signed certificate in -state-dir), "files" (-tls-cert/-tls-key) or "off"`)
 	flag.StringVar(&c.tlsCert, "tls-cert", "", "certificate file for -tls=files")
 	flag.StringVar(&c.tlsKey, "tls-key", "", "private key file for -tls=files")
+	flag.StringVar(&c.fipsMode, "fips", "auto", `"auto" (detect kernel /proc/sys/crypto/fips_enabled), "on" or "off" (experimental)`)
 	flag.StringVar(&c.stateDir, "state-dir", "/var/lib/virtomir", "where virtomird keeps its own files (TLS certificate)")
 	flag.StringVar(&c.name, "name", "", "how this host is called in a cluster (default: its hostname)")
 	flag.StringVar(&c.updateRepo, "update-repo", "onurbaydas/VirtoMir", `GitHub repository whose releases the Updates card offers ("" turns the check off); a private one needs VIRTOMIR_GITHUB_TOKEN`)
@@ -110,7 +114,13 @@ func run(c config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	tlsConf, err := setupTLS(c, log)
+	kernelFIPS := compliance.DetectKernelFIPS("/")
+	fipsEnforce := (c.fipsMode == "on") || (c.fipsMode == "auto" && kernelFIPS)
+	if fipsEnforce && c.tlsMode == "off" {
+		log.Warn("FIPS mode enabled but TLS is off: TLS cipher restrictions cannot be enforced")
+		fipsEnforce = false
+	}
+	tlsConf, err := setupTLS(c, fipsEnforce, log)
 	if err != nil {
 		return err
 	}
@@ -173,9 +183,13 @@ func run(c config, log *slog.Logger) error {
 	go func() { hub.Run(ctx); close(hubDone) }()
 	defer func() { <-hubDone }()
 
+	fipsInfo := compliance.GetFIPSInfo("/", fipsEnforce)
+	compScanner := compliance.NewScanner(compliance.NewReader("/"))
+
 	opts := api.Options{
 		Backend: client, Live: hub, Jobs: jobManager, Auth: authMgr, Schedules: scheduler,
 		UI: web.Dist(), Version: version, Log: log, History: hist, Tokens: tokens, Activity: acts, Alerts: alertEngine,
+		FIPSInfo: fipsInfo, ComplianceScanner: compScanner,
 	}
 	if err := setupCluster(c, tlsConf, &opts); err != nil {
 		log.Warn("cluster", "err", err)
@@ -239,6 +253,15 @@ func run(c config, log *slog.Logger) error {
 		log.Warn("drs engine", "err", err)
 	} else {
 		opts.DRS = drsEng
+	}
+	contentStore, err := content.Open(filepath.Join(c.stateDir, "content.json"))
+	if err != nil {
+		log.Warn("content store", "err", err)
+	} else {
+		opts.Content = contentStore
+		syncManager := content.NewSyncManager(contentStore, jobManager, client, opts.Cluster, nil, log)
+		opts.ContentSync = syncManager
+		go syncManager.Start(ctx)
 	}
 	if plStore, err := placement.Open(filepath.Join(c.stateDir, "placement.json")); err != nil {
 		log.Warn("placement store", "err", err)
@@ -419,7 +442,7 @@ func setupAuth(c config, pj *project.Store, log *slog.Logger) (*auth.Manager, er
 	return nil, fmt.Errorf("unknown -auth %q (pam or none)", c.authMode)
 }
 
-func setupTLS(c config, log *slog.Logger) (*tls.Config, error) {
+func setupTLS(c config, fipsEnforce bool, log *slog.Logger) (*tls.Config, error) {
 	var cert tls.Certificate
 	var err error
 	switch c.tlsMode {
@@ -438,7 +461,12 @@ func setupTLS(c config, log *slog.Logger) (*tls.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("TLS: %w", err)
 	}
-	return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}, nil
+	tlsConf := &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	if fipsEnforce {
+		compliance.ApplyFIPSTLS(tlsConf)
+		log.Info("FIPS mode enabled: restricting TLS to FIPS 140 approved cipher suites (experimental, not tested on hardware)")
+	}
+	return tlsConf, nil
 }
 
 // setupCluster opens -state-dir/cluster.json. Joining other hosts needs TLS: members

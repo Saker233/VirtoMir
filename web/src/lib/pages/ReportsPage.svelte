@@ -22,6 +22,7 @@
     { kind: 'capacity', title: t('Capacity'), text: t('CPUs, vCPUs and memory per host (allocated and on running machines), storage pools with used and free space.'), icon: Server },
     { kind: 'inventory', title: t('Machine inventory'), text: t('Every machine with its host, state, size, disks, addresses and owner.'), icon: ListChecks },
     { kind: 'backup_sla', title: t('Backup compliance'), text: "Each machine's newest backup against its backup schedule: ok, late, overdue or never.", icon: ShieldCheck },
+    { kind: 'compliance', title: t('Security compliance'), text: t('CIS/STIG hardening score, failed checks and FIPS mode for every host.'), icon: ShieldCheck },
   ]
 
   let list = $state<ReportMeta[]>([])
