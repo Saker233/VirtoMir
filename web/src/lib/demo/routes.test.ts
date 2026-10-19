@@ -98,6 +98,235 @@ describe('demo API', () => {
     expect(inv.domains.length).toBeGreaterThanOrEqual(3)
   })
 
+  it('exports showback safely and with the configured currency', () => {
+    const csv = call('GET', '/api/v1/catalog/showback?format=csv')
+    expect(csv.status).toBe(200)
+    // Every data row is fully quoted so spreadsheet formula injection is impossible.
+    for (const line of String(csv.json).split('\n').slice(1)) {
+      expect(line.startsWith('"')).toBe(true)
+      expect(line.endsWith('"')).toBe(true)
+    }
+    const html = call('GET', '/api/v1/catalog/showback?format=html')
+    expect(html.status).toBe(200)
+    expect(String(html.json)).not.toContain('NaN')
+    // The configured pricing currency symbol ($), not a fixed USD locale format.
+    expect(String(html.json)).toMatch(/\$\d+\.\d{2}/)
+  })
+
+  it('keeps a hostile machine name one quoted CSV cell', () => {
+    const bp = call('GET', '/api/v1/catalog/blueprints').json.blueprints[0]
+    const name = '=SUM(1,1)","alert(1)"'
+    const ok = call('POST', '/api/v1/catalog/requests', {
+      blueprintId: bp.id,
+      projectId: 'prod',
+      vmName: name,
+      presetId: bp.presets[0].id,
+      leaseDays: 7,
+      fieldValues: { sshKey: 'ssh-ed25519 AAAAC3Nz' },
+    })
+    expect(ok.status).toBe(201)
+    const csv = String(call('GET', '/api/v1/catalog/showback?format=csv').json)
+    // One quoted cell: doubled inner quotes stop CSV breakout, the leading apostrophe
+    // stops the '=' from running as a spreadsheet formula.
+    expect(csv).toContain(`"'=SUM(1,1)"",""alert(1)""`)
+    expect(call('DELETE', `/api/v1/catalog/requests/${ok.json.id}`).status).toBe(204)
+  })
+
+  it('escapes hostile project names in the HTML export', () => {
+    const before = call('GET', '/api/v1/projects/prod').json
+    call('PUT', '/api/v1/projects/prod', { ...before, name: '<script>alert(1)</script>' })
+    const html = String(call('GET', '/api/v1/catalog/showback?format=html').json)
+    call('PUT', '/api/v1/projects/prod', { ...before })
+    expect(html).not.toContain('<script>')
+    expect(html).toContain('&lt;script&gt;')
+  })
+
+  it('escapes hostile currency in HTML export and rejects hostile currency charset in pricing PUT', () => {
+    // PUT /catalog/pricing rejects hostile currency symbols
+    const bad = call('PUT', '/api/v1/catalog/pricing', {
+      vcpuHour: 0.04,
+      ramGiBHour: 0.01,
+      diskGiBMonth: 0.08,
+      currency: '<script>alert(1)</script>',
+    })
+    expect(bad.status).toBe(422)
+
+    // PUT /catalog/pricing accepts valid currency symbols (e.g. €, $, ₺, USD)
+    const ok = call('PUT', '/api/v1/catalog/pricing', {
+      vcpuHour: 0.04,
+      ramGiBHour: 0.01,
+      diskGiBMonth: 0.08,
+      currency: '€',
+    })
+    expect(ok.status).toBe(200)
+
+    // Showback HTML uses the new currency
+    const html = String(call('GET', '/api/v1/catalog/showback?format=html').json)
+    expect(html).toContain('€')
+
+    // Reset back to $
+    call('PUT', '/api/v1/catalog/pricing', {
+      vcpuHour: 0.04,
+      ramGiBHour: 0.01,
+      diskGiBMonth: 0.08,
+      currency: '$',
+    })
+  })
+
+  it('enforces required cloud-init fields when ordering', () => {
+    const bp = call('GET', '/api/v1/catalog/blueprints').json.blueprints.find((b: any) => b.id === 'web-server-ubuntu')
+    // Missing required sshKey
+    const missing = call('POST', '/api/v1/catalog/requests', {
+      blueprintId: bp.id,
+      projectId: 'prod',
+      vmName: 'test-no-ssh',
+      presetId: bp.presets[0].id,
+      leaseDays: 7,
+      fieldValues: {},
+    })
+    expect(missing.status).toBe(422)
+    expect(missing.json.error).toContain('is required')
+
+    // Providing required sshKey succeeds
+    const ok = call('POST', '/api/v1/catalog/requests', {
+      blueprintId: bp.id,
+      projectId: 'prod',
+      vmName: 'test-with-ssh',
+      presetId: bp.presets[0].id,
+      leaseDays: 7,
+      fieldValues: { sshKey: 'ssh-ed25519 AAAAC3Nz' },
+    })
+    expect(ok.status).toBe(201)
+    expect(call('DELETE', `/api/v1/catalog/requests/${ok.json.id}`).status).toBe(204)
+  })
+
+  it('filters requests by requester query parameter', () => {
+    const denizReqs = call('GET', '/api/v1/catalog/requests?requester=deniz').json.requests
+    expect(denizReqs.length).toBeGreaterThan(0)
+    for (const r of denizReqs) {
+      expect(r.requester).toBe('deniz')
+    }
+
+    const none = call('GET', '/api/v1/catalog/requests?requester=nonexistent-user').json.requests
+    expect(none).toEqual([])
+  })
+
+  it('masks password answers in every request response', () => {
+    const bp = call('GET', '/api/v1/catalog/blueprints').json.blueprints.find((b: any) => b.id === 'postgres-16-appliance')
+    const made = call('POST', '/api/v1/catalog/requests', {
+      blueprintId: bp.id,
+      projectId: 'prod',
+      vmName: 'pg-secret-test',
+      presetId: bp.presets[0].id,
+      fieldValues: { dbName: 'reporting', adminPassword: 'hunter2' },
+    })
+    expect(made.status).toBe(201)
+    expect(made.json.fieldValues.adminPassword).toBe('••••••••')
+    expect(made.json.fieldValues.dbName).toBe('reporting')
+    const list = call('GET', '/api/v1/catalog/requests?project=prod').json.requests
+    expect(list.find((r: any) => r.id === made.json.id).fieldValues.adminPassword).toBe('••••••••')
+    const single = call('GET', `/api/v1/catalog/requests/${made.json.id}`).json.request
+    expect(single.fieldValues.adminPassword).toBe('••••••••')
+    expect(single.fieldValues.dbName).toBe('reporting')
+    expect(call('DELETE', `/api/v1/catalog/requests/${made.json.id}`).status).toBe(204)
+  })
+
+  it('validates blueprint bodies on create and update', () => {
+    const list = call('GET', '/api/v1/catalog/blueprints').json.blueprints
+    expect(list.length).toBeGreaterThan(0)
+    const bp = list[0]
+    expect(call('PUT', `/api/v1/catalog/blueprints/${bp.id}`, { ...bp, presets: [] }).status).toBe(422)
+    expect(
+      call('PUT', `/api/v1/catalog/blueprints/${bp.id}`, {
+        ...bp,
+        presets: [{ id: 'x', name: '', vcpus: 2, memoryMiB: 2048, diskGiB: 20 }],
+      }).status,
+    ).toBe(422)
+    expect(call('PUT', `/api/v1/catalog/blueprints/${bp.id}`, { ...bp, defaultPresetId: 'missing' }).status).toBe(422)
+    // Create rejects the same broken shapes, so a preset-less blueprint can never crash an order.
+    expect(
+      call('POST', '/api/v1/catalog/blueprints', {
+        id: 'no-presets',
+        name: 'No Presets',
+        sourceType: 'template',
+        sourceRef: 'tmpl-x',
+        presets: [],
+        requireApproval: false,
+      }).status,
+    ).toBe(422)
+    // defaultLeaseDays cannot exceed maxLeaseDays
+    expect(
+      call('POST', '/api/v1/catalog/blueprints', {
+        id: 'bad-lease',
+        name: 'Bad Lease',
+        sourceType: 'template',
+        sourceRef: 'tmpl-x',
+        presets: [{ id: 's', name: 'S', vcpus: 1, memoryMiB: 1024, diskGiB: 10 }],
+        defaultLeaseDays: 60,
+        maxLeaseDays: 30,
+        requireApproval: false,
+      }).status,
+    ).toBe(422)
+    const made = call('POST', '/api/v1/catalog/blueprints', {
+      id: 'orderable',
+      name: 'Orderable',
+      sourceType: 'template',
+      sourceRef: 'tmpl-x',
+      presets: [{ id: 's', name: 'S', vcpus: 1, memoryMiB: 1024, diskGiB: 10 }],
+      requireApproval: false,
+    })
+    expect(made.status).toBe(201)
+    expect(made.json.blueprint.defaultPresetId).toBe('s') // falls back to the first preset
+    expect(call('DELETE', '/api/v1/catalog/blueprints/orderable').status).toBe(204)
+  })
+
+  it('enforces maxLeaseDays when ordering and extending', () => {
+    const bp = call('GET', '/api/v1/catalog/blueprints').json.blueprints[0]
+    const over = call('POST', '/api/v1/catalog/requests', {
+      blueprintId: bp.id,
+      projectId: 'prod',
+      vmName: 'lease-test',
+      presetId: bp.presets[bp.presets.length - 1].id,
+      leaseDays: bp.maxLeaseDays + 10,
+      fieldValues: { sshKey: 'ssh-ed25519 AAAAC3Nz' },
+    })
+    expect(over.status).toBe(422)
+    expect(over.json.error).toContain('exceeds')
+
+    const ok = call('POST', '/api/v1/catalog/requests', {
+      blueprintId: bp.id,
+      projectId: 'prod',
+      vmName: 'lease-test-2',
+      presetId: bp.presets[bp.presets.length - 1].id,
+      leaseDays: 7,
+      fieldValues: { sshKey: 'ssh-ed25519 AAAAC3Nz' },
+    })
+    expect(ok.status).toBe(201)
+    const reqId = ok.json.id
+    const ext = call('POST', `/api/v1/catalog/requests/${reqId}/extend`, { days: 365 })
+    expect(ext.status).toBe(422)
+    expect(call('POST', `/api/v1/catalog/requests/${reqId}/extend`, { days: 7 }).status).toBe(200)
+
+    // Repeated extensions cannot outgrow the maximum either: the total counts from the order.
+    const sandbox = call('GET', '/api/v1/catalog/blueprints').json.blueprints.find((b: any) => b.id === 'dev-sandbox')
+    const order = call('POST', '/api/v1/catalog/requests', {
+      blueprintId: sandbox.id,
+      projectId: 'prod',
+      vmName: 'lease-total-test',
+      presetId: sandbox.presets[0].id,
+      leaseDays: 7,
+      fieldValues: { sshKey: 'ssh-ed25519 AAAAC3Nz' },
+    })
+    expect(order.status).toBe(201)
+    const totalId = order.json.id
+    expect(call('POST', `/api/v1/catalog/requests/${totalId}/extend`, { days: 7 }).status).toBe(200) // 7 + 7 = 14 = max
+    const overTotal = call('POST', `/api/v1/catalog/requests/${totalId}/extend`, { days: 7 })
+    expect(overTotal.status).toBe(422)
+    expect(overTotal.json.error).toContain('total lease')
+    expect(call('DELETE', `/api/v1/catalog/requests/${totalId}`).status).toBe(204)
+    expect(call('DELETE', `/api/v1/catalog/requests/${reqId}`).status).toBe(204)
+  })
+
   it('applies power actions after a moment', () => {
     vi.useFakeTimers()
     expect(call('POST', `/api/v1/domains/${CI}/actions/start`).status).toBe(204)

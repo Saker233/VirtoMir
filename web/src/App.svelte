@@ -22,6 +22,7 @@
   import StoragePage from './lib/pages/StoragePage.svelte'
   import NetworksPage from './lib/pages/NetworksPage.svelte'
   import ProjectsPage from './lib/pages/ProjectsPage.svelte'
+  import CatalogPage from './lib/pages/CatalogPage.svelte'
   import NotFound from './lib/pages/NotFound.svelte'
   import ActivityPage from './lib/pages/ActivityPage.svelte'
   import AccountPage from './lib/pages/AccountPage.svelte'
@@ -155,6 +156,8 @@
           <ClusterPage />
         {:else if route.name === 'projects'}
           <ProjectsPage />
+        {:else if route.name === 'catalog'}
+          <CatalogPage tab={route.tab} />
         {:else}
           <NotFound />
         {/if}

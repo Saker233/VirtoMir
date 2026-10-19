@@ -6,7 +6,10 @@ import type {
   ActivityEntry,
   Alert,
   AlertConfig,
+  Blueprint,
   BackupInfo,
+  CatalogLease,
+  CatalogRequest,
   ConfigVersion,
   Device,
   Domain,
@@ -16,6 +19,7 @@ import type {
   HostInfo,
   Lease,
   Pool,
+  PricingConfig,
   Project,
   ScheduleInfo,
   SettingsView,
@@ -178,6 +182,7 @@ export const projects: Project[] = [
     description: 'Customer-facing services',
     members: [
       { kind: 'user', name: 'onur', role: 'admin' },
+      { kind: 'user', name: 'demo', role: 'admin' },
       { kind: 'group', name: 'ops', role: 'operator' },
       { kind: 'group', name: 'devs', role: 'viewer' },
     ],
@@ -192,6 +197,7 @@ export const projects: Project[] = [
     description: 'GPU workloads',
     members: [
       { kind: 'group', name: 'ml-team', role: 'admin' },
+      { kind: 'user', name: 'demo', role: 'admin' },
       { kind: 'user', name: 'deniz', role: 'operator' },
     ],
     limits: { machines: 4, vcpus: 32, memoryMiB: 65536, diskGiB: 500 },
@@ -951,4 +957,161 @@ export const reports: ReportMeta[] = [
 
 export const reportSchedules: ReportSchedule[] = [
   { id: 'rs-1', name: 'Weekly capacity', kind: 'capacity', format: 'html', enabled: true, every: 'weekly', at: '07:00', keepDays: 90, notify: true, lastRun: ago(3 * H), nextRun: new Date(now() + 7 * D - 3 * H).toISOString() },
+]
+
+// ---- Catalog (ADR-0065) ----------------------------------------------------------------------
+
+export let pricing: PricingConfig = { vcpuHour: 0.04, ramGiBHour: 0.01, diskGiBMonth: 0.08, currency: '$' }
+
+/** Namespace-import properties are not assignable from routes.ts, so updates go through here. */
+export function setPricing(p: PricingConfig) {
+  pricing = p
+}
+
+export const catalogBlueprints: Blueprint[] = [
+  {
+    id: 'web-server-ubuntu',
+    name: 'Web Server (Ubuntu 24.04)',
+    description: 'Hardened nginx front end from the maintained template. Cloud-init asks for your SSH key and root password.',
+    icon: 'globe',
+    sourceType: 'template',
+    sourceRef: 'tmpl-ubuntu-24.04',
+    targetPool: 'default',
+    presets: [
+      { id: 'small', name: 'Small', vcpus: 2, memoryMiB: 2048, diskGiB: 20 },
+      { id: 'medium', name: 'Medium', vcpus: 4, memoryMiB: 8192, diskGiB: 60 },
+      { id: 'large', name: 'Large', vcpus: 8, memoryMiB: 16384, diskGiB: 120 },
+    ],
+    defaultPresetId: 'medium',
+    allowedNetworks: ['default', 'lan-bridge'],
+    cloudInitFields: [
+      { key: 'sshKey', label: 'SSH public key', type: 'ssh_key', required: true, default: '' },
+      { key: 'rootPassword', label: 'root password', type: 'password', required: false, default: '' },
+      { key: 'envName', label: 'Environment tag', type: 'select', required: false, default: 'staging', options: ['staging', 'production'] },
+    ],
+    allowedProjects: [],
+    requireApproval: false,
+    defaultLeaseDays: 30,
+    maxLeaseDays: 90,
+    created: ago(30 * D),
+    updated: ago(6 * D),
+  },
+  {
+    id: 'postgres-16-appliance',
+    name: 'PostgreSQL 16 Appliance',
+    description: 'Pre-tuned PostgreSQL 16 on its own network segment. Orders wait for a project admin because the appliance is expensive.',
+    icon: 'database',
+    sourceType: 'image',
+    sourceRef: 'https://dl.cloudsmith.io/acme/postgres-16/latest.zfs.gz',
+    targetPool: 'fast-zfs',
+    presets: [
+      { id: 'db-small', name: 'db-small', vcpus: 4, memoryMiB: 16384, diskGiB: 150 },
+      { id: 'db-large', name: 'db-large', vcpus: 8, memoryMiB: 32768, diskGiB: 300 },
+    ],
+    defaultPresetId: 'db-small',
+    allowedNetworks: ['default'],
+    cloudInitFields: [
+      { key: 'dbName', label: 'Database name', type: 'string', required: true, default: 'app' },
+      { key: 'adminPassword', label: 'postgres password', type: 'password', required: true, default: '' },
+    ],
+    allowedProjects: ['prod'],
+    requireApproval: true,
+    defaultLeaseDays: 14,
+    maxLeaseDays: 30,
+    created: ago(25 * D),
+    updated: ago(25 * D),
+  },
+  {
+    id: 'dev-sandbox',
+    name: 'Dev Sandbox',
+    description: 'Throwaway Ubuntu box for experiments; both networks allowed, 14-day maximum lease.',
+    icon: 'terminal',
+    sourceType: 'template',
+    sourceRef: 'tmpl-ubuntu-24.04',
+    targetPool: '',
+    presets: [
+      { id: 'dev', name: 'Dev', vcpus: 2, memoryMiB: 4096, diskGiB: 40 },
+    ],
+    defaultPresetId: 'dev',
+    allowedNetworks: ['default'],
+    cloudInitFields: [
+      { key: 'sshKey', label: 'SSH public key', type: 'ssh_key', required: true, default: '' },
+    ],
+    allowedProjects: ['prod', 'ml'],
+    requireApproval: false,
+    defaultLeaseDays: 7,
+    maxLeaseDays: 14,
+    created: ago(10 * D),
+    updated: ago(10 * D),
+  },
+]
+
+/** One active order (web-02 came from the catalog), one waiting for approval, one rejected. */
+export const catalogRequests: CatalogRequest[] = [
+  {
+    id: 'req-web-11',
+    blueprintId: 'web-server-ubuntu',
+    projectId: 'prod',
+    requester: 'deniz',
+    vmName: 'web-11',
+    presetId: 'medium',
+    vcpus: 4,
+    memoryMiB: 8192,
+    diskGiB: 60,
+    network: 'default',
+    fieldValues: { sshKey: 'ssh-ed25519 AAAAC3Nza… deniz@laptop' },
+    leaseDays: 30,
+    status: 'active',
+    createdAt: ago(12 * D),
+    reviewedAt: ago(12 * D),
+    reviewedBy: '',
+    machineUuid: '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e02',
+  },
+  {
+    id: 'req-pg-report',
+    blueprintId: 'postgres-16-appliance',
+    projectId: 'prod',
+    requester: 'deniz',
+    vmName: 'pg-report-01',
+    presetId: 'db-small',
+    vcpus: 4,
+    memoryMiB: 16384,
+    diskGiB: 150,
+    network: 'default',
+    fieldValues: { dbName: 'reporting' },
+    leaseDays: 14,
+    status: 'pending_approval',
+    createdAt: ago(2 * H),
+  },
+  {
+    id: 'req-sandbox-x',
+    blueprintId: 'dev-sandbox',
+    projectId: 'prod',
+    requester: 'deniz',
+    vmName: 'sandbox-x',
+    presetId: 'dev',
+    vcpus: 2,
+    memoryMiB: 4096,
+    diskGiB: 40,
+    network: 'default',
+    leaseDays: 7,
+    status: 'rejected',
+    createdAt: ago(5 * D),
+    reviewedAt: ago(4 * D),
+    reviewedBy: 'onur',
+    reviewComment: 'Use the CI runner instead — sandboxes keep the whole host busy during the load test.',
+  },
+]
+
+/** web-11's lease: 30 days from when it was ordered, 18 still ahead. */
+export const catalogLeases: CatalogLease[] = [
+  {
+    requestId: 'req-web-11',
+    machineUuid: '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e02',
+    projectId: 'prod',
+    expiry: new Date(now() + 18 * D).toISOString(),
+    state: 'active',
+    reminderSent: false,
+    lastStateChange: ago(12 * D),
+  },
 ]
