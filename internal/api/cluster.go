@@ -420,6 +420,20 @@ func (s *Server) peer(n cluster.Node) *cluster.Peer {
 	return s.cluster.Peer(n, s.peerTransport(n))
 }
 
+// PeerFor resolves a host ID or node name to an active cluster peer connection.
+func (s *Server) PeerFor(hostID string) (*cluster.Peer, bool) {
+	if s.cluster == nil {
+		return nil, false
+	}
+	members, _ := s.cluster.Members()
+	for _, n := range members {
+		if n.ID == hostID || n.Name == hostID {
+			return s.peer(n), true
+		}
+	}
+	return nil, false
+}
+
 // ---- Forwarding to other members ------------------------------------------------------------
 
 // hostPrefix is how the UI addresses a member: /api/v1/hosts/<id>/… is /api/v1/… on that host.

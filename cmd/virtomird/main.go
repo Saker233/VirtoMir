@@ -23,6 +23,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/cluster"
 	"github.com/onurbaydas/virtomir/internal/confighist"
+	"github.com/onurbaydas/virtomir/internal/content"
 	"github.com/onurbaydas/virtomir/internal/drs"
 	"github.com/onurbaydas/virtomir/internal/ha"
 	"github.com/onurbaydas/virtomir/internal/history"
@@ -237,6 +238,15 @@ func run(c config, log *slog.Logger) error {
 		log.Warn("drs engine", "err", err)
 	} else {
 		opts.DRS = drsEng
+	}
+	contentStore, err := content.Open(filepath.Join(c.stateDir, "content.json"))
+	if err != nil {
+		log.Warn("content store", "err", err)
+	} else {
+		opts.Content = contentStore
+		syncManager := content.NewSyncManager(contentStore, jobManager, client, opts.Cluster, nil, log)
+		opts.ContentSync = syncManager
+		go syncManager.Start(ctx)
 	}
 	apiServer := api.NewServer(opts)
 	go syncCluster(ctx, apiServer)

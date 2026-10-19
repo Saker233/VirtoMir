@@ -159,6 +159,11 @@ func (m *SyncManager) SetRefreshPoolHook(fn func(poolName string) error) {
 	m.refreshPoolFn = fn
 }
 
+// SetPeers configures the peer resolver used to connect to cluster hosts.
+func (m *SyncManager) SetPeers(peers PeerResolver) {
+	m.peers = peers
+}
+
 func (m *SyncManager) logger() *slog.Logger {
 	if m.log != nil {
 		return m.log
@@ -375,4 +380,13 @@ func (m *SyncManager) StartPeriodicReconcile(ctx context.Context, selfID string,
 			}
 		}
 	}()
+}
+
+// Start starts periodic content reconciliation in the background.
+func (m *SyncManager) Start(ctx context.Context) {
+	selfID := ""
+	if m.cluster != nil {
+		selfID = m.cluster.SelfID()
+	}
+	m.StartPeriodicReconcile(ctx, selfID, time.Minute)
 }

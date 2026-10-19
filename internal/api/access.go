@@ -123,6 +123,9 @@ func requiredRole(method, path string) auth.Role {
 func operatorWrite(method, path string) bool {
 	rest, ok := strings.CutPrefix(path, "/api/v1/domains/")
 	if !ok {
+		if strings.HasPrefix(path, "/api/v1/content/items/") && (strings.HasSuffix(path, "/sync") || strings.HasSuffix(path, "/deploy")) && method == http.MethodPost {
+			return true
+		}
 		return strings.HasPrefix(path, "/api/v1/alerts/") && strings.HasSuffix(path, "/ack")
 	}
 	parts := strings.Split(rest, "/") // uuid, …
