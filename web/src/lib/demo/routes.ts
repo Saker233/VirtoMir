@@ -2,7 +2,7 @@
 // from world.ts; the common changes (power actions, snapshots, new machines, clones, rename,
 // delete, schedules, alerts) are applied to it, everything else answers "done" without effect.
 
-import type { CreateSpec, DeploySpec, DomainState, Job, Project, ScheduleInfo, SnapshotInfo, VMwareConnection, VMwareInventory, VMwareWave } from '../api'
+import type { ContentHostConfig, ContentItem, ContentVersion, CreateSpec, DeploySpec, DomainState, Job, Project, ScheduleInfo, SnapshotInfo, VMwareConnection, VMwareInventory, VMwareWave } from '../api'
 import type { PlacementRule, PlacementViolation } from '../enterprise'
 import * as w from './world'
 
@@ -1005,6 +1005,146 @@ export function handle(method: string, url: URL, body: any): Reply {
   }
 
   // Parametrised paths.
+  if (parts[0] === 'content') {
+    // /api/v1/content/config
+    if (parts[1] === 'config') {
+      if (method === 'GET') return json(w.contentConfig)
+      if (method === 'PUT') {
+        Object.assign(w.contentConfig, body ?? {})
+        return json(w.contentConfig)
+      }
+      return notFound()
+    }
+
+    // /api/v1/content/items
+    if (parts[1] === 'items') {
+      // GET /api/v1/content/items
+      if (parts.length === 2 && method === 'GET') {
+        const summaries = w.contentItems.map((it) => {
+          const latest = it.versions && it.versions.length > 0 ? it.versions[it.versions.length - 1] : undefined
+          const syncStatus = it.sourceHost === host.id ? 'ready' : (it.id === 'ci-k8s-worker-tpl' ? 'missing' : 'ready')
+          return {
+            ...it,
+            versionCount: it.versions?.length ?? 0,
+            latestVersion: latest,
+            syncStatus,
+          }
+        })
+        return json({ items: summaries })
+      }
+
+      // POST /api/v1/content/items
+      if (parts.length === 2 && method === 'POST') {
+        const id = body?.id || `ci-${Date.now()}-${++jobSeq}`
+        const item: ContentItem = {
+          id,
+          name: body?.name || 'Untitled Content',
+          type: body?.type || 'image',
+          description: body?.description || '',
+          sourceHost: host.id,
+          keepVersions: body?.keepVersions || 3,
+          syncPolicy: body?.syncPolicy || { mode: 'all' },
+          created: new Date().toISOString(),
+          updated: new Date().toISOString(),
+          versions: [
+            {
+              id: `ver-${Date.now()}-${++jobSeq}`,
+              version: body?.version || '1.0',
+              description: body?.description || '',
+              sha256: body?.sha256 || 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+              size: body?.size || 1024 * 1024 * 500,
+              format: body?.format || (body?.type === 'iso' ? 'iso' : 'qcow2'),
+              sourceHost: host.id,
+              sourcePool: body?.pool || 'default',
+              sourceVol: body?.volume,
+              created: new Date().toISOString(),
+            },
+          ],
+        }
+        w.contentItems.unshift(item)
+        return json({ item }, 201)
+      }
+
+      const itemId = parts[2]
+      const itemIndex = w.contentItems.findIndex((it) => it.id === itemId)
+
+      // GET /api/v1/content/items/{id}
+      if (parts.length === 3 && method === 'GET') {
+        if (itemIndex < 0) return notFound('item not found')
+        return json(w.contentItems[itemIndex])
+      }
+
+      // PUT /api/v1/content/items/{id}
+      if (parts.length === 3 && method === 'PUT') {
+        if (itemIndex < 0) return notFound('item not found')
+        w.contentItems[itemIndex] = { ...w.contentItems[itemIndex], ...(body ?? {}), updated: new Date().toISOString() }
+        return json({ item: w.contentItems[itemIndex] })
+      }
+
+      // DELETE /api/v1/content/items/{id}
+      if (parts.length === 3 && method === 'DELETE') {
+        if (itemIndex >= 0) {
+          w.contentItems.splice(itemIndex, 1)
+        }
+        return none()
+      }
+
+      // POST /api/v1/content/items/{id}/versions
+      if (parts.length === 4 && parts[3] === 'versions' && method === 'POST') {
+        if (itemIndex < 0) return notFound('item not found')
+        const item = w.contentItems[itemIndex]
+        const version: ContentVersion = {
+          id: `ver-${Date.now()}-${++jobSeq}`,
+          version: body?.version || `${(item.versions?.length ?? 0) + 1}.0`,
+          description: body?.description || '',
+          sha256: body?.sha256 || 'f4b88235e16f3d99432f81156828a2a7d451270274092b34a9b6c08d1326c9aa',
+          size: body?.size || 1024 * 1024 * 512,
+          format: body?.format || (item.type === 'iso' ? 'iso' : 'qcow2'),
+          sourceHost: host.id,
+          sourcePool: body?.pool || 'default',
+          sourceVol: body?.volume,
+          created: new Date().toISOString(),
+        }
+        if (!item.versions) item.versions = []
+        item.versions.push(version)
+        item.updated = new Date().toISOString()
+        return json({ item, version }, 201)
+      }
+
+      // DELETE /api/v1/content/items/{id}/versions/{vid}
+      if (parts.length === 5 && parts[3] === 'versions' && method === 'DELETE') {
+        if (itemIndex < 0) return notFound('item not found')
+        const item = w.contentItems[itemIndex]
+        const vid = parts[4]
+        if (item.versions) {
+          item.versions = item.versions.filter((v) => v.id !== vid && v.version !== vid)
+        }
+        item.updated = new Date().toISOString()
+        return none()
+      }
+
+      // POST /api/v1/content/items/{id}/sync
+      if (parts.length === 4 && parts[3] === 'sync' && method === 'POST') {
+        if (itemIndex < 0) return notFound('item not found')
+        const item = w.contentItems[itemIndex]
+        const j = job('content-sync', `Sync ${item.name}`, 3000)
+        return json(j, 202)
+      }
+
+      // POST /api/v1/content/items/{id}/deploy
+      if (parts.length === 4 && parts[3] === 'deploy' && method === 'POST') {
+        if (itemIndex < 0) return notFound('item not found')
+        const item = w.contentItems[itemIndex]
+        const vmName = body?.name || `${item.name.toLowerCase().replace(/[^a-z0-9_-]/g, '-')}-vm`
+        const j = job('content-deploy', `Deploy ${vmName} from ${item.name}`, 3500, () => {
+          const created = addMachine(host.id, { name: vmName, state: body?.start ? 'running' : 'shutoff' })
+          return created.uuid
+        })
+        return json(j, 202)
+      }
+    }
+  }
+
   if (parts[0] === 'domains' && parts.length >= 2) return domainRoute(host, method, parts.slice(1), q, body)
   if (parts[0] === 'jobs' && parts.length === 2 && method === 'GET') {
     const j = jobs.get(parts[1])

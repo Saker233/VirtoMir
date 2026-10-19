@@ -139,3 +139,14 @@ func (ci *CloudInit) seedISO() ([]byte, error) {
 	}
 	return buf.Bytes(), nil
 }
+
+// Normalize validates and normalizes cloud-init configuration.
+func (ci *CloudInit) Normalize(machine string) error {
+	return ci.normalize(machine)
+}
+
+// SeedISO builds the NoCloud seed image.
+func (ci *CloudInit) SeedISO() ([]byte, error) {
+	return ci.seedISO()
+}
+

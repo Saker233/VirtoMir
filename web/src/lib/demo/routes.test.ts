@@ -206,4 +206,98 @@ describe('demo API', () => {
 
     vi.useRealTimers()
   })
+
+  it('manages content library items, versions, config, sync, and deploy', () => {
+    // 1. List items
+    const listRes = call('GET', '/api/v1/content/items')
+    expect(listRes.status).toBe(200)
+    expect(listRes.json.items.length).toBeGreaterThanOrEqual(3)
+    const u2404 = listRes.json.items.find((it: { id: string }) => it.id === 'ci-ubuntu-2404')
+    expect(u2404).toBeDefined()
+    expect(u2404.type).toBe('image')
+    expect(u2404.syncStatus).toBe('ready')
+    expect(u2404.latestVersion.version).toBe('24.04.1')
+
+    // 2. Publish new item
+    const publishRes = call('POST', '/api/v1/content/items', {
+      name: 'Alpine 3.20 Standard',
+      type: 'iso',
+      description: 'Lightweight security-oriented Linux',
+      version: '3.20.0',
+      keepVersions: 3,
+      syncPolicy: { mode: 'all' },
+    })
+    expect(publishRes.status).toBe(201)
+    const newItem = publishRes.json.item
+    expect(newItem.name).toBe('Alpine 3.20 Standard')
+    expect(newItem.versions).toHaveLength(1)
+
+    // 3. Get item by id
+    const getRes = call('GET', `/api/v1/content/items/${newItem.id}`)
+    expect(getRes.status).toBe(200)
+    expect(getRes.json.name).toBe('Alpine 3.20 Standard')
+
+    // 4. Update item
+    const updateRes = call('PUT', `/api/v1/content/items/${newItem.id}`, {
+      description: 'Updated description for Alpine',
+    })
+    expect(updateRes.status).toBe(200)
+    expect(updateRes.json.item.description).toBe('Updated description for Alpine')
+
+    // 5. Publish new version
+    const verRes = call('POST', `/api/v1/content/items/${newItem.id}/versions`, {
+      version: '3.20.1',
+      description: 'Point release with bug fixes',
+    })
+    expect(verRes.status).toBe(201)
+    expect(verRes.json.version.version).toBe('3.20.1')
+    expect(verRes.json.item.versions).toHaveLength(2)
+
+    // 6. Delete a version
+    const delVerRes = call('DELETE', `/api/v1/content/items/${newItem.id}/versions/${verRes.json.version.id}`)
+    expect(delVerRes.status).toBe(204)
+    const itemAfterVerDel = call('GET', `/api/v1/content/items/${newItem.id}`).json
+    expect(itemAfterVerDel.versions).toHaveLength(1)
+
+    // 7. Sync content
+    const syncRes = call('POST', `/api/v1/content/items/${newItem.id}/sync`, {})
+    expect(syncRes.status).toBe(202)
+    expect(syncRes.json.kind).toBe('content-sync')
+
+    // 8. Deploy from content
+    vi.useFakeTimers()
+    const deployRes = call('POST', `/api/v1/content/items/${newItem.id}/deploy`, {
+      name: 'alpine-vm-01',
+      pool: 'default',
+      vcpus: 1,
+      memoryMiB: 1024,
+      start: true,
+    })
+    expect(deployRes.status).toBe(202)
+    expect(deployRes.json.kind).toBe('content-deploy')
+
+    // Advance timer so deployment completes
+    vi.advanceTimersByTime(4000)
+    const domains = call('GET', '/api/v1/domains').json.domains
+    expect(domains.some((d: { name: string }) => d.name === 'alpine-vm-01')).toBe(true)
+    vi.useRealTimers()
+
+    // 9. Delete item
+    const delRes = call('DELETE', `/api/v1/content/items/${newItem.id}`)
+    expect(delRes.status).toBe(204)
+    expect(call('GET', `/api/v1/content/items/${newItem.id}`).status).toBe(404)
+
+    // 10. Get and Update Config
+    const cfgRes = call('GET', '/api/v1/content/config')
+    expect(cfgRes.status).toBe(200)
+    expect(cfgRes.json.targetPool).toBe('default')
+
+    const saveCfgRes = call('PUT', '/api/v1/content/config', {
+      targetPool: 'fast-ssd',
+      autoSync: false,
+    })
+    expect(saveCfgRes.status).toBe(200)
+    expect(saveCfgRes.json.targetPool).toBe('fast-ssd')
+    expect(saveCfgRes.json.autoSync).toBe(false)
+  })
 })

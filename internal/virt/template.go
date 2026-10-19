@@ -335,6 +335,11 @@ func (c *Client) Deploy(ctx context.Context, template string, spec DeploySpec, r
 	return formatUUID(nd.UUID), nil
 }
 
+// TemplateDisks are the disks a new machine needs its own copy (or overlay) of.
+func TemplateDisks(x *libvirtxml.Domain) []*libvirtxml.DomainDisk {
+	return templateDisks(x)
+}
+
 // templateDisks are the disks a new machine needs its own copy (or overlay) of.
 func templateDisks(x *libvirtxml.Domain) []*libvirtxml.DomainDisk {
 	var out []*libvirtxml.DomainDisk

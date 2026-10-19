@@ -18,6 +18,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/cluster"
 	"github.com/onurbaydas/virtomir/internal/confighist"
+	"github.com/onurbaydas/virtomir/internal/content"
 	"github.com/onurbaydas/virtomir/internal/drs"
 	"github.com/onurbaydas/virtomir/internal/ha"
 	"github.com/onurbaydas/virtomir/internal/hostinfo"
@@ -157,6 +158,9 @@ type Options struct {
 	RateLimiter *auth.RateLimiter
 	// ZFSRep nil: no ZFS replication.
 	ZFSRep *zfsrep.Manager
+	// Content nil: no content library (ADR-0063).
+	Content     *content.Store
+	ContentSync *content.SyncManager
 }
 
 type Server struct {
@@ -204,6 +208,8 @@ type Server struct {
 	projects        *project.Store
 	rateLimiter     *auth.RateLimiter
 	zfsRep          *zfsrep.Manager
+	content         *content.Store
+	contentSync     *content.SyncManager
 }
 
 func NewServer(o Options) *Server {
@@ -236,13 +242,18 @@ func NewServer(o Options) *Server {
 			vc = c
 		}
 	}
-	return &Server{backend: o.Backend, live: o.Live, jobs: o.Jobs, auth: o.Auth, ui: o.UI, version: o.Version, log: o.Log,
+	s := &Server{backend: o.Backend, live: o.Live, jobs: o.Jobs, auth: o.Auth, ui: o.UI, version: o.Version, log: o.Log,
 		history: o.History, tokens: o.Tokens, activity: o.Activity, alerts: o.Alerts, schedules: o.Schedules,
 		cluster: o.Cluster, fingerprint: o.Fingerprint, hostName: o.HostName, listenPort: o.ListenPort,
 		confighist: o.ConfigHistory, quotas: o.Quotas, groupsOf: o.GroupsOf,
 		ha: o.HA, reports: o.Reports, respools: o.Respools, hostinfo: o.HostInfo, updater: o.Updater, stateDir: o.StateDir, hostnet: o.HostNet, offsite: o.Offsite,
 		vmwareStore: o.VMwareStore, vmwareWaves: o.VMwareWaves, vmwareLister: vl, vmwarePreflight: vp, vmwareConverter: vc,
-		drs: o.DRS, placement: o.Placement, projects: o.Projects, rateLimiter: rl, zfsRep: o.ZFSRep}
+		drs: o.DRS, placement: o.Placement, projects: o.Projects, rateLimiter: rl, zfsRep: o.ZFSRep,
+		content: o.Content, contentSync: o.ContentSync}
+	if s.contentSync != nil {
+		s.contentSync.SetPeers(s)
+	}
+	return s
 }
 
 func (s *Server) Handler() http.Handler {
@@ -290,6 +301,7 @@ func (s *Server) Handler() http.Handler {
 	s.drsRoutes(mux)
 	s.placementRoutes(mux)
 	s.projectRoutes(mux)
+	s.contentRoutes(mux)
 
 	spec := s.openAPI(mux.routes) // everything above, built once
 	mux.HandleFunc("GET /api/v1/openapi.json", func(w http.ResponseWriter, _ *http.Request) {

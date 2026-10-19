@@ -10,6 +10,7 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down'
   import Rocket from '@lucide/svelte/icons/rocket'
   import LayoutTemplate from '@lucide/svelte/icons/layout-template'
+  import BookOpen from '@lucide/svelte/icons/book-open'
   import { openDeploy } from '../deploy.svelte'
   import { api, errorText, type ContainerImage, type CreateSpec, type Pool, type VNetwork, type Volume } from '../api'
   import { track } from '../jobs'
@@ -301,7 +302,10 @@
     <h1>{t('New machine')}</h1>
     <p class="lead">{t('Pick an operating system and installation media; everything else has a sensible default.')}</p>
   </div>
-  <a class="ui-btn" href={router.scoped('/machines/import')} onclick={router.link}>{t('Import OVA or XML…')}</a>
+  <div class="head-right">
+    <a class="ui-btn" href={router.scoped('/library')} onclick={router.link}><BookOpen size={15} /> {t('From Content Library')}</a>
+    <a class="ui-btn" href={router.scoped('/machines/import')} onclick={router.link}>{t('Import OVA or XML…')}</a>
+  </div>
 </header>
 
 {#if loadErr}<div class="ui-error-box">{loadErr}</div>{/if}
@@ -923,6 +927,12 @@
   }
   .create {
     height: 40px;
+  }
+  .head-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
   }
   @media (max-width: 1000px) {
     .layout {
