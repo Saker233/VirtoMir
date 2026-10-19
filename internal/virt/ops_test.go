@@ -111,6 +111,27 @@ func TestBuildNetwork(t *testing.T) {
 	if iso.Forward != nil || iso.IPs[0].DHCP != nil {
 		t.Errorf("isolated without dhcp = %+v", iso)
 	}
+	customRange, err := buildNetwork(NetworkSpec{
+		Name:      "custom-dhcp",
+		Mode:      "nat",
+		Subnet:    "192.168.50.0/24",
+		DHCP:      true,
+		DHCPStart: "192.168.50.100",
+		DHCPEnd:   "192.168.50.200",
+		Subnet6:   "fd12:3456:789a::/64",
+		DHCP6:     true,
+		DHCP6Start: "fd12:3456:789a::50",
+		DHCP6End:   "fd12:3456:789a::150",
+	})
+	if err != nil {
+		t.Fatalf("custom dhcp range: %v", err)
+	}
+	if r := customRange.IPs[0].DHCP.Ranges[0]; r.Start != "192.168.50.100" || r.End != "192.168.50.200" {
+		t.Errorf("custom ipv4 dhcp = %+v", r)
+	}
+	if r6 := customRange.IPs[1].DHCP.Ranges[0]; r6.Start != "fd12:3456:789a::50" || r6.End != "fd12:3456:789a::150" {
+		t.Errorf("custom ipv6 dhcp = %+v", r6)
+	}
 	br, _ := buildNetwork(NetworkSpec{Name: "lan", Mode: "bridge", Bridge: "br0"})
 	if br.Forward.Mode != "bridge" || br.Bridge.Name != "br0" || br.IPs != nil {
 		t.Errorf("bridge = %+v", br)
