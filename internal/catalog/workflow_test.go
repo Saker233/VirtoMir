@@ -548,11 +548,11 @@ func TestWorkflow_CloudImageCredentials(t *testing.T) {
 
 	// Image blueprint with no default SSH keys: the requester must supply sign-in credentials.
 	if _, err := cStore.CreateBlueprint(Blueprint{
-		ID:         "bp-img",
-		Name:       "Cloud Image BP",
-		SourceType: SourceTypeImage,
-		SourceRef:  "cloud.img",
-		Presets:    []SizePreset{{ID: "s", Name: "S", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10}},
+		ID:              "bp-img",
+		Name:            "Cloud Image BP",
+		SourceType:      SourceTypeImage,
+		SourceRef:       "cloud.img",
+		Presets:         []SizePreset{{ID: "s", Name: "S", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10}},
 		DefaultPresetID: "s",
 	}); err != nil {
 		t.Fatalf("Create blueprint: %v", err)

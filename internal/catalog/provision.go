@@ -200,7 +200,9 @@ func Provision(ctx context.Context, deployer Deployer, projects *project.Store, 
 
 	// Compute disk usage
 	var diskGiB int64
-	if sizer, ok := deployer.(interface{ DiskBytes([]string) (map[string]uint64, error) }); ok {
+	if sizer, ok := deployer.(interface {
+		DiskBytes([]string) (map[string]uint64, error)
+	}); ok {
 		if sizes, err := sizer.DiskBytes(mine); err == nil {
 			var totalBytes uint64
 			for _, b := range sizes {
@@ -298,13 +300,17 @@ func Provision(ctx context.Context, deployer Deployer, projects *project.Store, 
 		if req.Network != "" {
 			nic = &virt.NICSpec{Network: req.Network}
 		}
+		baseImage, err := resolveImagePath(deployer, bp.SourceRef, pool)
+		if err != nil {
+			return fail(err)
+		}
 		createSpec := virt.CreateSpec{
 			Name:      req.VMName,
 			VCPUs:     req.VCPUs,
 			MemoryMiB: req.MemoryMiB,
 			DiskGiB:   req.DiskGiB,
 			Pool:      pool,
-			BaseImage: bp.SourceRef,
+			BaseImage: baseImage,
 			Network:   nic,
 			CloudInit: ci,
 			Start:     true,
@@ -361,4 +367,32 @@ func Provision(ctx context.Context, deployer Deployer, projects *project.Store, 
 
 	report("Machine " + req.VMName + " (" + uuid + ") provisioned successfully")
 	return uuid, nil
+}
+
+// volumeLister is implemented by the libvirt backend; it lets a blueprint name a cloud image by
+// its volume name instead of a full path.
+type volumeLister interface {
+	ListVolumes(pool string) ([]virt.Volume, error)
+}
+
+// resolveImagePath turns a blueprint's image reference into the full volume path the create path
+// expects. An absolute path is used as is; a bare volume name is looked up in the target pool.
+func resolveImagePath(d Deployer, ref, pool string) (string, error) {
+	if strings.HasPrefix(ref, "/") {
+		return ref, nil
+	}
+	vl, ok := d.(volumeLister)
+	if !ok {
+		return ref, nil
+	}
+	vols, err := vl.ListVolumes(pool)
+	if err != nil {
+		return "", fmt.Errorf("list volumes of pool %s: %w", pool, err)
+	}
+	for _, v := range vols {
+		if v.Name == ref {
+			return v.Path, nil
+		}
+	}
+	return "", fmt.Errorf("image %q is not in storage pool %s", ref, pool)
 }

@@ -343,6 +343,7 @@ func auditVerificationSchema() map[string]any {
 		},
 	}
 }
+
 // openAPI builds an OpenAPI 3.1 document of the registered routes: path, method, parameters,
 // the role each needs and how to authenticate. Bodies are JSON unless noted; the types are
 // the ones in web/src/lib/api.ts.

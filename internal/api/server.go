@@ -267,7 +267,7 @@ func NewServer(o Options) *Server {
 	s := &Server{backend: o.Backend, live: o.Live, jobs: o.Jobs, auth: o.Auth, ui: o.UI, version: o.Version, log: o.Log,
 		history: o.History, tokens: o.Tokens, activity: o.Activity, alerts: o.Alerts, schedules: o.Schedules, fipsInfo: o.FIPSInfo,
 		complianceScanner: cs,
-		cluster: o.Cluster, fingerprint: o.Fingerprint, hostName: o.HostName, listenPort: o.ListenPort,
+		cluster:           o.Cluster, fingerprint: o.Fingerprint, hostName: o.HostName, listenPort: o.ListenPort,
 		confighist: o.ConfigHistory, quotas: o.Quotas, groupsOf: o.GroupsOf,
 		ha: o.HA, reports: o.Reports, respools: o.Respools, hostinfo: o.HostInfo, updater: o.Updater, stateDir: o.StateDir, hostnet: o.HostNet, offsite: o.Offsite,
 		vmwareStore: o.VMwareStore, vmwareWaves: o.VMwareWaves, vmwareLister: vl, vmwarePreflight: vp, vmwareConverter: vc,

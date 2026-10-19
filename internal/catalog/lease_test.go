@@ -624,8 +624,8 @@ func TestLeaseManager_ExtendLease_Validations(t *testing.T) {
 	}
 }
 
-// 9. DeleteDomain failure during purge leaves lease in grace_period for retry,
-//    does not mark the request expired, and sends no "deleted" notification.
+//  9. DeleteDomain failure during purge leaves lease in grace_period for retry,
+//     does not mark the request expired, and sends no "deleted" notification.
 func TestLeaseManager_PurgeDeleteDomainErrorRetries(t *testing.T) {
 	store := setupTestLeaseStore(t)
 	ctrl := &mockDomainController{

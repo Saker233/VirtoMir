@@ -153,4 +153,3 @@ func (ci *CloudInit) Normalize(machine string) error {
 func (ci *CloudInit) SeedISO() ([]byte, error) {
 	return ci.seedISO()
 }
-

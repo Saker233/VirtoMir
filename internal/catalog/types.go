@@ -52,13 +52,13 @@ type Blueprint struct {
 	CloudInitFields   []InputField `json:"cloudInitFields,omitempty"`
 	// DefaultSSHKeys are SSH public keys added to every machine provisioned from
 	// this blueprint, so administrators always retain access.
-	DefaultSSHKeys    []string     `json:"defaultSshKeys,omitempty"`
-	AllowedProjects   []string     `json:"allowedProjects,omitempty"`
-	RequireApproval   bool         `json:"requireApproval"`
-	DefaultLeaseDays  int          `json:"defaultLeaseDays,omitempty"`
-	MaxLeaseDays      int          `json:"maxLeaseDays,omitempty"`
-	Created           time.Time    `json:"created"`
-	Updated           time.Time    `json:"updated"`
+	DefaultSSHKeys   []string  `json:"defaultSshKeys,omitempty"`
+	AllowedProjects  []string  `json:"allowedProjects,omitempty"`
+	RequireApproval  bool      `json:"requireApproval"`
+	DefaultLeaseDays int       `json:"defaultLeaseDays,omitempty"`
+	MaxLeaseDays     int       `json:"maxLeaseDays,omitempty"`
+	Created          time.Time `json:"created"`
+	Updated          time.Time `json:"updated"`
 }
 
 // RequestStatus represents the lifecycle state of a catalog order request.
@@ -76,17 +76,17 @@ const (
 
 // Request defines an order placed by a tenant user for a blueprint deployment.
 type Request struct {
-	ID            string            `json:"id"`
-	BlueprintID   string            `json:"blueprintId"`
-	ProjectID     string            `json:"projectId"`
-	Requester     string            `json:"requester"`
-	VMName        string            `json:"vmName"`
-	PresetID      string            `json:"presetId"`
-	VCPUs         int               `json:"vcpus"`
-	MemoryMiB     uint64            `json:"memoryMiB"`
-	DiskGiB       uint64            `json:"diskGiB"`
-	Network       string            `json:"network,omitempty"`
-	FieldValues   map[string]string `json:"fieldValues,omitempty"`
+	ID          string            `json:"id"`
+	BlueprintID string            `json:"blueprintId"`
+	ProjectID   string            `json:"projectId"`
+	Requester   string            `json:"requester"`
+	VMName      string            `json:"vmName"`
+	PresetID    string            `json:"presetId"`
+	VCPUs       int               `json:"vcpus"`
+	MemoryMiB   uint64            `json:"memoryMiB"`
+	DiskGiB     uint64            `json:"diskGiB"`
+	Network     string            `json:"network,omitempty"`
+	FieldValues map[string]string `json:"fieldValues,omitempty"`
 	// SSHKeys are the requester's public SSH keys injected into cloud-init.
 	SSHKeys []string `json:"sshKeys,omitempty"`
 	// Password is the plaintext password from the API body; it is hashed into
@@ -94,15 +94,15 @@ type Request struct {
 	Password string `json:"password,omitempty"`
 	// PasswordHash is the SHA-512 crypt hash of Password, persisted but never
 	// returned in API GET responses.
-	PasswordHash string `json:"passwordHash,omitempty"`
-	LeaseDays     int               `json:"leaseDays"`
-	Status        RequestStatus     `json:"status"`
-	CreatedAt     time.Time         `json:"createdAt"`
-	ReviewedAt    *time.Time        `json:"reviewedAt,omitempty"`
-	ReviewedBy    string            `json:"reviewedBy,omitempty"`
-	ReviewComment string            `json:"reviewComment,omitempty"`
-	MachineUUID   string            `json:"machineUuid,omitempty"`
-	ErrorMessage  string            `json:"errorMessage,omitempty"`
+	PasswordHash  string        `json:"passwordHash,omitempty"`
+	LeaseDays     int           `json:"leaseDays"`
+	Status        RequestStatus `json:"status"`
+	CreatedAt     time.Time     `json:"createdAt"`
+	ReviewedAt    *time.Time    `json:"reviewedAt,omitempty"`
+	ReviewedBy    string        `json:"reviewedBy,omitempty"`
+	ReviewComment string        `json:"reviewComment,omitempty"`
+	MachineUUID   string        `json:"machineUuid,omitempty"`
+	ErrorMessage  string        `json:"errorMessage,omitempty"`
 }
 
 // Sanitize returns a copy of the request with the password hash and plaintext

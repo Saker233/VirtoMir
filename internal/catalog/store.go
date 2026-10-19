@@ -389,15 +389,15 @@ func (s *Store) CreateRequest(req Request) (Request, error) {
 	if req.Requester == "" {
 		return Request{}, invalidf("requester cannot be empty")
 	}
- 	if req.VMName == "" {
- 		return Request{}, invalidf("VM name cannot be empty")
- 	}
+	if req.VMName == "" {
+		return Request{}, invalidf("VM name cannot be empty")
+	}
 
- 	// Never persist the plaintext password; only its hash may be stored.
- 	req.Password = ""
- 	if len(req.SSHKeys) == 0 {
- 		req.SSHKeys = []string{}
- 	}
+	// Never persist the plaintext password; only its hash may be stored.
+	req.Password = ""
+	if len(req.SSHKeys) == 0 {
+		req.SSHKeys = []string{}
+	}
 
 	if req.ID == "" {
 		req.ID = randomHex(8)

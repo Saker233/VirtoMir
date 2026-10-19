@@ -362,5 +362,3 @@ func TestShowbackReportAndValidation(t *testing.T) {
 		t.Errorf("s.Get failed or wrong body: %v, %s", err, string(body))
 	}
 }
-
-

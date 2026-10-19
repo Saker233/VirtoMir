@@ -130,7 +130,7 @@ func (sc Schedule) Next(t time.Time) time.Time {
 type Facts struct {
 	Hosts []HostFacts `json:"hosts"`
 	// Missing names members that did not answer; their machines are not in the report.
-	Missing []string `json:"missing,omitempty"`
+	Missing    []string         `json:"missing,omitempty"`
 	Compliance []HostCompliance `json:"compliance,omitempty"`
 }
 

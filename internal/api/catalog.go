@@ -387,7 +387,7 @@ func (s *Server) createCatalogRequest(w http.ResponseWriter, r *http.Request) {
 	s.done(w, http.StatusCreated, saved.Sanitize())
 }
 
-	// getCatalogRequest: project admins, requesters, and global admins only; anyone else gets the same 404
+// getCatalogRequest: project admins, requesters, and global admins only; anyone else gets the same 404
 // as an unknown ID, so they cannot probe which requests exist.
 func (s *Server) getCatalogRequest(w http.ResponseWriter, r *http.Request) {
 	if s.noCatalog(w) {
