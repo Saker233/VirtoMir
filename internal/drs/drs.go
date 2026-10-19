@@ -6,6 +6,7 @@
 package drs
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -22,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/onurbaydas/virtomir/internal/placement"
 )
 
 // DRSMode represents the operational automation level of DRS.
@@ -266,7 +269,7 @@ func (e *Engine) DeleteRule(id string) error {
 }
 
 // Evaluate analyzes the cluster state, verifies rules, calculates balance score and generates recommendations.
-func (e *Engine) Evaluate(ctx context.Context, hosts []HostMetrics, domains []DomainPlacement) Status {
+func (e *Engine) Evaluate(ctx context.Context, hosts []HostMetrics, domains []DomainPlacement, view placement.View) Status {
 	e.mu.RLock()
 	cfg := e.cfg
 	rules := append([]AffinityRule(nil), cfg.Rules...)
@@ -325,7 +328,9 @@ func (e *Engine) Evaluate(ctx context.Context, hosts []HostMetrics, domains []Do
 		return status
 	}
 
-	// 2. Check rule violations first (Top priority)
+	// Convert domains to []placement.VMRef (Running = State=="running")
+	vms := VMRefs(domains)
+
 	hostByID := make(map[string]HostMetrics, len(hosts))
 	for _, h := range hosts {
 		hostByID[h.ID] = h
@@ -344,52 +349,42 @@ func (e *Engine) Evaluate(ctx context.Context, hosts []HostMetrics, domains []Do
 		}
 	}
 
-	// Check Anti-Affinity rules
-	for _, rule := range rules {
-		if !rule.Enabled || rule.Kind != AntiAffinityVMVM {
+	// 2. Check rule violations first (Top priority)
+	seenRecIDs := make(map[string]bool)
+	violations := placement.Violations(view.Rules, vms)
+	for _, v := range violations {
+		culprit, targetHostID, ok := selectCulpritAndTarget(v, vms, domainByID, hostByID, reachableHosts, view.Rules)
+		if !ok {
 			continue
 		}
-		// Group rule domains by host
-		hostOfDomain := make(map[string]string)
-		for _, vmID := range rule.Domains {
-			if vm, ok := domainByID[vmID]; ok && vm.State == "running" {
-				hostOfDomain[vmID] = vm.HostID
-			}
+
+		recID := recommendationID(culprit.UUID, culprit.HostID, targetHostID)
+		if seenRecIDs[recID] {
+			continue
+		}
+		seenRecIDs[recID] = true
+
+		priority := 2
+		if v.Hard {
+			priority = 5
 		}
 
-		// Count collisions preserving deterministic rule.Domains order
-		collisionsOnHost := make(map[string][]string)
-		for _, vmID := range rule.Domains {
-			if hID, ok := hostOfDomain[vmID]; ok {
-				collisionsOnHost[hID] = append(collisionsOnHost[hID], vmID)
-			}
-		}
+		sourceHost := hostByID[culprit.HostID]
+		targetHost := hostByID[targetHostID]
 
-		for hID, vmIDs := range collisionsOnHost {
-			if len(vmIDs) > 1 {
-				// Violation! Recommend moving all but the first VM to another reachable host
-				for _, culpritID := range vmIDs[1:] {
-					culprit := domainByID[culpritID]
-					// Find target host with least load that doesn't violate rules
-					target := findOptimalHost(reachableHosts, hID, rule, domains, culprit)
-					if target.ID != "" {
-						status.Recommendations = append(status.Recommendations, Recommendation{
-							ID:           recommendationID(culprit.UUID, hID, target.ID),
-							Priority:     5, // Highest priority: Rule violation
-							DomainUUID:   culprit.UUID,
-							DomainName:   culprit.Name,
-							SourceHostID: hID,
-							SourceName:   hostByID[hID].Name,
-							TargetHostID: target.ID,
-							TargetName:   target.Name,
-							Reason:       fmt.Sprintf("Anti-affinity violation in rule %q: multiple protected VMs on %s", rule.Name, hostByID[hID].Name),
-							ExpectedGain: 15.0,
-							CreatedAt:    time.Now(),
-						})
-					}
-				}
-			}
-		}
+		status.Recommendations = append(status.Recommendations, Recommendation{
+			ID:           recID,
+			Priority:     priority,
+			DomainUUID:   culprit.UUID,
+			DomainName:   culprit.Name,
+			SourceHostID: culprit.HostID,
+			SourceName:   sourceHost.Name,
+			TargetHostID: targetHostID,
+			TargetName:   targetHost.Name,
+			Reason:       v.Message,
+			ExpectedGain: 15.0,
+			CreatedAt:    time.Now(),
+		})
 	}
 
 	// 3. Rebalance based on load skew if standard deviation exceeds threshold
@@ -415,7 +410,8 @@ func (e *Engine) Evaluate(ctx context.Context, hosts []HostMetrics, domains []Do
 
 			for _, candidate := range candidates {
 				// Verify candidate does not break mandatory rules on target
-				if canMigrate(candidate, mostLoaded.ID, leastLoaded.ID, rules, domains) {
+				hard, _ := placement.Check(view.Rules, vms, candidate.UUID, leastLoaded.ID)
+				if len(hard) == 0 {
 					priority := 3
 					if maxDev > 25.0 {
 						priority = 4
@@ -445,61 +441,172 @@ func (e *Engine) Evaluate(ctx context.Context, hosts []HostMetrics, domains []Do
 	return status
 }
 
-func findOptimalHost(hosts []HostMetrics, excludeHostID string, rule AffinityRule, allVMs []DomainPlacement, targetVM DomainPlacement) HostMetrics {
-	var best HostMetrics
-	lowestLoad := math.MaxFloat64
-
-	for _, h := range hosts {
-		if h.ID == excludeHostID || !h.Reachable {
-			continue
-		}
-		// Check if h already hosts any VM from rule.Domains
-		violates := false
-		for _, vm := range allVMs {
-			if vm.HostID == h.ID && vm.UUID != targetVM.UUID && slices.Contains(rule.Domains, vm.UUID) {
-				violates = true
-				break
-			}
-		}
-		if violates {
-			continue
-		}
-
-		combinedLoad := h.CPUPct + h.MemPct
-		if combinedLoad < lowestLoad {
-			lowestLoad = combinedLoad
-			best = h
+// VMRefs converts DomainPlacement slice into placement.VMRef slice.
+func VMRefs(domains []DomainPlacement) []placement.VMRef {
+	vms := make([]placement.VMRef, len(domains))
+	for i, d := range domains {
+		vms[i] = placement.VMRef{
+			UUID:    d.UUID,
+			Name:    d.Name,
+			HostID:  d.HostID,
+			Running: d.State == "running",
 		}
 	}
-	return best
+	return vms
 }
 
-func canMigrate(vm DomainPlacement, fromHost, toHost string, rules []AffinityRule, allVMs []DomainPlacement) bool {
-	for _, rule := range rules {
-		if !rule.Enabled || !slices.Contains(rule.Domains, vm.UUID) {
-			continue
+func selectCulpritAndTarget(
+	v placement.Violation,
+	vms []placement.VMRef,
+	domainByID map[string]DomainPlacement,
+	hostByID map[string]HostMetrics,
+	reachableHosts []HostMetrics,
+	rules []placement.Rule,
+) (culprit DomainPlacement, targetHostID string, ok bool) {
+	switch v.Kind {
+	case placement.VMHost:
+		if len(v.DomainUUIDs) == 0 {
+			return DomainPlacement{}, "", false
 		}
-		if rule.Kind == AntiAffinityVMVM {
-			// Ensure no other domain in rule.Domains is running on toHost
-			for _, other := range allVMs {
-				if other.HostID == toHost && other.UUID != vm.UUID && slices.Contains(rule.Domains, other.UUID) {
-					return false
+		c, exists := domainByID[v.DomainUUIDs[0]]
+		if !exists || c.State != "running" || c.HostID == "" {
+			return DomainPlacement{}, "", false
+		}
+		target, found := pickBestHost(c, vms, hostByID, reachableHosts, rules)
+		if !found {
+			return DomainPlacement{}, "", false
+		}
+		return c, target, true
+
+	case placement.VMAntiAffinity:
+		// Multiple VMs of this rule are running on v.HostID.
+		// Try moving one VM away from v.HostID.
+		// Prefer subsequent VMs first (v.DomainUUIDs[1:]), then v.DomainUUIDs[0] for stable 2-VM behavior.
+		candidateUUIDs := make([]string, 0, len(v.DomainUUIDs))
+		if len(v.DomainUUIDs) > 1 {
+			candidateUUIDs = append(candidateUUIDs, v.DomainUUIDs[1:]...)
+		}
+		if len(v.DomainUUIDs) > 0 {
+			candidateUUIDs = append(candidateUUIDs, v.DomainUUIDs[0])
+		}
+
+		for _, uid := range candidateUUIDs {
+			c, exists := domainByID[uid]
+			if !exists || c.State != "running" || c.HostID == "" {
+				continue
+			}
+			target, found := pickBestHost(c, vms, hostByID, reachableHosts, rules)
+			if found {
+				return c, target, true
+			}
+		}
+		return DomainPlacement{}, "", false
+
+	case placement.VMAffinity:
+		// Rule VMs are spread across multiple hosts.
+		// Count VMs per host among running domains of this rule.
+		hostCounts := make(map[string]int)
+		for _, uid := range v.DomainUUIDs {
+			if d, exists := domainByID[uid]; exists && d.State == "running" && d.HostID != "" {
+				hostCounts[d.HostID]++
+			}
+		}
+		if len(hostCounts) <= 1 {
+			return DomainPlacement{}, "", false
+		}
+
+		// Majority host has the most VMs of this rule.
+		// Tie-breaker: host of the first domain in v.DomainUUIDs.
+		var majorityHost string
+		maxCount := -1
+		for _, uid := range v.DomainUUIDs {
+			if d, exists := domainByID[uid]; exists && d.State == "running" && d.HostID != "" {
+				cnt := hostCounts[d.HostID]
+				if cnt > maxCount {
+					maxCount = cnt
+					majorityHost = d.HostID
 				}
 			}
-		} else if rule.Kind == AffinityVMHost {
-			if rule.Mandatory && rule.TargetHost != toHost {
-				return false
+		}
+
+		// Candidates to move: minority VMs first (not on majority host), then majority VMs.
+		var minorityVMs []DomainPlacement
+		var majorityVMs []DomainPlacement
+		for _, uid := range v.DomainUUIDs {
+			if d, exists := domainByID[uid]; exists && d.State == "running" && d.HostID != "" {
+				if d.HostID != majorityHost {
+					minorityVMs = append(minorityVMs, d)
+				} else {
+					majorityVMs = append(majorityVMs, d)
+				}
 			}
 		}
+
+		candidates := append(minorityVMs, majorityVMs...)
+		for _, c := range candidates {
+			target, found := pickBestHost(c, vms, hostByID, reachableHosts, rules)
+			if found {
+				return c, target, true
+			}
+		}
+		return DomainPlacement{}, "", false
+
+	default:
+		for _, uid := range v.DomainUUIDs {
+			c, exists := domainByID[uid]
+			if !exists || c.State != "running" || c.HostID == "" {
+				continue
+			}
+			target, found := pickBestHost(c, vms, hostByID, reachableHosts, rules)
+			if found {
+				return c, target, true
+			}
+		}
+		return DomainPlacement{}, "", false
 	}
-	return true
 }
 
-// recommendationID is stable for the same move, so a recommendation shown in one evaluation
+func pickBestHost(
+	culprit DomainPlacement,
+	vms []placement.VMRef,
+	hostByID map[string]HostMetrics,
+	reachableHosts []HostMetrics,
+	rules []placement.Rule,
+) (string, bool) {
+	var candidateIDs []string
+	for _, h := range reachableHosts {
+		if h.ID != culprit.HostID {
+			candidateIDs = append(candidateIDs, h.ID)
+		}
+	}
+	if len(candidateIDs) == 0 {
+		return "", false
+	}
+
+	// Sort candidate hosts by load (lowest load first) so that Rank's
+	// stable sort preserves least-loaded preference among equal-scoring hosts.
+	slices.SortFunc(candidateIDs, func(a, b string) int {
+		loadA := hostByID[a].CPUPct + hostByID[a].MemPct
+		loadB := hostByID[b].CPUPct + hostByID[b].MemPct
+		return cmp.Compare(loadA, loadB)
+	})
+
+	okHosts, _ := placement.Rank(rules, vms, culprit.UUID, candidateIDs)
+	if len(okHosts) == 0 {
+		return "", false
+	}
+	return okHosts[0], true
+}
+
+// RecommendationID is stable for the same move, so a recommendation shown in one evaluation
 // can be found again when it is applied in the next.
-func recommendationID(domainUUID, from, to string) string {
+func RecommendationID(domainUUID, from, to string) string {
 	sum := sha256.Sum256([]byte(domainUUID + "|" + from + "|" + to))
 	return hex.EncodeToString(sum[:8])
+}
+
+func recommendationID(domainUUID, from, to string) string {
+	return RecommendationID(domainUUID, from, to)
 }
 
 func randomHex(bytes int) string {

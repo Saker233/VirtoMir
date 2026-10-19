@@ -16,12 +16,27 @@
   import ClusterOverview from '../components/ClusterOverview.svelte'
   import HaClusterPanel from '../components/HaClusterPanel.svelte'
   import ResourcePoolsPanel from '../components/ResourcePoolsPanel.svelte'
+  import PlacementPanel from '../components/PlacementPanel.svelte'
+  import { ent } from '../enterprise'
 
-  type Tab = 'members' | 'ha' | 'pools'
+  type Tab = 'members' | 'ha' | 'pools' | 'placement'
   let currentTab = $state<Tab>('members')
+  let hostLabels = $state<Record<string, Record<string, string>>>({})
+
+  async function loadHostLabels() {
+    try {
+      const data = await ent.placement()
+      hostLabels = data.hostLabels ?? {}
+    } catch {
+      // ignore
+    }
+  }
 
   $effect(() => {
     void cluster.refresh()
+    if (currentTab === 'members') {
+      void loadHostLabels()
+    }
   })
 
   let info = $derived(cluster.info)
@@ -110,12 +125,17 @@
     <button class="c-tab" class:active={currentTab === 'pools'} onclick={() => currentTab = 'pools'}>
       {t('Resource pools')}
     </button>
+    <button class="c-tab" class:active={currentTab === 'placement'} onclick={() => currentTab = 'placement'}>
+      {t('Placement rules')}
+    </button>
   </div>
 
   {#if currentTab === 'ha'}
     <HaClusterPanel />
   {:else if currentTab === 'pools'}
     <ResourcePoolsPanel />
+  {:else if currentTab === 'placement'}
+    <PlacementPanel />
   {:else}
     {#if cluster.clustered}
       <ClusterOverview />
@@ -129,6 +149,11 @@
               {m.name}
               {#if m.self}<span class="pill">{t('this host')}</span>{/if}
               {#if cluster.current?.id === m.id}<span class="pill accent">{t('shown')}</span>{/if}
+              {#if hostLabels[m.id]}
+                {#each Object.entries(hostLabels[m.id]) as [k, v] (k)}
+                  <span class="pill mono" title="{k}={v}">{k}={v}</span>
+                {/each}
+              {/if}
             </div>
             <div class="m-sub">{m.address}</div>
             {#if m.error}<div class="m-err">{m.error}</div>{/if}
@@ -362,6 +387,12 @@
   .pill.accent {
     background: var(--accent-soft);
     color: var(--accent);
+  }
+  .pill.mono {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    background: var(--surface-3);
+    border: 1px solid var(--border);
   }
   .steps {
     margin: 0;

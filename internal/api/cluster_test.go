@@ -18,20 +18,22 @@ import (
 	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/cluster"
 	"github.com/onurbaydas/virtomir/internal/drs"
+	"github.com/onurbaydas/virtomir/internal/placement"
 	"github.com/onurbaydas/virtomir/internal/project"
 	"github.com/onurbaydas/virtomir/internal/virt"
 )
 
 // testNode is a complete virtomird API on its own TLS port with its own certificate.
 type testNode struct {
-	url      string
-	store    *cluster.Store
-	backend  *fakeBackend
-	acts     *activity.Log
-	lv       *fakeLive
-	api      *Server
-	projects *project.Store
-	srv      *httptest.Server
+	url       string
+	store     *cluster.Store
+	backend   *fakeBackend
+	acts      *activity.Log
+	lv        *fakeLive
+	api       *Server
+	projects  *project.Store
+	placement *placement.Store
+	srv       *httptest.Server
 }
 
 func (n *testNode) live() *fakeLive { return n.lv }
@@ -57,6 +59,10 @@ func newTestNode(t *testing.T, name string, domains []virt.Domain) *testNode {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pl, err := placement.Open(filepath.Join(dir, "placement.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	m := auth.New(stubAuthn{}, func(u string) auth.Role {
 		return map[string]auth.Role{"onur": auth.Admin, "op": auth.Operator, "view": auth.Viewer}[u]
 	})
@@ -68,10 +74,10 @@ func newTestNode(t *testing.T, name string, domains []virt.Domain) *testNode {
 		Backend: b, Live: lv, Auth: m, Activity: acts, Version: "v-" + name,
 		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Cluster: store, Fingerprint: fp, HostName: name, ListenPort: port,
-		Projects: pj,
+		Projects: pj, Placement: pl,
 	})
 	srv.Config.Handler = s.Handler()
-	return &testNode{url: srv.URL, store: store, backend: b, acts: acts, lv: lv, api: s, projects: pj, srv: srv}
+	return &testNode{url: srv.URL, store: store, backend: b, acts: acts, lv: lv, api: s, projects: pj, placement: pl, srv: srv}
 }
 
 // browser is a user's HTTPS client signed in on one node.

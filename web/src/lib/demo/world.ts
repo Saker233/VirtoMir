@@ -35,6 +35,7 @@ export interface DemoHost {
   info: HostInfo
   /** Idle load of the host itself, on top of its machines (percent). */
   baseCpu: number
+  labels?: Record<string, string>
 }
 
 /** Workload shape: how busy a machine is and how its numbers move. */
@@ -85,6 +86,7 @@ export const HOSTS: DemoHost[] = [
     name: 'hv-01',
     self: true,
     baseCpu: 3,
+    labels: { rack: 'r1', zone: 'zone-a' },
     info: {
       hostname: 'hv-01',
       hypervisor: 'QEMU',
@@ -105,6 +107,7 @@ export const HOSTS: DemoHost[] = [
     name: 'hv-02',
     self: false,
     baseCpu: 2,
+    labels: { rack: 'r1', zone: 'zone-a' },
     info: {
       hostname: 'hv-02',
       hypervisor: 'QEMU',
@@ -125,6 +128,7 @@ export const HOSTS: DemoHost[] = [
     name: 'hv-03',
     self: false,
     baseCpu: 2,
+    labels: { rack: 'r2', zone: 'zone-b' },
     info: {
       hostname: 'hv-03',
       hypervisor: 'QEMU',
@@ -201,9 +205,9 @@ export const projects: Project[] = [
 ]
 
 export const machines: DemoMachine[] = [
-  // hv-01
+  // hv-01 / hv-02
   machine({
-    uuid: '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e01', host: SELF.id, name: 'web-01', title: 'Public web (nginx)',
+    uuid: '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e01', host: HOSTS[1].id, name: 'web-01', title: 'Public web (nginx)',
     description: 'Front end for the company site. Behind the load balancer with web-02.',
     os: 'debian', state: 'running', vcpus: 2, memoryMiB: 4096, diskGiB: 40, autostart: true, profile: 'web', project: 'prod',
     mac: '52:54:00:3a:11:01', ip: '192.168.122.11',
@@ -221,7 +225,7 @@ export const machines: DemoMachine[] = [
     ],
   }),
   machine({
-    uuid: '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e02', host: SELF.id, name: 'web-02', title: 'Public web (nginx)',
+    uuid: '4f1c2a7e-9b3d-4c21-8e5f-0a1b2c3d4e02', host: HOSTS[1].id, name: 'web-02', title: 'Public web (nginx)',
     os: 'debian', state: 'running', vcpus: 2, memoryMiB: 4096, diskGiB: 40, autostart: true, profile: 'web', project: 'prod',
     mac: '52:54:00:3a:11:02', ip: '192.168.122.12',
   }),

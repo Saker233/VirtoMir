@@ -15,6 +15,8 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/onurbaydas/virtomir/internal/content"
+	"github.com/onurbaydas/virtomir/internal/placement"
 	"github.com/onurbaydas/virtomir/internal/project"
 	"github.com/onurbaydas/virtomir/internal/virt"
 )
@@ -235,8 +237,17 @@ func TestStream(t *testing.T) {
 	}
 }
 
-func TestServerWiringProjectsAndVMware(t *testing.T) {
-	pj, err := project.Open(filepath.Join(t.TempDir(), "projects.json"))
+func TestServerWiringProjectsVMwarePlacementAndContent(t *testing.T) {
+	tempDir := t.TempDir()
+	pj, err := project.Open(filepath.Join(tempDir, "projects.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pl, err := placement.Open(filepath.Join(tempDir, "placement.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cnt, err := content.Open(filepath.Join(tempDir, "content.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,12 +257,20 @@ func TestServerWiringProjectsAndVMware(t *testing.T) {
 		Live:        &fakeLive{},
 		Projects:    pj,
 		VMwareStore: vmStore,
+		Placement:   pl,
+		Content:     cnt,
 	})
 	if s.projects != pj {
 		t.Errorf("expected projects to be wired in Server struct")
 	}
 	if s.vmwareStore != vmStore {
 		t.Errorf("expected vmwareStore to be wired in Server struct")
+	}
+	if s.placement != pl {
+		t.Errorf("expected placement to be wired in Server struct")
+	}
+	if s.content != cnt {
+		t.Errorf("expected content to be wired in Server struct")
 	}
 	recProj := httptest.NewRecorder()
 	s.Handler().ServeHTTP(recProj, httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil))
@@ -263,6 +282,18 @@ func TestServerWiringProjectsAndVMware(t *testing.T) {
 	s.Handler().ServeHTTP(recVm, httptest.NewRequest(http.MethodGet, "/api/v1/vmware/connection", nil))
 	if recVm.Code != http.StatusOK {
 		t.Errorf("GET /api/v1/vmware/connection status = %d, want 200", recVm.Code)
+	}
+
+	recPlace := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recPlace, httptest.NewRequest(http.MethodGet, "/api/v1/placement", nil))
+	if recPlace.Code != http.StatusOK {
+		t.Errorf("GET /api/v1/placement status = %d, want 200", recPlace.Code)
+	}
+
+	recCnt := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recCnt, httptest.NewRequest(http.MethodGet, "/api/v1/content/items", nil))
+	if recCnt.Code != http.StatusOK {
+		t.Errorf("GET /api/v1/content/items status = %d, want 200", recCnt.Code)
 	}
 }
 

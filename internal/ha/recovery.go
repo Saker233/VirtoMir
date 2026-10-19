@@ -280,6 +280,37 @@ func (m *Manager) targets(cfg Config, deadID string, r Replica, p VMPolicy) []No
 	for i, c := range cs {
 		out[i] = c.n
 	}
+	if m.FilterTargets != nil && len(out) > 0 {
+		runningOn := make(map[string]string, len(m.replicas))
+		for u, rep := range m.replicas {
+			if rep.Running {
+				runningOn[u] = rep.Owner
+			}
+		}
+		filtered := m.FilterTargets(r, out, runningOn)
+		if len(filtered) == 0 {
+			m.event("warning", m.nameOf(m.transport.Members(), deadID), r.Name, "placement rules cannot be honoured for %s; restarting anyway", r.Name)
+		} else {
+			kept := make(map[string]bool, len(filtered))
+			for _, n := range filtered {
+				kept[n.ID] = true
+			}
+			var skipped []string
+			for _, n := range out {
+				if !kept[n.ID] {
+					name := n.Name
+					if name == "" {
+						name = n.ID
+					}
+					skipped = append(skipped, name)
+				}
+			}
+			if len(skipped) > 0 {
+				m.event("info", m.nameOf(m.transport.Members(), deadID), r.Name, "placement rules skipped %s for %s", strings.Join(skipped, ", "), r.Name)
+			}
+			out = filtered
+		}
+	}
 	return out
 }
 

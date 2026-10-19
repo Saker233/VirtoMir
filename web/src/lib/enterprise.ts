@@ -425,7 +425,19 @@ export const ent = {
   applyDRSRecommendation: (id: string) => api.post<{ message: string; recommendation: DRSRecommendation }>(`/api/v1/cluster/drs/recommendations/${enc(id)}/apply`),
   /** The member DRS would put a new machine on; undefined while DRS does not place machines. */
   drsPlacement: (memoryMiB: number) => api.get<DRSPlacement | undefined>(`/api/v1/cluster/drs/placement?memoryMiB=${memoryMiB}`),
-  clusterInventoryMachines: () => api.get<ClusterDomainSummary[]>('/api/v1/cluster/inventory/machines'),
+  clusterInventoryMachines: async () => {
+    const res = await api.get<ClusterDomainSummary[] | { domains: ClusterDomainSummary[] }>('/api/v1/cluster/inventory/machines')
+    return Array.isArray(res) ? res : (res?.domains ?? [])
+  },
+
+  // Placement Rules (ADR-0062)
+  placement: () => api.get<PlacementStatus>('/api/v1/placement'),
+  addPlacementRule: (rule: Partial<PlacementRule>) => api.post<PlacementRule>('/api/v1/placement/rules', rule),
+  savePlacementRule: (id: string, rule: Partial<PlacementRule>) => api.put<PlacementRule>(`/api/v1/placement/rules/${enc(id)}`, rule),
+  deletePlacementRule: (id: string) => api.delete<void>(`/api/v1/placement/rules/${enc(id)}`),
+  setHostLabels: (hostId: string, labels: Record<string, string>) => api.put<{ labels: Record<string, string> }>(`/api/v1/placement/hosts/${enc(hostId)}/labels`, { labels }),
+  placementViolations: () => api.get<PlacementViolation[]>('/api/v1/placement/violations'),
+  placementCheck: (domainUuid: string, hostId: string) => api.post<PlacementCheckResult>('/api/v1/placement/check', { domainUuid, hostId }),
 }
 
 export type DRSMode = 'manual' | 'partially_automated' | 'fully_automated'
@@ -497,8 +509,75 @@ export interface ClusterDomainSummary {
   hostName: string
 }
 
+export type PlacementKind = 'vm_affinity' | 'vm_anti_affinity' | 'vm_host'
+export type PlacementStrength = 'must' | 'should'
+
+export interface PlacementRule {
+  id: string
+  name: string
+  kind: 'vm_affinity' | 'vm_anti_affinity' | 'vm_host'
+  enabled: boolean
+  strength: 'must' | 'should'
+  domains: string[]
+  hosts?: string[]
+  exclude?: boolean
+}
+
+export interface PlacementViolation {
+  ruleId: string
+  ruleName: string
+  kind: 'vm_affinity' | 'vm_anti_affinity' | 'vm_host'
+  hard: boolean
+  domainUuids: string[]
+  hostId: string
+  message: string
+}
+
+export interface PlacementCheckResult {
+  ok: boolean
+  hard: string[]
+  soft: string[]
+}
+
+export interface PlacementStatus {
+  rules: PlacementRule[]
+  hostLabels: Record<string, Record<string, string>>
+  violations: PlacementViolation[]
+}
+
 export const PRIORITIES: Priority[] = ['critical', 'high', 'normal', 'low']
 
 export function gib(bytes: number): string {
   return `${(bytes / 2 ** 30).toFixed(bytes >= 100 * 2 ** 30 ? 0 : 1)} GiB`
 }
+
+export function violationsByDomain(list: PlacementViolation[]): Record<string, PlacementViolation> {
+  const map: Record<string, PlacementViolation> = {}
+  for (const v of list) {
+    for (const u of v.domainUuids) {
+      if (!map[u] || (!map[u].hard && v.hard)) {
+        map[u] = v
+      }
+    }
+  }
+  return map
+}
+
+export interface EvacuationCandidate {
+  id: string
+  freeKiB: number
+  hard: string[]
+  soft: string[]
+}
+
+export function rankEvacuationCandidates(candidates: EvacuationCandidate[]): EvacuationCandidate[] {
+  const valid = candidates.filter((c) => c.hard.length === 0)
+  valid.sort((a, b) => {
+    const aSoft = a.soft.length === 0 ? 0 : 1
+    const bSoft = b.soft.length === 0 ? 0 : 1
+    if (aSoft !== bSoft) return aSoft - bSoft
+    return b.freeKiB - a.freeKiB
+  })
+  return valid
+}
+

@@ -6,6 +6,7 @@
   import Dialog from './Dialog.svelte'
   import { api, errorText, type Job } from '../api'
   import { cluster } from '../cluster.svelte'
+  import { ent, rankEvacuationCandidates, type EvacuationCandidate } from '../enterprise'
   import { live } from '../live.svelte'
   import { formatKiB } from '../format'
   import { toasts } from '../toast.svelte'
@@ -55,12 +56,37 @@
           /* move will tell */
         }
         if (!st.problem) {
-          const best = [...free.entries()].filter(([, f]) => f >= d.maxMemoryKiB).sort((a, b) => b[1] - a[1])[0]
-          if (best) {
-            st.target = best[0]
-            st.targetName = cluster.members.find((m) => m.id === best[0])?.name
-            free.set(best[0], best[1] - d.maxMemoryKiB)
-          } else st.problem = 'no other host has enough free memory'
+          const candidateMembers = [...free.entries()].filter(([, f]) => f >= d.maxMemoryKiB)
+          const evaluatedCandidates: EvacuationCandidate[] = []
+          const candidateHardProblems: string[] = []
+
+          for (const [memberId, freeKiB] of candidateMembers) {
+            let hard: string[] = []
+            let soft: string[] = []
+            try {
+              const res = await ent.placementCheck(d.uuid, memberId)
+              hard = res.hard || []
+              soft = res.soft || []
+            } catch (e) {
+              hard = [errorText(e)]
+            }
+            if (hard.length > 0) {
+              candidateHardProblems.push(...hard)
+            }
+            evaluatedCandidates.push({ id: memberId, freeKiB, hard, soft })
+          }
+
+          const ranked = rankEvacuationCandidates(evaluatedCandidates)
+          if (ranked.length > 0) {
+            const best = ranked[0]
+            st.target = best.id
+            st.targetName = cluster.members.find((m) => m.id === best.id)?.name
+            free.set(best.id, best.freeKiB - d.maxMemoryKiB)
+          } else if (candidateMembers.length > 0 && candidateHardProblems.length > 0) {
+            st.problem = [...new Set(candidateHardProblems)].join('; ')
+          } else {
+            st.problem = t('no other host has enough free memory')
+          }
         }
         if (st.problem) st.state = 'skipped'
         out.push(st)
@@ -130,7 +156,7 @@
   {/if}
   {#snippet footer()}
     <button class="ui-btn ghost" disabled={running} onclick={() => (open = false)}>{t('Close')}</button>
-    <button class="ui-btn primary" disabled={running || planning || !steps.some((s) => s.state === 'planned')} onclick={run}>{running ? 'Moving…' : t('Start moving')}</button>
+    <button class="ui-btn primary" disabled={running || planning || !steps.some((s) => s.state === 'planned')} onclick={run}>{running ? t('Moving…') : t('Start moving')}</button>
   {/snippet}
 </Dialog>
 
