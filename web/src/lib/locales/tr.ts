@@ -3,6 +3,8 @@
 export const tr: Record<string, string> = {
   " · {paused} paused": " · {paused} duraklatılmış",
   " · address from {takeAddressFrom}": " · adres {takeAddressFrom} arayüzünden",
+  "Access credentials": "Erişim bilgileri",
+  "At least a key or a password is required so you can sign in to the cloud image.": "Cloud imajına giriş yapabilmek için en az bir anahtar ya da parola gerekir.",
   "— (top level)": "— (en üst düzey)",
   "— faster for big guests; the host must reserve them (vm.nr_hugepages), or the machine will not start": "— büyük misafirler için daha hızlı; host bunları ayırmalı (vm.nr_hugepages), yoksa makine başlamaz",
   "— host CPUs each vCPU may run on (this host has {v}: 0–{v2};": "— her vCPU'nun çalışabileceği host CPU'ları (bu hostta {v} var: 0–{v2};",

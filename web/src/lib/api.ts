@@ -892,6 +892,8 @@ export interface Blueprint {
   allowedNetworks?: string[]
   cloudInitTemplate?: string
   cloudInitFields?: InputField[]
+  /** SSH public keys injected into every machine provisioned from this image blueprint. */
+  defaultSshKeys?: string[]
   allowedProjects?: string[]
   requireApproval: boolean
   defaultLeaseDays?: number
@@ -922,6 +924,10 @@ export interface CatalogRequest {
   network?: string
   /** Answers to the blueprint's cloud-init questions; password answers are masked in responses. */
   fieldValues?: Record<string, string>
+  /** Public SSH keys for cloud-init sign-in (one per element). */
+  sshKeys?: string[]
+  /** Plaintext password for cloud image blueprints; accepted on POST, never stored or returned. */
+  password?: string
   leaseDays: number
   status: CatalogRequestStatus
   createdAt: string

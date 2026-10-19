@@ -27,6 +27,8 @@
   let leaseDays = $state(30)
   let customLease = $state(false)
   let values = $state<Record<string, string>>({})
+  let sshKeys = $state('')
+  let password = $state('')
   let busy = $state(false)
   let error = $state('')
 
@@ -37,7 +39,10 @@
   let cost = $derived(preset ? presetCost(preset, pricing) : null)
   let maxDays = $derived(bp.maxLeaseDays || 365)
   let missingRequired = $derived((bp.cloudInitFields ?? []).some((f) => f.required && !String(values[f.key] ?? '').trim()))
-  let valid = $derived(!!vmName.trim() && !!preset && !!projectId && !missingRequired)
+  // Cloud images boot from a generic image with no baked-in credentials: at least one SSH
+  // key or a password is required, unless the blueprint ships default SSH keys for access.
+  let needCredentials = $derived(bp.sourceType === 'image' && !(bp.defaultSshKeys?.length))
+  let valid = $derived(!!vmName.trim() && !!preset && !!projectId && !missingRequired && (!needCredentials || !!sshKeys.trim() || !!password.trim()))
 
   // Fill the defaults once per blueprint, keep whatever the user picked afterwards.
   let seededFor = $state('')
@@ -47,6 +52,8 @@
     projectId = allowedProjects[0]?.id ?? ''
     presetId = bp.defaultPresetId ?? ''
     values = {}
+    sshKeys = ''
+    password = ''
     for (const f of bp.cloudInitFields ?? []) values[f.key] = f.default ?? ''
     leaseDays = bp.defaultLeaseDays || Math.min(30, maxDays)
     customLease = false
@@ -70,6 +77,8 @@
         network: network || undefined,
         leaseDays,
         fieldValues: Object.keys(values).length ? values : undefined,
+        sshKeys: sshKeys.trim() ? sshKeys.split('\n').map((s) => s.trim()).filter(Boolean) : undefined,
+        password: password || undefined,
       }
       const saved = await api.createCatalogRequest(req)
       onclose()
@@ -148,6 +157,23 @@
         {#if bp.maxLeaseDays}<span class="hint">{t('Up to {n} days', { n: bp.maxLeaseDays })}</span>{/if}
       </div>
     </div>
+
+    {#if bp.sourceType === 'image'}
+      <fieldset>
+        <legend>{t('Access credentials')}</legend>
+        {#if needCredentials}
+          <p class="muted">{t('At least a key or a password is required so you can sign in to the cloud image.')}</p>
+        {/if}
+        <label class="ui-field">
+          <span class="label">{t('SSH public keys')}</span>
+          <textarea class="ui-input mono" rows="3" bind:value={sshKeys} placeholder={t('(one per line)')} spellcheck="false"></textarea>
+        </label>
+        <label class="ui-field">
+          <span class="label">{t('Password')}</span>
+          <input class="ui-input" type="password" bind:value={password} autocomplete="new-password" />
+        </label>
+      </fieldset>
+    {/if}
 
     {#if bp.cloudInitFields?.length}
       <fieldset>

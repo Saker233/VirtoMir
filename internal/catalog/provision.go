@@ -60,7 +60,7 @@ func RenderCloudInitTemplate(tmplStr string, fieldValues map[string]string, defa
 func BuildCloudInit(bp Blueprint, req Request) (*virt.CloudInit, error) {
 	ciUser := ""
 	ciPassword := ""
-	ciSSHKey := ""
+	ciSSHKeys := []string{}
 	ciHostname := req.VMName
 
 	for k, v := range req.FieldValues {
@@ -68,13 +68,25 @@ func BuildCloudInit(bp Blueprint, req Request) (*virt.CloudInit, error) {
 		case "user", "username":
 			ciUser = v
 		case "password":
-			ciPassword = v
+			if v != "" && ciPassword == "" {
+				ciPassword = v // legacy: plaintext from a blueprint password field
+			}
 		case "ssh_key", "sshkey", "ssh-key":
-			ciSSHKey = v
+			if v != "" {
+				ciSSHKeys = append(ciSSHKeys, v)
+			}
 		case "hostname":
 			ciHostname = v
 		}
 	}
+	// The dedicated password field is always a pre-hashed SHA-512 crypt value.
+	if req.PasswordHash != "" {
+		ciPassword = req.PasswordHash
+	}
+	// Collect SSH keys from the dedicated field, then from field values.
+	ciSSHKeys = append(ciSSHKeys, req.SSHKeys...)
+	// Blueprint default SSH keys are always present for every provisioned machine.
+	ciSSHKeys = append(ciSSHKeys, bp.DefaultSSHKeys...)
 	if ciHostname == "" {
 		ciHostname = req.VMName
 	}
@@ -87,7 +99,7 @@ func BuildCloudInit(bp Blueprint, req Request) (*virt.CloudInit, error) {
 		"VMName":   req.VMName,
 		"User":     ciUser,
 		"Password": ciPassword,
-		"SSHKey":   ciSSHKey,
+		"SSHKey":   strings.Join(ciSSHKeys, "\n"),
 		"Project":  req.ProjectID,
 	}
 
@@ -100,7 +112,7 @@ func BuildCloudInit(bp Blueprint, req Request) (*virt.CloudInit, error) {
 		rendered = out
 	}
 
-	if strings.TrimSpace(rendered) == "" && ciUser == "" && ciPassword == "" && ciSSHKey == "" {
+	if strings.TrimSpace(rendered) == "" && ciUser == "" && ciPassword == "" && len(ciSSHKeys) == 0 {
 		return nil, nil
 	}
 
@@ -109,8 +121,8 @@ func BuildCloudInit(bp Blueprint, req Request) (*virt.CloudInit, error) {
 		User:     ciUser,
 		Password: ciPassword,
 	}
-	if ciSSHKey != "" {
-		ci.SSHKeys = []string{ciSSHKey}
+	if len(ciSSHKeys) > 0 {
+		ci.SSHKeys = ciSSHKeys
 	}
 	if rendered != "" {
 		trimmed := strings.TrimSpace(rendered)

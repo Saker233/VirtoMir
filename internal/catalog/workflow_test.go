@@ -89,6 +89,8 @@ func (m *mockDeployer) DiskBytes(uuids []string) (map[string]uint64, error) {
 	return nil, nil
 }
 
+const testSSHKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIvUnitTestKey admin@virtomir"
+
 func setupTestStores(t *testing.T) (*Store, *project.Store) {
 	t.Helper()
 	dir := t.TempDir()
@@ -132,6 +134,7 @@ func TestWorkflow_SubmitRequest_ApprovalRequired(t *testing.T) {
 		DefaultPresetID:  "small",
 		DefaultLeaseDays: 14,
 		MaxLeaseDays:     30,
+		DefaultSSHKeys:   []string{testSSHKey},
 	})
 	if err != nil {
 		t.Fatalf("Create blueprint: %v", err)
@@ -197,6 +200,7 @@ func TestWorkflow_SubmitRequest_NoApproval_AutoProvision(t *testing.T) {
 		},
 		DefaultPresetID:  "medium",
 		DefaultLeaseDays: 7,
+		DefaultSSHKeys:   []string{testSSHKey},
 	})
 	if err != nil {
 		t.Fatalf("Create blueprint: %v", err)
@@ -257,6 +261,7 @@ func TestWorkflow_NonAdminCannotApproveOrReject(t *testing.T) {
 			{ID: "p1", Name: "P1", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10},
 		},
 		DefaultPresetID: "p1",
+		DefaultSSHKeys:  []string{testSSHKey},
 	})
 	if err != nil {
 		t.Fatalf("Create blueprint: %v", err)
@@ -326,6 +331,7 @@ func TestWorkflow_ProjectAdmin_ApproveAndReject(t *testing.T) {
 			{ID: "p", Name: "P", VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
 		},
 		DefaultPresetID: "p",
+		DefaultSSHKeys:  []string{testSSHKey},
 	})
 	if err != nil {
 		t.Fatalf("Create blueprint: %v", err)
@@ -400,6 +406,7 @@ func TestWorkflow_GlobalAdmin_ApproveAndRejectAny(t *testing.T) {
 			{ID: "p", Name: "P", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10},
 		},
 		DefaultPresetID: "p",
+		DefaultSSHKeys:  []string{testSSHKey},
 	})
 	if err != nil {
 		t.Fatalf("Create blueprint: %v", err)
@@ -518,5 +525,119 @@ func TestWorkflow_SubmitRequest_Validations(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "not permitted in project") {
 		t.Fatalf("expected network restricted by project error, got: %v", err)
+	}
+}
+
+// TestWorkflow_CloudImageCredentials covers the sign-in credential contract (ADR-0065):
+// a cloud-image blueprint refuses an order with no SSH key or password (400), an SSH key
+// the user supplies is forwarded to the create path, and a password is stored only as a
+// crypt hash that never leaks back through the sanitized API response.
+func TestWorkflow_CloudImageCredentials(t *testing.T) {
+	cStore, pStore := setupTestStores(t)
+
+	_, err := pStore.Create(project.Project{
+		ID:   "proj-cred",
+		Name: "Creds Project",
+		Members: []project.Member{
+			{Kind: "user", Name: "carol", Role: "operator"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create project: %v", err)
+	}
+
+	// Image blueprint with no default SSH keys: the requester must supply sign-in credentials.
+	if _, err := cStore.CreateBlueprint(Blueprint{
+		ID:         "bp-img",
+		Name:       "Cloud Image BP",
+		SourceType: SourceTypeImage,
+		SourceRef:  "cloud.img",
+		Presets:    []SizePreset{{ID: "s", Name: "S", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10}},
+		DefaultPresetID: "s",
+	}); err != nil {
+		t.Fatalf("Create blueprint: %v", err)
+	}
+
+	// 1. No credentials -> 400 (ErrBadRequest), before approval or provisioning.
+	_, err = SubmitRequest(cStore, pStore, "carol", nil, Request{
+		BlueprintID: "bp-img",
+		ProjectID:   "proj-cred",
+		VMName:      "carol-vm",
+		PresetID:    "s",
+	})
+	if err == nil || !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("expected ErrBadRequest for image blueprint without credentials, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "cloud image") {
+		t.Errorf("expected a cloud-image credential message, got: %v", err)
+	}
+
+	dep := &mockDeployer{nextUUID: "cred-vm-uuid"}
+
+	// 2. An SSH key the user supplies is forwarded to the create path.
+	submitted, err := SubmitRequest(cStore, pStore, "carol", nil, Request{
+		BlueprintID: "bp-img",
+		ProjectID:   "proj-cred",
+		VMName:      "carol-vm-ssh",
+		PresetID:    "s",
+		SSHKeys:     []string{testSSHKey},
+	}, dep)
+	if err != nil {
+		t.Fatalf("SubmitRequest with ssh key: %v", err)
+	}
+	if submitted.Status != StatusActive {
+		t.Fatalf("expected status active, got %q", submitted.Status)
+	}
+	if len(dep.createdSpecs) != 1 {
+		t.Fatalf("expected 1 CreateDomain call, got %d", len(dep.createdSpecs))
+	}
+	ci := dep.createdSpecs[0].CloudInit
+	if ci == nil {
+		t.Fatal("expected cloud-init on the create spec")
+	}
+	if len(ci.SSHKeys) != 1 || ci.SSHKeys[0] != testSSHKey {
+		t.Errorf("SSH key not forwarded to create path: %v", ci.SSHKeys)
+	}
+	// An SSH-only order stores no password hash at all.
+	if stored, ok := cStore.GetRequest(submitted.ID); ok {
+		if stored.Password != "" {
+			t.Errorf("plaintext password leaked into the store: %q", stored.Password)
+		}
+		if stored.PasswordHash != "" {
+			t.Errorf("unexpected password hash for an SSH-only order: %q", stored.PasswordHash)
+		}
+	}
+
+	// 3. A password is stored only as a crypt hash and never returned via Sanitize.
+	sub2, err := SubmitRequest(cStore, pStore, "carol", nil, Request{
+		BlueprintID: "bp-img",
+		ProjectID:   "proj-cred",
+		VMName:      "carol-vm-pw",
+		PresetID:    "s",
+		Password:    "S3cret!pass",
+	}, dep)
+	if err != nil {
+		t.Fatalf("SubmitRequest with password: %v", err)
+	}
+	stored, ok := cStore.GetRequest(sub2.ID)
+	if !ok {
+		t.Fatal("request not found in store")
+	}
+	if stored.Password != "" {
+		t.Errorf("plaintext password persisted: %q", stored.Password)
+	}
+	if stored.PasswordHash == "" {
+		t.Fatal("expected the password hash to be persisted")
+	}
+	if !virt.IsCryptHash(stored.PasswordHash) {
+		t.Errorf("stored password is not a crypt hash: %q", stored.PasswordHash)
+	}
+	if stored.PasswordHash == "S3cret!pass" {
+		t.Error("plain password stored instead of a hash")
+	}
+	// Sanitize strips both the plaintext password and its hash from API responses.
+	san := stored.Sanitize()
+	if san.Password != "" || san.PasswordHash != "" {
+		t.Errorf("sanitized request still carries secrets: %+v", san)
 	}
 }

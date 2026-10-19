@@ -10,6 +10,13 @@ const (
 	SourceTypeImage    SourceType = "image"
 )
 
+// needsCloudInitCredentials reports whether the blueprint's source type requires
+// cloud-init sign-in credentials (i.e. a cloud image). Template clones carry their
+// own credentials, so only image-backed blueprints need this check.
+func (s SourceType) needsCloudInitCredentials() bool {
+	return s == SourceTypeImage
+}
+
 // SizePreset defines a compute and disk size offering for blueprint deployments.
 type SizePreset struct {
 	ID        string `json:"id"`
@@ -43,6 +50,9 @@ type Blueprint struct {
 	AllowedNetworks   []string     `json:"allowedNetworks,omitempty"`
 	CloudInitTemplate string       `json:"cloudInitTemplate,omitempty"`
 	CloudInitFields   []InputField `json:"cloudInitFields,omitempty"`
+	// DefaultSSHKeys are SSH public keys added to every machine provisioned from
+	// this blueprint, so administrators always retain access.
+	DefaultSSHKeys    []string     `json:"defaultSshKeys,omitempty"`
 	AllowedProjects   []string     `json:"allowedProjects,omitempty"`
 	RequireApproval   bool         `json:"requireApproval"`
 	DefaultLeaseDays  int          `json:"defaultLeaseDays,omitempty"`
@@ -77,6 +87,14 @@ type Request struct {
 	DiskGiB       uint64            `json:"diskGiB"`
 	Network       string            `json:"network,omitempty"`
 	FieldValues   map[string]string `json:"fieldValues,omitempty"`
+	// SSHKeys are the requester's public SSH keys injected into cloud-init.
+	SSHKeys []string `json:"sshKeys,omitempty"`
+	// Password is the plaintext password from the API body; it is hashed into
+	// PasswordHash in SubmitRequest and never persisted.
+	Password string `json:"password,omitempty"`
+	// PasswordHash is the SHA-512 crypt hash of Password, persisted but never
+	// returned in API GET responses.
+	PasswordHash string `json:"passwordHash,omitempty"`
 	LeaseDays     int               `json:"leaseDays"`
 	Status        RequestStatus     `json:"status"`
 	CreatedAt     time.Time         `json:"createdAt"`
@@ -85,6 +103,14 @@ type Request struct {
 	ReviewComment string            `json:"reviewComment,omitempty"`
 	MachineUUID   string            `json:"machineUuid,omitempty"`
 	ErrorMessage  string            `json:"errorMessage,omitempty"`
+}
+
+// Sanitize returns a copy of the request with the password hash and plaintext
+// password cleared, so secrets are never serialized in API responses.
+func (r Request) Sanitize() Request {
+	r.Password = ""
+	r.PasswordHash = ""
+	return r
 }
 
 // LeaseState represents the lifecycle phase of a provisioned machine lease.

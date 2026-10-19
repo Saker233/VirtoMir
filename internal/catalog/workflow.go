@@ -11,6 +11,7 @@ import (
 
 	"github.com/onurbaydas/virtomir/internal/auth"
 	"github.com/onurbaydas/virtomir/internal/project"
+	"github.com/onurbaydas/virtomir/internal/virt"
 )
 
 // ErrUnauthorized indicates the user or reviewer lacks appropriate permissions.
@@ -127,14 +128,49 @@ func SubmitRequest(store *Store, projects *project.Store, user string, groups []
 	}
 
 	// Lease validation
-	if req.LeaseDays <= 0 {
-		req.LeaseDays = bp.DefaultLeaseDays
-	}
-	if bp.MaxLeaseDays > 0 && req.LeaseDays > bp.MaxLeaseDays {
-		return Request{}, invalidf("requested lease duration (%d days) exceeds blueprint maximum (%d days)", req.LeaseDays, bp.MaxLeaseDays)
+ 	if req.LeaseDays <= 0 {
+ 		req.LeaseDays = bp.DefaultLeaseDays
+ 	}
+ 	if bp.MaxLeaseDays > 0 && req.LeaseDays > bp.MaxLeaseDays {
+ 		return Request{}, invalidf("requested lease duration (%d days) exceeds blueprint maximum (%d days)", req.LeaseDays, bp.MaxLeaseDays)
+ 	}
+
+ 	// Hash the plaintext password (from the API body) before storage.
+ 	req.PasswordHash = ""
+ 	if req.Password != "" {
+		hash, err := virt.HashPassword(req.Password)
+		if err != nil {
+			return Request{}, invalidf("hash password: %v", err)
+		}
+ 		req.PasswordHash = hash
+ 	}
+ 	req.Password = ""
+
+ 	// Validate sign-in credentials for cloud-image blueprints: at least one of an SSH key
+ 	// or a password is required, unless the blueprint ships default SSH keys.
+ 	if bp.SourceType.needsCloudInitCredentials() {
+ 		if len(bp.DefaultSSHKeys) == 0 && len(req.SSHKeys) == 0 && req.PasswordHash == "" {
+ 			return Request{}, badRequestf(
+ 				"Set an SSH public key or a password for cloud image %q, otherwise nobody can sign in to the machine", bp.SourceRef)
+ 		}
+ 	}
+
+	// Pre-validate the VM name so the create path does not refuse it after approval.
+	if err := virt.CheckName("Machine", req.VMName); err != nil {
+		return Request{}, invalidf("%v", err)
 	}
 
-	if bp.RequireApproval {
+ 	// Pre-validate the storage pool the provisioned machine will use, so a project that
+ 	// forbids the blueprint's pool fails at order time, not after approval.
+ 	pool := bp.TargetPool
+ 	if pool == "" && len(proj.StoragePools) > 0 {
+ 		pool = proj.StoragePools[0]
+ 	}
+ 	if len(proj.StoragePools) > 0 && pool != "" && !slices.Contains(proj.StoragePools, pool) {
+ 		return Request{}, invalidf("storage pool %q is not allowed in project %q", pool, proj.ID)
+ 	}
+
+ 	if bp.RequireApproval {
 		req.Status = StatusPendingApproval
 		req.CreatedAt = time.Now().UTC()
 		return store.CreateRequest(req)

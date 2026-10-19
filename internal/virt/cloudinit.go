@@ -88,7 +88,11 @@ func (ci *CloudInit) userData() string {
 	b.WriteString("users:\n")
 	fmt.Fprintf(&b, "  - name: %s\n    groups: [sudo, wheel, adm]\n    sudo: \"ALL=(ALL) NOPASSWD:ALL\"\n    shell: /bin/bash\n", q(ci.User))
 	if ci.Password != "" {
-		fmt.Fprintf(&b, "    lock_passwd: false\n    plain_text_passwd: %s\n", q(ci.Password))
+		if IsCryptHash(ci.Password) {
+			fmt.Fprintf(&b, "    lock_passwd: false\n    hashed_passwd: %s\n", q(ci.Password))
+		} else {
+			fmt.Fprintf(&b, "    lock_passwd: false\n    plain_text_passwd: %s\n", q(ci.Password))
+		}
 	}
 	if len(ci.SSHKeys) > 0 {
 		b.WriteString("    ssh_authorized_keys:\n")

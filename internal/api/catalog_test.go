@@ -592,16 +592,19 @@ func TestCatalogMemberRoleIntegration(t *testing.T) {
 			ID: "bp-all", Name: "Global Blueprint", SourceType: catalog.SourceTypeImage, SourceRef: "base.img",
 			RequireApproval: true, AllowedProjects: []string{},
 			Presets: []catalog.SizePreset{{ID: "s", Name: "Small", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10}},
+			DefaultSSHKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIvUnitTestKey admin@virtomir"},
 		},
 		{
 			ID: "bp-a", Name: "Team A Blueprint", SourceType: catalog.SourceTypeImage, SourceRef: "team-a.img",
 			RequireApproval: true, AllowedProjects: []string{"team-a"},
 			Presets: []catalog.SizePreset{{ID: "s", Name: "Small", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10}},
+			DefaultSSHKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIvUnitTestKey admin@virtomir"},
 		},
 		{
 			ID: "bp-b", Name: "Team B Blueprint", SourceType: catalog.SourceTypeImage, SourceRef: "team-b.img",
 			RequireApproval: true, AllowedProjects: []string{"team-b"},
 			Presets: []catalog.SizePreset{{ID: "s", Name: "Small", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10}},
+			DefaultSSHKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIvUnitTestKey admin@virtomir"},
 		},
 	} {
 		if _, err := store.CreateBlueprint(bp); err != nil {

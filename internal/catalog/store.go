@@ -30,6 +30,9 @@ var (
 	ErrNotFound = errors.New("not found")
 	ErrInvalid  = errors.New("invalid")
 	ErrConflict = errors.New("conflict")
+	// ErrBadRequest signals a client-side order error that should surface as HTTP 400,
+	// e.g. a cloud image blueprint ordered without sign-in credentials.
+	ErrBadRequest = errors.New("bad request")
 )
 
 type classed struct {
@@ -51,6 +54,10 @@ func invalidf(format string, a ...any) error {
 
 func conflictf(format string, a ...any) error {
 	return classed{ErrConflict, fmt.Sprintf(format, a...)}
+}
+
+func badRequestf(format string, a ...any) error {
+	return classed{ErrBadRequest, fmt.Sprintf(format, a...)}
 }
 
 var slugRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$`)
@@ -123,6 +130,9 @@ func Open(path string) (*Store, error) {
 		}
 		if bp.CloudInitFields == nil {
 			bp.CloudInitFields = []InputField{}
+		}
+		if bp.DefaultSSHKeys == nil {
+			bp.DefaultSSHKeys = []string{}
 		}
 		if bp.AllowedProjects == nil {
 			bp.AllowedProjects = []string{}
@@ -379,9 +389,15 @@ func (s *Store) CreateRequest(req Request) (Request, error) {
 	if req.Requester == "" {
 		return Request{}, invalidf("requester cannot be empty")
 	}
-	if req.VMName == "" {
-		return Request{}, invalidf("VM name cannot be empty")
-	}
+ 	if req.VMName == "" {
+ 		return Request{}, invalidf("VM name cannot be empty")
+ 	}
+
+ 	// Never persist the plaintext password; only its hash may be stored.
+ 	req.Password = ""
+ 	if len(req.SSHKeys) == 0 {
+ 		req.SSHKeys = []string{}
+ 	}
 
 	if req.ID == "" {
 		req.ID = randomHex(8)
@@ -624,6 +640,9 @@ func (bp Blueprint) clone() Blueprint {
 	if bp.CloudInitFields != nil {
 		q.CloudInitFields = cloneFields(bp.CloudInitFields)
 	}
+	if bp.DefaultSSHKeys != nil {
+		q.DefaultSSHKeys = append([]string{}, bp.DefaultSSHKeys...)
+	}
 	if bp.AllowedProjects != nil {
 		q.AllowedProjects = append([]string{}, bp.AllowedProjects...)
 	}
@@ -648,6 +667,9 @@ func (r Request) clone() Request {
 		for k, v := range r.FieldValues {
 			q.FieldValues[k] = v
 		}
+	}
+	if r.SSHKeys != nil {
+		q.SSHKeys = append([]string{}, r.SSHKeys...)
 	}
 	if r.ReviewedAt != nil {
 		t := *r.ReviewedAt

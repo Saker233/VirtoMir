@@ -76,6 +76,8 @@ func catalogErrStatus(err error) int {
 	switch {
 	case errors.Is(err, catalog.ErrNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, catalog.ErrBadRequest):
+		return http.StatusBadRequest
 	case errors.Is(err, catalog.ErrInvalid):
 		return http.StatusUnprocessableEntity
 	case errors.Is(err, catalog.ErrConflict):
@@ -315,7 +317,7 @@ func (s *Server) listCatalogRequests(w http.ResponseWriter, r *http.Request) {
 	filtered := make([]catalog.Request, 0, len(all))
 	for _, req := range all {
 		if s.canViewCatalogRequest(req, id) {
-			filtered = append(filtered, req)
+			filtered = append(filtered, req.Sanitize())
 		}
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"requests": filtered})
@@ -382,10 +384,10 @@ func (s *Server) createCatalogRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.catalogAudit(r, "request-create")
-	s.done(w, http.StatusCreated, saved)
+	s.done(w, http.StatusCreated, saved.Sanitize())
 }
 
-// getCatalogRequest: project admins, requesters, and global admins only; anyone else gets the same 404
+	// getCatalogRequest: project admins, requesters, and global admins only; anyone else gets the same 404
 // as an unknown ID, so they cannot probe which requests exist.
 func (s *Server) getCatalogRequest(w http.ResponseWriter, r *http.Request) {
 	if s.noCatalog(w) {
@@ -396,7 +398,7 @@ func (s *Server) getCatalogRequest(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "no request " + r.PathValue("id")})
 		return
 	}
-	answer := map[string]any{"request": req}
+	answer := map[string]any{"request": req.Sanitize()}
 	if lease, ok := s.catalog.GetLeaseByRequest(req.ID); ok {
 		answer["lease"] = lease
 	}
