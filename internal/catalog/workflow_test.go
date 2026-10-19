@@ -1,0 +1,522 @@
+package catalog
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/onurbaydas/virtomir/internal/auth"
+	"github.com/onurbaydas/virtomir/internal/project"
+	"github.com/onurbaydas/virtomir/internal/virt"
+)
+
+type mockDeployer struct {
+	domains      []virt.Domain
+	createdSpecs []virt.CreateSpec
+	deploySpecs  []virt.DeploySpec
+	owners       map[string]string
+	projects     map[string]string
+	createErr    error
+	deployErr    error
+	listErr      error
+	setOwnerErr  error
+	setProjErr   error
+	nextUUID     string
+	diskBytesMap map[string]uint64
+}
+
+func (m *mockDeployer) CreateDomain(spec virt.CreateSpec) (virt.CreateResult, error) {
+	if m.createErr != nil {
+		return virt.CreateResult{}, m.createErr
+	}
+	m.createdSpecs = append(m.createdSpecs, spec)
+	uuid := m.nextUUID
+	if uuid == "" {
+		uuid = "mock-uuid-" + spec.Name
+	}
+	return virt.CreateResult{UUID: uuid}, nil
+}
+
+func (m *mockDeployer) Deploy(ctx context.Context, template string, spec virt.DeploySpec, report func(string)) (string, error) {
+	if m.deployErr != nil {
+		return "", m.deployErr
+	}
+	m.deploySpecs = append(m.deploySpecs, spec)
+	uuid := m.nextUUID
+	if uuid == "" {
+		uuid = "mock-uuid-" + spec.Name
+	}
+	return uuid, nil
+}
+
+func (m *mockDeployer) SetOwner(uuid, owner string) error {
+	if m.setOwnerErr != nil {
+		return m.setOwnerErr
+	}
+	if m.owners == nil {
+		m.owners = make(map[string]string)
+	}
+	m.owners[uuid] = owner
+	return nil
+}
+
+func (m *mockDeployer) SetProject(uuid, project string) error {
+	if m.setProjErr != nil {
+		return m.setProjErr
+	}
+	if m.projects == nil {
+		m.projects = make(map[string]string)
+	}
+	m.projects[uuid] = project
+	return nil
+}
+
+func (m *mockDeployer) ListDomains() ([]virt.Domain, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	out := make([]virt.Domain, len(m.domains))
+	copy(out, m.domains)
+	return out, nil
+}
+
+func (m *mockDeployer) DiskBytes(uuids []string) (map[string]uint64, error) {
+	if m.diskBytesMap != nil {
+		return m.diskBytesMap, nil
+	}
+	return nil, nil
+}
+
+func setupTestStores(t *testing.T) (*Store, *project.Store) {
+	t.Helper()
+	dir := t.TempDir()
+
+	cStore, err := Open(filepath.Join(dir, "catalog.json"))
+	if err != nil {
+		t.Fatalf("Open catalog store: %v", err)
+	}
+
+	pStore, err := project.Open(filepath.Join(dir, "projects.json"))
+	if err != nil {
+		t.Fatalf("Open project store: %v", err)
+	}
+
+	return cStore, pStore
+}
+
+func TestWorkflow_SubmitRequest_ApprovalRequired(t *testing.T) {
+	cStore, pStore := setupTestStores(t)
+
+	_, err := pStore.Create(project.Project{
+		ID:   "proj-a",
+		Name: "Project A",
+		Members: []project.Member{
+			{Kind: "user", Name: "alice", Role: "viewer"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create project: %v", err)
+	}
+
+	_, err = cStore.CreateBlueprint(Blueprint{
+		ID:              "bp-needs-approval",
+		Name:            "Ubuntu with approval",
+		SourceType:      SourceTypeImage,
+		SourceRef:       "ubuntu-24.04.qcow2",
+		RequireApproval: true,
+		Presets: []SizePreset{
+			{ID: "small", Name: "Small", VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+		},
+		DefaultPresetID:  "small",
+		DefaultLeaseDays: 14,
+		MaxLeaseDays:     30,
+	})
+	if err != nil {
+		t.Fatalf("Create blueprint: %v", err)
+	}
+
+	req := Request{
+		BlueprintID: "bp-needs-approval",
+		ProjectID:   "proj-a",
+		VMName:      "alice-vm-1",
+		PresetID:    "small",
+	}
+
+	submitted, err := SubmitRequest(cStore, pStore, "alice", nil, req)
+	if err != nil {
+		t.Fatalf("SubmitRequest: %v", err)
+	}
+
+	if submitted.Status != StatusPendingApproval {
+		t.Fatalf("expected status %q, got %q", StatusPendingApproval, submitted.Status)
+	}
+	if submitted.Requester != "alice" {
+		t.Fatalf("expected requester alice, got %q", submitted.Requester)
+	}
+	if submitted.VCPUs != 2 || submitted.MemoryMiB != 2048 || submitted.DiskGiB != 20 {
+		t.Fatalf("size preset not resolved correctly: %+v", submitted)
+	}
+	if submitted.LeaseDays != 14 {
+		t.Fatalf("expected default lease 14 days, got %d", submitted.LeaseDays)
+	}
+
+	// Verify request is saved in store
+	fromStore, ok := cStore.GetRequest(submitted.ID)
+	if !ok {
+		t.Fatalf("request not found in store")
+	}
+	if fromStore.Status != StatusPendingApproval {
+		t.Fatalf("store status %q != %q", fromStore.Status, StatusPendingApproval)
+	}
+}
+
+func TestWorkflow_SubmitRequest_NoApproval_AutoProvision(t *testing.T) {
+	cStore, pStore := setupTestStores(t)
+
+	_, err := pStore.Create(project.Project{
+		ID:   "proj-auto",
+		Name: "Auto Project",
+		Members: []project.Member{
+			{Kind: "user", Name: "bob", Role: "operator"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create project: %v", err)
+	}
+
+	_, err = cStore.CreateBlueprint(Blueprint{
+		ID:              "bp-auto",
+		Name:            "Debian Auto",
+		SourceType:      SourceTypeImage,
+		SourceRef:       "debian-12.qcow2",
+		RequireApproval: false,
+		Presets: []SizePreset{
+			{ID: "medium", Name: "Medium", VCPUs: 4, MemoryMiB: 4096, DiskGiB: 40},
+		},
+		DefaultPresetID:  "medium",
+		DefaultLeaseDays: 7,
+	})
+	if err != nil {
+		t.Fatalf("Create blueprint: %v", err)
+	}
+
+	dep := &mockDeployer{nextUUID: "auto-prov-vm-uuid"}
+
+	req := Request{
+		BlueprintID: "bp-auto",
+		ProjectID:   "proj-auto",
+		VMName:      "bob-vm-auto",
+	}
+
+	submitted, err := SubmitRequest(cStore, pStore, "bob", nil, req, dep)
+	if err != nil {
+		t.Fatalf("SubmitRequest auto provision: %v", err)
+	}
+
+	if submitted.Status != StatusActive {
+		t.Fatalf("expected status %q, got %q", StatusActive, submitted.Status)
+	}
+	if submitted.MachineUUID != "auto-prov-vm-uuid" {
+		t.Fatalf("expected machine UUID %q, got %q", "auto-prov-vm-uuid", submitted.MachineUUID)
+	}
+	if len(dep.createdSpecs) != 1 {
+		t.Fatalf("expected 1 created domain, got %d", len(dep.createdSpecs))
+	}
+	if dep.owners["auto-prov-vm-uuid"] != "bob" {
+		t.Fatalf("owner not set: %v", dep.owners)
+	}
+	if dep.projects["auto-prov-vm-uuid"] != "proj-auto" {
+		t.Fatalf("project not set: %v", dep.projects)
+	}
+}
+
+func TestWorkflow_NonAdminCannotApproveOrReject(t *testing.T) {
+	cStore, pStore := setupTestStores(t)
+
+	_, err := pStore.Create(project.Project{
+		ID:   "proj-sec",
+		Name: "Security Proj",
+		Members: []project.Member{
+			{Kind: "user", Name: "alice", Role: "viewer"},
+			{Kind: "user", Name: "operator1", Role: "operator"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create project: %v", err)
+	}
+
+	_, err = cStore.CreateBlueprint(Blueprint{
+		ID:              "bp-review",
+		Name:            "Review Blueprint",
+		SourceType:      SourceTypeImage,
+		SourceRef:       "image.qcow2",
+		RequireApproval: true,
+		Presets: []SizePreset{
+			{ID: "p1", Name: "P1", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10},
+		},
+		DefaultPresetID: "p1",
+	})
+	if err != nil {
+		t.Fatalf("Create blueprint: %v", err)
+	}
+
+	req, err := SubmitRequest(cStore, pStore, "alice", nil, Request{
+		BlueprintID: "bp-review",
+		ProjectID:   "proj-sec",
+		VMName:      "alice-pending",
+	})
+	if err != nil {
+		t.Fatalf("SubmitRequest: %v", err)
+	}
+
+	// operator1 is a project operator (not admin) and global Viewer
+	_, err = ApproveRequest(cStore, pStore, req.ID, "operator1", auth.Operator, nil, "try approve")
+	if err == nil {
+		t.Fatalf("expected unauthorized error for non-admin approve, got nil")
+	}
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("expected ErrUnauthorized, got: %v", err)
+	}
+
+	// Check status untouched
+	cur, _ := cStore.GetRequest(req.ID)
+	if cur.Status != StatusPendingApproval {
+		t.Fatalf("status changed to %q after unauthorized approve", cur.Status)
+	}
+
+	// Try reject
+	_, err = RejectRequest(cStore, pStore, req.ID, "operator1", auth.Operator, nil, "try reject")
+	if err == nil {
+		t.Fatalf("expected unauthorized error for non-admin reject, got nil")
+	}
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("expected ErrUnauthorized, got: %v", err)
+	}
+
+	cur, _ = cStore.GetRequest(req.ID)
+	if cur.Status != StatusPendingApproval {
+		t.Fatalf("status changed to %q after unauthorized reject", cur.Status)
+	}
+}
+
+func TestWorkflow_ProjectAdmin_ApproveAndReject(t *testing.T) {
+	cStore, pStore := setupTestStores(t)
+
+	_, err := pStore.Create(project.Project{
+		ID:   "proj-team",
+		Name: "Team Project",
+		Members: []project.Member{
+			{Kind: "user", Name: "member1", Role: "viewer"},
+			{Kind: "user", Name: "lead", Role: "admin"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create project: %v", err)
+	}
+
+	_, err = cStore.CreateBlueprint(Blueprint{
+		ID:              "bp-team",
+		Name:            "Team VM",
+		SourceType:      SourceTypeImage,
+		SourceRef:       "os.img",
+		RequireApproval: true,
+		Presets: []SizePreset{
+			{ID: "p", Name: "P", VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+		},
+		DefaultPresetID: "p",
+	})
+	if err != nil {
+		t.Fatalf("Create blueprint: %v", err)
+	}
+
+	// 1. Approve
+	dep := &mockDeployer{nextUUID: "approved-vm-uuid"}
+	req1, err := SubmitRequest(cStore, pStore, "member1", nil, Request{
+		BlueprintID: "bp-team",
+		ProjectID:   "proj-team",
+		VMName:      "req-1",
+	})
+	if err != nil {
+		t.Fatalf("SubmitRequest req1: %v", err)
+	}
+
+	// Lead has global Member role (no global admin) but project admin role
+	approved, err := ApproveRequest(cStore, pStore, req1.ID, "lead", auth.Member, nil, "Looks good", dep)
+	if err != nil {
+		t.Fatalf("Project admin failed to approve: %v", err)
+	}
+	if approved.Status != StatusActive {
+		t.Fatalf("expected active status after provisioning, got %q", approved.Status)
+	}
+	if approved.ReviewedBy != "lead" || approved.ReviewComment != "Looks good" {
+		t.Fatalf("review metadata mismatch: %+v", approved)
+	}
+
+	// 2. Reject
+	req2, err := SubmitRequest(cStore, pStore, "member1", nil, Request{
+		BlueprintID: "bp-team",
+		ProjectID:   "proj-team",
+		VMName:      "req-2",
+	})
+	if err != nil {
+		t.Fatalf("SubmitRequest req2: %v", err)
+	}
+
+	rejected, err := RejectRequest(cStore, pStore, req2.ID, "lead", auth.Member, nil, "Quota tight")
+	if err != nil {
+		t.Fatalf("Project admin failed to reject: %v", err)
+	}
+	if rejected.Status != StatusRejected {
+		t.Fatalf("expected status rejected, got %q", rejected.Status)
+	}
+	if rejected.ReviewedBy != "lead" || rejected.ReviewComment != "Quota tight" {
+		t.Fatalf("review metadata mismatch: %+v", rejected)
+	}
+}
+
+func TestWorkflow_GlobalAdmin_ApproveAndRejectAny(t *testing.T) {
+	cStore, pStore := setupTestStores(t)
+
+	_, err := pStore.Create(project.Project{
+		ID:   "proj-isolated",
+		Name: "Isolated",
+		Members: []project.Member{
+			{Kind: "user", Name: "isolated-user", Role: "operator"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create project: %v", err)
+	}
+
+	_, err = cStore.CreateBlueprint(Blueprint{
+		ID:              "bp-any",
+		Name:            "Any VM",
+		SourceType:      SourceTypeImage,
+		SourceRef:       "os.img",
+		RequireApproval: true,
+		Presets: []SizePreset{
+			{ID: "p", Name: "P", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10},
+		},
+		DefaultPresetID: "p",
+	})
+	if err != nil {
+		t.Fatalf("Create blueprint: %v", err)
+	}
+
+	dep := &mockDeployer{nextUUID: "admin-approved-uuid"}
+	req, err := SubmitRequest(cStore, pStore, "isolated-user", nil, Request{
+		BlueprintID: "bp-any",
+		ProjectID:   "proj-isolated",
+		VMName:      "iso-vm",
+	})
+	if err != nil {
+		t.Fatalf("SubmitRequest: %v", err)
+	}
+
+	// root is not a project member, but global role is auth.Admin
+	approved, err := ApproveRequest(cStore, pStore, req.ID, "root", auth.Admin, nil, "Global override", dep)
+	if err != nil {
+		t.Fatalf("Global admin failed to approve: %v", err)
+	}
+	if approved.Status != StatusActive {
+		t.Fatalf("expected status active, got %q", approved.Status)
+	}
+
+	// Reject test with another request
+	req2, err := SubmitRequest(cStore, pStore, "isolated-user", nil, Request{
+		BlueprintID: "bp-any",
+		ProjectID:   "proj-isolated",
+		VMName:      "iso-vm-2",
+	})
+	if err != nil {
+		t.Fatalf("SubmitRequest req2: %v", err)
+	}
+
+	rejected, err := RejectRequest(cStore, pStore, req2.ID, "root", auth.Admin, nil, "Policy violation")
+	if err != nil {
+		t.Fatalf("Global admin failed to reject: %v", err)
+	}
+	if rejected.Status != StatusRejected {
+		t.Fatalf("expected status rejected, got %q", rejected.Status)
+	}
+}
+
+func TestWorkflow_SubmitRequest_Validations(t *testing.T) {
+	cStore, pStore := setupTestStores(t)
+
+	_, _ = pStore.Create(project.Project{
+		ID:   "proj-val",
+		Name: "Validations Project",
+		Members: []project.Member{
+			{Kind: "user", Name: "charlie", Role: "viewer"},
+		},
+		Networks: []string{"proj-net"},
+	})
+
+	_, _ = cStore.CreateBlueprint(Blueprint{
+		ID:              "bp-val",
+		Name:            "Validation BP",
+		SourceType:      SourceTypeImage,
+		SourceRef:       "val.img",
+		RequireApproval: true,
+		AllowedNetworks: []string{"bp-net", "proj-net"},
+		AllowedProjects: []string{"proj-val"},
+		Presets: []SizePreset{
+			{ID: "tiny", Name: "Tiny", VCPUs: 1, MemoryMiB: 512, DiskGiB: 5},
+		},
+		DefaultPresetID:  "tiny",
+		DefaultLeaseDays: 10,
+		MaxLeaseDays:     20,
+	})
+
+	// 1. Non-member caller
+	_, err := SubmitRequest(cStore, pStore, "outsider", nil, Request{
+		BlueprintID: "bp-val",
+		ProjectID:   "proj-val",
+		VMName:      "vm-out",
+	})
+	if err == nil || !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("expected unauthorized error for non-member, got: %v", err)
+	}
+
+	// 2. Blueprint not allowed for project
+	_, _ = pStore.Create(project.Project{
+		ID:   "proj-other",
+		Name: "Other Proj",
+		Members: []project.Member{
+			{Kind: "user", Name: "charlie", Role: "viewer"},
+		},
+	})
+	_, err = SubmitRequest(cStore, pStore, "charlie", nil, Request{
+		BlueprintID: "bp-val",
+		ProjectID:   "proj-other",
+		VMName:      "vm-other",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not allowed to use blueprint") {
+		t.Fatalf("expected disallowed project error, got: %v", err)
+	}
+
+	// 3. Lease days exceeds maximum
+	_, err = SubmitRequest(cStore, pStore, "charlie", nil, Request{
+		BlueprintID: "bp-val",
+		ProjectID:   "proj-val",
+		VMName:      "vm-lease",
+		LeaseDays:   30, // max is 20
+	})
+	if err == nil || !strings.Contains(err.Error(), "exceeds blueprint maximum") {
+		t.Fatalf("expected lease excess error, got: %v", err)
+	}
+
+	// 4. Network not allowed by project
+	_, err = SubmitRequest(cStore, pStore, "charlie", nil, Request{
+		BlueprintID: "bp-val",
+		ProjectID:   "proj-val",
+		VMName:      "vm-net",
+		Network:     "bp-net", // bp allows it, but project only allows proj-net
+	})
+	if err == nil || !strings.Contains(err.Error(), "not permitted in project") {
+		t.Fatalf("expected network restricted by project error, got: %v", err)
+	}
+}

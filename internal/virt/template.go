@@ -218,6 +218,8 @@ type DeploySpec struct {
 	Linked    bool       `json:"linked"`
 	CloudInit *CloudInit `json:"cloudInit,omitempty"`
 	Start     bool       `json:"start"`
+	VCPUs     int        `json:"vcpus,omitempty"`
+	MemoryMiB uint64     `json:"memoryMiB,omitempty"`
 }
 
 // Deploy creates a machine from a template and returns its UUID. Long copies report progress.
@@ -245,6 +247,23 @@ func (c *Client) Deploy(ctx context.Context, template string, spec DeploySpec, r
 		return "", err
 	}
 	prepareClone(x, spec.Name)
+	if spec.VCPUs > 0 {
+		if x.VCPU == nil {
+			x.VCPU = &libvirtxml.DomainVCPU{}
+		}
+		x.VCPU.Value = uint(spec.VCPUs)
+	}
+	if spec.MemoryMiB > 0 {
+		if x.Memory == nil {
+			x.Memory = &libvirtxml.DomainMemory{}
+		}
+		x.Memory.Value = uint(spec.MemoryMiB)
+		x.Memory.Unit = "MiB"
+		if x.CurrentMemory != nil {
+			x.CurrentMemory.Value = uint(spec.MemoryMiB)
+			x.CurrentMemory.Unit = "MiB"
+		}
+	}
 
 	var created []libvirt.StorageVol
 	rollback := func() {
