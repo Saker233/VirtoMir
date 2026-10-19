@@ -311,6 +311,14 @@ func (r *Registry) run(ctx context.Context, w *Wave, indices []int, conv OneConv
 	if report == nil {
 		report = func(string) {}
 	}
+	// Workers report in parallel; callers (job progress, tests) need not be safe for concurrent use.
+	var reportMu sync.Mutex
+	unsafeReport := report
+	report = func(msg string) {
+		reportMu.Lock()
+		defer reportMu.Unlock()
+		unsafeReport(msg)
+	}
 	if conv == nil {
 		conv = &WaveConverter{}
 	}

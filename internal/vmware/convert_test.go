@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"libvirt.org/go/libvirtxml"
@@ -27,9 +28,12 @@ type fake struct {
 	pwPath     string
 	args       []string
 	env        []string
+	mu         sync.Mutex // wave tests run conversions in parallel
 }
 
 func (f *fake) exec(ctx context.Context, env []string, args []string, onLine func(string)) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.args, f.env = args, env
 	if slices.Equal(args, []string{"--version"}) {
 		return []byte("virt-v2v 2.4.0\n"), f.versionErr
