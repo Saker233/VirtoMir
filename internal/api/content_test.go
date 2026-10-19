@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -700,6 +701,103 @@ func TestContentDownloadErrorPaths(t *testing.T) {
 	rec = do(b.handler, "POST", "/api/v1/content/items/"+item.ID+"/versions/v-1/download", "", b.view)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("POST to download endpoint with viewer: got %d, want 403", rec.Code)
+	}
+}
+
+// TestContentDownloadPeerAuth verifies the host-to-host content transfer auth (ADR-0063):
+// a cluster member downloading with its peer credential succeeds, everyone without
+// peer credentials is refused.
+func TestContentDownloadPeerAuth(t *testing.T) {
+	pub, pubStore := newContentTestNode(t, "pubhost")
+	sub, _ := newContentTestNode(t, "subhost")
+	joinNodes(t, sub, pub)
+
+	poolDir := t.TempDir()
+	if err := pubStore.SetHostConfig(content.HostConfig{
+		HostID:     pub.store.SelfID(),
+		TargetPool: poolDir,
+		AutoSync:   true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sample := []byte("peer-download-payload-0123456789")
+	if err := os.WriteFile(filepath.Join(poolDir, "content-cirros-lib-v1.0.iso"), sample, 0644); err != nil {
+		t.Fatal(err)
+	}
+	item, err := pubStore.CreateItem(content.Item{
+		Name: "cirros-lib",
+		Type: content.TypeISO,
+		Versions: []content.ItemVersion{
+			{
+				ID:         "ver-peer-1",
+				Version:    "1.0",
+				Format:     "iso",
+				Size:       int64(len(sample)),
+				SHA256:     sha256Hex(sample),
+				SourceHost: pub.store.SelfID(),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ver := item.Versions[0]
+
+	// 1. The subscriber's own peer connection downloads the version; until the guard
+	//    allowed it, every such sync ended in "peer returned HTTP 403".
+	peer, ok := sub.api.PeerFor(pub.store.SelfID())
+	if !ok {
+		t.Fatal("subscriber has no peer connection to the publisher")
+	}
+	target := t.TempDir()
+	got, err := content.Pull(context.Background(), peer, item, ver, target, nil)
+	if err != nil {
+		t.Fatalf("peer download: %v", err)
+	}
+	if read, err := os.ReadFile(got); err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(read, sample) {
+		t.Errorf("downloaded file = %q, want %q", read, sample)
+	}
+
+	// 2. Range/resume support survives the auth path.
+	resp, err := peer.Download(context.Background(), content.DownloadPath(item.ID, ver.ID),
+		map[string]string{"Range": "bytes=10-13"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Errorf("range download: got %d, want 206", resp.StatusCode)
+	}
+	if string(body) != string(sample[10:14]) {
+		t.Errorf("range download body = %q, want %q", body, sample[10:14])
+	}
+
+	// 3. Anonymous download without any credential -> 401 (sign-in required).
+	anon := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	dl := pub.url + content.DownloadPath(item.ID, ver.ID)
+	if resp, err := anon.Get(dl); err != nil {
+		t.Fatal(err)
+	} else {
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("anonymous download: got %d, want 401", resp.StatusCode)
+		}
+	}
+
+	// 4. A forged peer credential from a host that is not a member -> 401.
+	req, _ := http.NewRequest(http.MethodGet, dl, nil)
+	req.Header.Set("Authorization", "VirtoMirPeer forged.deadbeef")
+	if resp, err := anon.Do(req); err != nil {
+		t.Fatal(err)
+	} else {
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("forged peer credential: got %d, want 401", resp.StatusCode)
+		}
 	}
 }
 

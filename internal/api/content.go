@@ -901,6 +901,7 @@ func (s *Server) syncContentItem(w http.ResponseWriter, r *http.Request) {
 
 	targetPool := s.hostTargetPool()
 	selfID := s.selfHostID()
+	caller := identity(r) // the peer is vouched for this user, like every member call
 	jobTitle := fmt.Sprintf("Sync %s (v%s)", it.Name, targetVer.Version)
 
 	job := s.jobs.Start("content-sync", jobTitle, func(jobCtx context.Context, report func(string)) (string, error) {
@@ -989,7 +990,9 @@ func (s *Server) syncContentItem(w http.ResponseWriter, r *http.Request) {
 			}
 			return "", fmt.Errorf("source host %q not found in peers", targetVer.SourceHost)
 		}
-		res, err := content.Pull(jobCtx, peer, it, targetVer, poolPath, report)
+		// Downloads go through the authenticated peer connection, on behalf of the
+		// user who asked for the sync (ADR-0020 member calls, ADR-0063 content library).
+		res, err := content.Pull(jobCtx, peer.As(caller.Name, caller.Role.String(), caller.Token), it, targetVer, poolPath, report)
 		if err != nil {
 			if s.content != nil {
 				_, _ = s.content.SetHostSyncState(it.ID, content.HostSyncState{

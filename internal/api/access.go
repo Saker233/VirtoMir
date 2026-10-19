@@ -120,6 +120,13 @@ func requiredRole(method, path string) auth.Role {
 	return auth.Admin
 }
 
+// contentDownloadPath reports whether the path is a content library version download
+// (ADR-0063): /api/v1/content/items/{id}/versions/{vid}/download.
+func contentDownloadPath(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/api/v1/content/items/")
+	return ok && strings.Contains(rest, "/versions/") && strings.HasSuffix(rest, "/download")
+}
+
 func operatorWrite(method, path string) bool {
 	rest, ok := strings.CutPrefix(path, "/api/v1/domains/")
 	if !ok {
@@ -191,8 +198,15 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		case isPeer:
 			id = peerID
 			if id.Role == auth.NoAccess && !strings.HasPrefix(path, "/api/v1/cluster/peer/") {
-				s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "members may only call the cluster protocol on their own behalf"})
-				return
+				// The host itself (not a vouched user) carries content library versions
+				// host-to-host (ADR-0063): the subscriber's sync job downloads with its own
+				// peer credential. An anonymous user without that credential never lands here.
+				if contentDownloadPath(path) {
+					id.Role = auth.Viewer // the download route is a viewer-level read; no more
+				} else {
+					s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "members may only call the cluster protocol on their own behalf"})
+					return
+				}
 			}
 		case s.auth != nil:
 			var ok bool
