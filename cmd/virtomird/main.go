@@ -30,6 +30,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/history"
 	"github.com/onurbaydas/virtomir/internal/hostinfo"
 	"github.com/onurbaydas/virtomir/internal/hostnet"
+	"github.com/onurbaydas/virtomir/internal/insights"
 	"github.com/onurbaydas/virtomir/internal/jobs"
 	"github.com/onurbaydas/virtomir/internal/live"
 	"github.com/onurbaydas/virtomir/internal/offsite"
@@ -155,6 +156,7 @@ func run(c config, log *slog.Logger) error {
 	}()
 	go saveHistory(ctx, hist, log)
 
+	insightsEngine := insights.New(hist)
 	hub := live.NewHub(client, time.Second, log)
 	hub.SetRecorder(hist)
 	alertEngine, err := alerts.Open(filepath.Join(c.stateDir, "alerts.json"), log)
@@ -188,7 +190,7 @@ func run(c config, log *slog.Logger) error {
 	opts := api.Options{
 		Backend: client, Live: hub, Jobs: jobManager, Auth: authMgr, Schedules: scheduler,
 		UI: web.Dist(), Version: version, Log: log, History: hist, Tokens: tokens, Activity: acts, Alerts: alertEngine,
-		FIPSInfo: fipsInfo, ComplianceScanner: compScanner,
+		Insights: insightsEngine, FIPSInfo: fipsInfo, ComplianceScanner: compScanner,
 	}
 	if err := setupCluster(c, tlsConf, &opts); err != nil {
 		log.Warn("cluster", "err", err)
