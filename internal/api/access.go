@@ -75,19 +75,41 @@ func ExternalRoleFallback(pj *project.Store) func(user string, groups []string) 
 	}
 }
 
-// memberAllowed reports whether a GET/HEAD endpoint is accessible to a Member.
+// memberAllowed reports whether an endpoint is accessible to a Member (ADR-0060, ADR-0065).
 func (s *Server) memberAllowed(id auth.Identity, method, path string) bool {
 	if id.Role != auth.Member {
 		return false
 	}
-	if method != http.MethodGet && method != http.MethodHead {
-		return false
-	}
-	if path == "/api/v1/domains" || path == "/api/v1/projects" {
-		return true
-	}
-	if rest, ok := strings.CutPrefix(path, "/api/v1/projects/"); ok {
-		return rest != "" && !strings.Contains(rest, "/")
+	switch method {
+	case http.MethodGet, http.MethodHead:
+		if path == "/api/v1/domains" || path == "/api/v1/projects" || path == "/api/v1/catalog/blueprints" ||
+			path == "/api/v1/catalog/requests" || path == "/api/v1/catalog/showback" {
+			return true
+		}
+		if rest, ok := strings.CutPrefix(path, "/api/v1/projects/"); ok {
+			return rest != "" && !strings.Contains(rest, "/")
+		}
+		if rest, ok := strings.CutPrefix(path, "/api/v1/catalog/blueprints/"); ok {
+			return rest != "" && !strings.Contains(rest, "/")
+		}
+		if rest, ok := strings.CutPrefix(path, "/api/v1/catalog/requests/"); ok {
+			return rest != "" && !strings.Contains(rest, "/")
+		}
+	case http.MethodPost:
+		if path == "/api/v1/catalog/requests" {
+			return true
+		}
+		if rest, ok := strings.CutPrefix(path, "/api/v1/catalog/requests/"); ok {
+			for _, action := range []string{"/extend", "/approve", "/reject"} {
+				if reqID, found := strings.CutSuffix(rest, action); found {
+					return reqID != "" && !strings.Contains(reqID, "/")
+				}
+			}
+		}
+	case http.MethodDelete:
+		if rest, ok := strings.CutPrefix(path, "/api/v1/catalog/requests/"); ok {
+			return rest != "" && !strings.Contains(rest, "/")
+		}
 	}
 	return false
 }
@@ -112,6 +134,12 @@ func requiredRole(method, path string) auth.Role {
 		return auth.Admin // who may sign in and who may create what is the admins' business
 	case strings.Contains(path, "/console/"):
 		return auth.Operator // a console is control over the machine
+	// Self-service catalog (ADR-0065): ordering a machine, approving it, extending its
+	// lease and cancelling an order is tenant work; the handlers decide who may do
+	// what to whom (project membership, requester, admins). Blueprint and pricing
+	// edits stay admin-only through the default below.
+	case strings.HasPrefix(path, "/api/v1/catalog/requests") && method != http.MethodGet:
+		return auth.Viewer
 	case strings.HasPrefix(path, "/api/v1/domains/") && strings.HasSuffix(path, "/project"):
 		return auth.Operator // moving a machine into/out of a project: the handler checks both projects
 	case method == http.MethodGet || method == http.MethodHead:

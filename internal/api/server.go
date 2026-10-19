@@ -16,6 +16,7 @@ import (
 	"github.com/onurbaydas/virtomir/internal/activity"
 	"github.com/onurbaydas/virtomir/internal/alerts"
 	"github.com/onurbaydas/virtomir/internal/auth"
+	"github.com/onurbaydas/virtomir/internal/catalog"
 	"github.com/onurbaydas/virtomir/internal/cluster"
 	"github.com/onurbaydas/virtomir/internal/compliance"
 	"github.com/onurbaydas/virtomir/internal/confighist"
@@ -159,6 +160,10 @@ type Options struct {
 	RateLimiter *auth.RateLimiter
 	// ZFSRep nil: no ZFS replication.
 	ZFSRep *zfsrep.Manager
+	// Catalog nil: no self-service catalog (ADR-0065). LeaseMgr nil: catalog machines
+	// never expire.
+	Catalog  *catalog.Store
+	LeaseMgr *catalog.LeaseManager
 	// FIPSInfo holds kernel FIPS mode and TLS enforcement details (ADR-0064).
 	FIPSInfo compliance.FIPSInfo
 	// ComplianceScanner nil: standard scanner rooted at "/" is used (ADR-0064).
@@ -219,6 +224,8 @@ type Server struct {
 	projects        *project.Store
 	rateLimiter     *auth.RateLimiter
 	zfsRep          *zfsrep.Manager
+	catalog         *catalog.Store
+	leaseMgr        *catalog.LeaseManager
 	content         *content.Store
 	contentSync     *content.SyncManager
 }
@@ -260,11 +267,12 @@ func NewServer(o Options) *Server {
 	s := &Server{backend: o.Backend, live: o.Live, jobs: o.Jobs, auth: o.Auth, ui: o.UI, version: o.Version, log: o.Log,
 		history: o.History, tokens: o.Tokens, activity: o.Activity, alerts: o.Alerts, schedules: o.Schedules, fipsInfo: o.FIPSInfo,
 		complianceScanner: cs,
-		cluster: o.Cluster, fingerprint: o.Fingerprint, hostName: o.HostName, listenPort: o.ListenPort,
+		cluster:           o.Cluster, fingerprint: o.Fingerprint, hostName: o.HostName, listenPort: o.ListenPort,
 		confighist: o.ConfigHistory, quotas: o.Quotas, groupsOf: o.GroupsOf,
 		ha: o.HA, reports: o.Reports, respools: o.Respools, hostinfo: o.HostInfo, updater: o.Updater, stateDir: o.StateDir, hostnet: o.HostNet, offsite: o.Offsite,
 		vmwareStore: o.VMwareStore, vmwareWaves: o.VMwareWaves, vmwareLister: vl, vmwarePreflight: vp, vmwareConverter: vc,
 		drs: o.DRS, placement: o.Placement, projects: o.Projects, rateLimiter: rl, zfsRep: o.ZFSRep,
+		catalog: o.Catalog, leaseMgr: o.LeaseMgr,
 		content: o.Content, contentSync: o.ContentSync}
 	if s.contentSync != nil {
 		s.contentSync.SetPeers(s)
@@ -322,6 +330,7 @@ func (s *Server) Handler() http.Handler {
 	s.drsRoutes(mux)
 	s.placementRoutes(mux)
 	s.projectRoutes(mux)
+	s.catalogRoutes(mux)
 	s.complianceRoutes(mux)
 	s.contentRoutes(mux)
 

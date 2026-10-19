@@ -18,6 +18,7 @@
   import FileText from '@lucide/svelte/icons/file-text'
   import ShieldCheck from '@lucide/svelte/icons/shield-check'
   import FolderKanban from '@lucide/svelte/icons/folder-kanban'
+  import ShoppingBag from '@lucide/svelte/icons/shopping-bag'
   import BookOpen from '@lucide/svelte/icons/book-open'
   import { cluster } from '../cluster.svelte'
   import { alerts } from '../alerts.svelte'
@@ -49,6 +50,7 @@
     { name: 'alerts', href: '/alerts', label: t('Alerts'), icon: Bell, role: 'viewer' },
     { name: 'activity', href: '/activity', label: t('Activity'), icon: ClockArrowUp, role: 'admin' },
     { name: 'projects', href: '/projects', label: t('Projects'), icon: FolderKanban, role: 'admin' },
+    { name: 'catalog', href: '/catalog', label: t('Catalog'), icon: ShoppingBag, role: 'viewer' },
     { name: 'reports', href: '/reports', label: t('Reports'), icon: FileText, role: 'viewer' },
     { name: 'compliance', href: '/compliance', label: t('Compliance'), icon: ShieldCheck, role: 'viewer' },
   ] as const

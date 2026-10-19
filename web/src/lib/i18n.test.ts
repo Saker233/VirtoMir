@@ -44,7 +44,7 @@ describe('i18n', () => {
     const keys = Object.keys(tr)
     expect(keys.length).toBeGreaterThan(1900)
     for (let i = 1; i < keys.length; i++) {
-      expect(keys[i].localeCompare(keys[i - 1])).toBeGreaterThanOrEqual(0)
+      expect(keys[i].localeCompare(keys[i - 1], 'en')).toBeGreaterThanOrEqual(0)
     }
   })
 })

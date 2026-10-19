@@ -319,3 +319,46 @@ func TestComplianceScheduleIntegration(t *testing.T) {
 	}
 }
 
+func TestShowbackReportAndValidation(t *testing.T) {
+	s, now := open(t)
+
+	// Validate schedule accepts both Showback and Compliance
+	for _, k := range []Kind{Capacity, Inventory, BackupSLA, Showback, Compliance} {
+		sc, err := s.PutSchedule(Schedule{
+			Name:    string(k) + " schedule",
+			Kind:    k,
+			Format:  JSON,
+			Every:   "daily",
+			At:      "03:00",
+			Enabled: true,
+		})
+		if err != nil {
+			t.Fatalf("PutSchedule failed for kind %s: %v", k, err)
+		}
+		if sc.Kind != k {
+			t.Errorf("Kind = %s, want %s", sc.Kind, k)
+		}
+	}
+
+	// Without builder, showback fails cleanly
+	_, err := s.Generate(Showback, JSON, facts(now), "admin", "")
+	if err == nil || !strings.Contains(err.Error(), "showback reports are not configured") {
+		t.Errorf("expected not configured error, got %v", err)
+	}
+
+	// With builder registered, showback generates correctly
+	s.SetShowbackBuilder(func(f Format) (string, []byte, error) {
+		return "1 project · total cost $42.00", []byte(`{"period":"2026-10","totalCost":42}`), nil
+	})
+	m, err := s.Generate(Showback, JSON, facts(now), "admin", "")
+	if err != nil {
+		t.Fatalf("Generate(Showback) failed: %v", err)
+	}
+	if m.Kind != Showback || !strings.Contains(m.Summary, "total cost $42.00") {
+		t.Errorf("unexpected metadata: %+v", m)
+	}
+	_, body, err := s.Get(m.ID)
+	if err != nil || !strings.Contains(string(body), "totalCost") {
+		t.Errorf("s.Get failed or wrong body: %v, %s", err, string(body))
+	}
+}
